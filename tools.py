@@ -63,6 +63,6 @@ def write_text_file(path: str, content: str) -> str:
     try:
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text(content, encoding="utf-8")
-        return f"Archivo guardado correctamente en: {path}"
+        return f"Archivo guardado correctamente en: {path}\nContenido:\n{content}"
     except Exception as e:
         return f"Error escribiendo archivo: {e}"
