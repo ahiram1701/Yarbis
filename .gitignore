@@ -1,0 +1,9 @@
+.venv/
+__pycache__/
+**/__pycache__/
+*.py[cod]
+state.json
+*.log
+tests_runtime/
+tmp*/
+_tmp_tools_test/

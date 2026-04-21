@@ -19,6 +19,7 @@ class MemoryTestCase(unittest.TestCase):
 
         self.assertEqual(state["goal"], memory.DEFAULT_GOAL)
         self.assertEqual(state["messages"], [])
+        self.assertNotIn("notes", state)
 
     def test_save_state_trims_messages(self):
         state_path = TEST_RUNTIME_DIR / "memory_trim_state.json"
@@ -28,7 +29,6 @@ class MemoryTestCase(unittest.TestCase):
                 {"role": "assistant", "content": "x" * (memory.MAX_MESSAGE_CHARS + 10)}
                 for _ in range(memory.MAX_MESSAGES + 5)
             ],
-            "notes": [],
             "last_result": "ok",
             "cycle_count": 3,
         }

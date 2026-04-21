@@ -5,6 +5,7 @@ MAX_LIST_ITEMS = 200
 MAX_READ_BYTES = 16_000
 MAX_WRITE_BYTES = 64_000
 MAX_WRITE_PREVIEW_CHARS = 600
+IGNORED_LISTING_NAMES = {".git", ".venv", "__pycache__", "tests_runtime"}
 
 
 def _resolve_workspace_path(path: str) -> tuple[Path | None, str | None]:
@@ -37,7 +38,14 @@ def list_files(path: str = ".") -> str:
     if not directory.is_dir():
         return f"No es una carpeta valida: {path}"
 
-    items = sorted(directory.iterdir(), key=lambda item: (not item.is_dir(), item.name.lower()))
+    items = sorted(
+        (
+            item
+            for item in directory.iterdir()
+            if item.name not in IGNORED_LISTING_NAMES
+        ),
+        key=lambda item: (not item.is_dir(), item.name.lower()),
+    )
 
     if not items:
         return "La carpeta esta vacia."

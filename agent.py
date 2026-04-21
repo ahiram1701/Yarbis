@@ -1,10 +1,12 @@
+import sys
+
 from ollama import Client
 
 from memory import load_state, save_state
 from tools import list_files, read_text_file, write_text_file
 
 MODEL = "qwen3.5:2b"
-OLLAMA_TIMEOUT_SECONDS = 60
+OLLAMA_TIMEOUT_SECONDS = 180
 
 client = Client(timeout=OLLAMA_TIMEOUT_SECONDS)
 tool_definitions = [list_files, read_text_file, write_text_file]
@@ -30,8 +32,16 @@ Reglas:
 """
 
 
+def _print_output(text: str):
+    try:
+        print(text)
+    except UnicodeEncodeError:
+        encoding = sys.stdout.encoding or "utf-8"
+        safe_text = text.encode(encoding, errors="replace").decode(encoding, errors="replace")
+        print(safe_text)
+
+
 def build_messages(state):
-    memory_block = "\n".join(f"- {note}" for note in state["notes"]) or "Sin notas previas."
     last_result = state.get("last_result", "")
 
     messages = [
@@ -41,9 +51,6 @@ def build_messages(state):
             "content": f"""
 Objetivo actual:
 {state['goal']}
-
-Notas guardadas:
-{memory_block}
 
 Ultimo resultado:
 {last_result}
@@ -66,7 +73,7 @@ def _record_assistant_message(state, content: str):
 
 def _handle_chat_error(state, exc: Exception):
     error_text = f"No pude consultar Ollama en este ciclo: {exc}"
-    print(f"\nYarbis:\n{error_text}")
+    _print_output(f"\nYarbis:\n{error_text}")
     _record_assistant_message(state, error_text)
 
 
@@ -84,6 +91,7 @@ def run_one_cycle(max_steps=5):
                 model=MODEL,
                 messages=build_messages(state),
                 tools=tool_definitions,
+                think=False,
             )
         except Exception as exc:
             _handle_chat_error(state, exc)
@@ -125,7 +133,7 @@ def run_one_cycle(max_steps=5):
                     except Exception as exc:
                         tool_output = f"Error ejecutando {tool_name}: {exc}"
 
-                print(f"> Resultado:\n{tool_output}")
+                _print_output(f"> Resultado:\n{tool_output}")
 
                 state["messages"].append({
                     "role": "tool",
@@ -138,10 +146,10 @@ def run_one_cycle(max_steps=5):
             continue
 
         final_text = assistant_content.strip() or "(respuesta vacia del modelo)"
-        print(f"\nYarbis:\n{final_text}")
+        _print_output(f"\nYarbis:\n{final_text}")
         _record_assistant_message(state, final_text)
         return
 
     final_text = f"Se alcanzo el maximo de pasos ({max_steps}) sin una respuesta final."
-    print(f"\nYarbis:\n{final_text}")
+    _print_output(f"\nYarbis:\n{final_text}")
     _record_assistant_message(state, final_text)

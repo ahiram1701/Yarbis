@@ -5,8 +5,6 @@ STATE_FILE = Path("state.json")
 DEFAULT_GOAL = "Ayudar al usuario de forma autonoma con tareas locales."
 MAX_MESSAGES = 40
 MAX_MESSAGE_CHARS = 4_000
-MAX_NOTES = 20
-MAX_NOTE_CHARS = 400
 MAX_LAST_RESULT_CHARS = 4_000
 
 
@@ -14,7 +12,6 @@ def default_state():
     return {
         "goal": DEFAULT_GOAL,
         "messages": [],
-        "notes": [],
         "last_result": "",
         "cycle_count": 0,
     }
@@ -65,13 +62,6 @@ def normalize_state(state):
         normalized["cycle_count"] = 0
 
     normalized["last_result"] = _truncate_text(state.get("last_result", ""), MAX_LAST_RESULT_CHARS)
-
-    raw_notes = state.get("notes", [])
-    if isinstance(raw_notes, list):
-        normalized["notes"] = [
-            _truncate_text(note, MAX_NOTE_CHARS)
-            for note in raw_notes[-MAX_NOTES:]
-        ]
 
     raw_messages = state.get("messages", [])
     if isinstance(raw_messages, list):
