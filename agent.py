@@ -1,10 +1,13 @@
 from ollama import Client
+
 from memory import load_state, save_state
 from tools import list_files, read_text_file, write_text_file
 
 MODEL = "qwen3.5:2b"
+OLLAMA_TIMEOUT_SECONDS = 60
 
-client = Client()
+client = Client(timeout=OLLAMA_TIMEOUT_SECONDS)
+tool_definitions = [list_files, read_text_file, write_text_file]
 
 available_functions = {
     "list_files": list_files,
@@ -13,17 +16,17 @@ available_functions = {
 }
 
 SYSTEM_PROMPT = """
-Eres Yarbis, un agente autónomo local.
+Eres Yarbis, un agente autonomo local.
 Tu trabajo es avanzar paso a paso hacia el objetivo del usuario.
 
 Reglas:
-- Sé útil, preciso y orientado a acciones.
+- Se util, preciso y orientado a acciones.
 - Usa herramientas cuando sea necesario.
 - No inventes resultados de herramientas.
-- Trabaja en pasos pequeños y claros.
-- Después de cada acción, evalúa qué sigue.
-- Si una tarea ya quedó resuelta, dilo claramente.
-- Responde en español.
+- Trabaja en pasos pequenos y claros.
+- Despues de cada accion, evalua que sigue.
+- Si una tarea ya quedo resuelta, dilo claramente.
+- Responde en espanol.
 """
 
 
@@ -42,14 +45,29 @@ Objetivo actual:
 Notas guardadas:
 {memory_block}
 
-Último resultado:
+Ultimo resultado:
 {last_result}
-""".strip()
-        }
+""".strip(),
+        },
     ]
 
     messages.extend(state["messages"][-20:])
     return messages
+
+
+def _record_assistant_message(state, content: str):
+    state["messages"].append({
+        "role": "assistant",
+        "content": content,
+    })
+    state["last_result"] = content
+    save_state(state)
+
+
+def _handle_chat_error(state, exc: Exception):
+    error_text = f"No pude consultar Ollama en este ciclo: {exc}"
+    print(f"\nYarbis:\n{error_text}")
+    _record_assistant_message(state, error_text)
 
 
 def run_one_cycle(max_steps=5):
@@ -61,17 +79,21 @@ def run_one_cycle(max_steps=5):
     for step in range(1, max_steps + 1):
         print(f"\n--- Paso {step} ---")
 
-        response = client.chat(
-            model=MODEL,
-            messages=build_messages(state),
-            tools=[list_files, read_text_file, write_text_file],
-        )
+        try:
+            response = client.chat(
+                model=MODEL,
+                messages=build_messages(state),
+                tools=tool_definitions,
+            )
+        except Exception as exc:
+            _handle_chat_error(state, exc)
+            return
 
         assistant_message = response.message
         assistant_content = assistant_message.content or ""
 
         if assistant_message.tool_calls:
-            print("Yarbis decidió usar tools.")
+            print("Yarbis decidio usar tools.")
 
             state["messages"].append({
                 "role": "assistant",
@@ -79,12 +101,12 @@ def run_one_cycle(max_steps=5):
                 "tool_calls": [
                     {
                         "function": {
-                            "name": tc.function.name,
-                            "arguments": tc.function.arguments
+                            "name": tool_call.function.name,
+                            "arguments": tool_call.function.arguments,
                         }
                     }
-                    for tc in assistant_message.tool_calls
-                ]
+                    for tool_call in assistant_message.tool_calls
+                ],
             })
 
             for tool_call in assistant_message.tool_calls:
@@ -95,51 +117,31 @@ def run_one_cycle(max_steps=5):
                 print(f"> Argumentos: {tool_args}")
 
                 function_to_call = available_functions.get(tool_name)
-
                 if not function_to_call:
                     tool_output = f"Tool no encontrada: {tool_name}"
                 else:
                     try:
                         tool_output = function_to_call(**tool_args)
-                    except Exception as e:
-                        tool_output = f"Error ejecutando {tool_name}: {e}"
+                    except Exception as exc:
+                        tool_output = f"Error ejecutando {tool_name}: {exc}"
 
                 print(f"> Resultado:\n{tool_output}")
 
                 state["messages"].append({
                     "role": "tool",
                     "tool_name": tool_name,
-                    "content": str(tool_output)
+                    "content": str(tool_output),
                 })
-
                 state["last_result"] = str(tool_output)
 
             save_state(state)
             continue
 
-        else:
-            final_text = assistant_content.strip()
+        final_text = assistant_content.strip() or "(respuesta vacia del modelo)"
+        print(f"\nYarbis:\n{final_text}")
+        _record_assistant_message(state, final_text)
+        return
 
-            if not final_text:
-                final_text = "(respuesta vacía del modelo)"
-
-            print(f"\nYarbis:\n{final_text}")
-
-            state["messages"].append({
-                "role": "assistant",
-                "content": final_text
-            })
-
-            state["last_result"] = final_text
-            save_state(state)
-            return
-
-    final_text = f"Se alcanzó el máximo de pasos ({max_steps}) sin una respuesta final."
+    final_text = f"Se alcanzo el maximo de pasos ({max_steps}) sin una respuesta final."
     print(f"\nYarbis:\n{final_text}")
-
-    state["messages"].append({
-        "role": "assistant",
-        "content": final_text
-    })
-    state["last_result"] = final_text
-    save_state(state)
+    _record_assistant_message(state, final_text)

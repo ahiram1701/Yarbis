@@ -1,5 +1,5 @@
-from memory import load_state, save_state
 from agent import run_one_cycle
+from memory import load_state, save_state
 
 
 def main():
@@ -10,38 +10,62 @@ def main():
     print("Comandos: goal, run, auto, exit\n")
 
     while True:
-        cmd = input(">>> ").strip()
+        try:
+            cmd = input(">>> ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print("\nSaliendo.")
+            break
 
         if cmd == "exit":
             break
 
-        elif cmd == "goal":
-            new_goal = input("Nuevo objetivo: ").strip()
+        if cmd == "goal":
+            try:
+                new_goal = input("Nuevo objetivo: ").strip()
+            except (EOFError, KeyboardInterrupt):
+                print("\nOperacion cancelada.")
+                continue
+
+            if not new_goal:
+                print("El objetivo no puede quedar vacio.")
+                continue
+
             state = load_state()
             state["goal"] = new_goal
             state["messages"].append({
                 "role": "user",
-                "content": f"Tu objetivo actual es: {new_goal}"
+                "content": f"Tu objetivo actual es: {new_goal}",
             })
             save_state(state)
             print("Objetivo actualizado.")
+            continue
 
-        elif cmd == "run":
+        if cmd == "run":
             run_one_cycle()
+            continue
 
-        elif cmd == "auto":
-            cycles = input("¿Cuántos ciclos?: ").strip()
+        if cmd == "auto":
             try:
-                cycles = int(cycles)
+                cycles_text = input("Cuantos ciclos?: ").strip()
+            except (EOFError, KeyboardInterrupt):
+                print("\nOperacion cancelada.")
+                continue
+
+            try:
+                cycles = int(cycles_text)
             except ValueError:
-                print("Número inválido.")
+                print("Numero invalido.")
+                continue
+
+            if cycles <= 0:
+                print("Debes indicar un numero mayor que cero.")
                 continue
 
             for _ in range(cycles):
                 run_one_cycle()
+            continue
 
-        else:
-            print("Comando no reconocido.")
+        print("Comando no reconocido.")
 
 
 if __name__ == "__main__":
