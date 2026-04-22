@@ -1,41 +1,7 @@
 from agent import run_autonomous_session, run_one_cycle
-from memory import load_state, render_state_summary, save_state
+from memory import load_state, render_state_summary
+from session import has_pending_user_question, submit_user_reply, update_goal
 from tools import add_task, save_note, update_profile
-
-
-def _has_pending_user_question(state) -> bool:
-    awaiting_user_input = state.get("awaiting_user_input", {})
-    return bool(
-        awaiting_user_input.get("pending")
-        and str(awaiting_user_input.get("question", "")).strip()
-    )
-
-
-def _clear_pending_user_question(state):
-    state["awaiting_user_input"] = {
-        "pending": False,
-        "question": "",
-        "reason": "",
-        "fields": [],
-    }
-
-
-def _submit_user_reply(reply_text: str):
-    cleaned_reply = str(reply_text).strip()
-    if not cleaned_reply:
-        print("La respuesta no puede quedar vacia.")
-        return
-
-    state = load_state()
-    state["messages"].append({
-        "role": "user",
-        "content": cleaned_reply,
-    })
-    _clear_pending_user_question(state)
-    save_state(state)
-
-    print("Respuesta guardada. Ejecutando un ciclo con esta informacion.")
-    run_one_cycle()
 
 
 def main():
@@ -44,7 +10,7 @@ def main():
     print("=== YARBIS ===")
     print(f"Objetivo actual: {state['goal']}")
     print("Comandos: goal, run, auto, status, profile, note, task, reply, exit")
-    if _has_pending_user_question(state):
+    if has_pending_user_question(state):
         print(f"Pendiente: {state['awaiting_user_input']['question']}")
     print()
 
@@ -72,24 +38,12 @@ def main():
                 print("El objetivo no puede quedar vacio.")
                 continue
 
-            state = load_state()
-            state["goal"] = new_goal
-            state["messages"] = []
-            state["tasks"] = []
-            state["current_plan"] = []
-            state["last_result"] = ""
-            _clear_pending_user_question(state)
-            state["messages"].append({
-                "role": "user",
-                "content": f"Tu objetivo actual es: {new_goal}",
-            })
-            save_state(state)
-            print("Objetivo actualizado. Contexto operativo reiniciado para el nuevo objetivo.")
+            print(update_goal(new_goal))
             continue
 
         if cmd == "run":
             state = load_state()
-            if _has_pending_user_question(state):
+            if has_pending_user_question(state):
                 print("Yarbis esta esperando tu respuesta antes de continuar.")
                 print(f"Pregunta pendiente: {state['awaiting_user_input']['question']}")
                 print("Usa `reply` o escribe la respuesta directamente en la consola.")
@@ -154,12 +108,15 @@ def main():
                 print("\nOperacion cancelada.")
                 continue
 
-            _submit_user_reply(reply_text)
+            try:
+                print(submit_user_reply(reply_text))
+            except ValueError as exc:
+                print(exc)
             continue
 
         if cmd == "auto":
             state = load_state()
-            if _has_pending_user_question(state):
+            if has_pending_user_question(state):
                 print("Yarbis esta esperando tu respuesta antes de continuar.")
                 print(f"Pregunta pendiente: {state['awaiting_user_input']['question']}")
                 print("Usa `reply` o escribe la respuesta directamente en la consola.")
@@ -189,8 +146,11 @@ def main():
             continue
 
         state = load_state()
-        if _has_pending_user_question(state):
-            _submit_user_reply(cmd)
+        if has_pending_user_question(state):
+            try:
+                print(submit_user_reply(cmd))
+            except ValueError as exc:
+                print(exc)
             continue
 
         print("Comando no reconocido. Usa `reply` para enviar contexto libre al agente.")

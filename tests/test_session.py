@@ -1,0 +1,82 @@
+import unittest
+from pathlib import Path
+from unittest.mock import patch
+
+import memory
+import session
+
+TEST_RUNTIME_DIR = Path.cwd() / "tests_runtime"
+
+
+class SessionTestCase(unittest.TestCase):
+    def test_update_goal_resets_operational_context(self):
+        state_path = TEST_RUNTIME_DIR / "session_goal_state.json"
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+
+        seeded_state = memory.normalize_state({
+            "goal": "Objetivo viejo",
+            "messages": [{"role": "assistant", "content": "avance previo"}],
+            "tasks": [{"id": "task-1", "title": "Vieja tarea", "status": "pending"}],
+            "current_plan": ["Paso 1"],
+            "last_result": "resultado anterior",
+            "awaiting_user_input": {
+                "pending": True,
+                "question": "Que prioridad tiene esto?",
+            },
+        })
+
+        with patch.object(memory, "STATE_FILE", state_path):
+            memory.save_state(seeded_state)
+            result = session.update_goal("Nuevo objetivo claro")
+            state = memory.load_state()
+
+        self.assertIn("Objetivo actualizado", result)
+        self.assertEqual(state["goal"], "Nuevo objetivo claro")
+        self.assertEqual(state["tasks"], [])
+        self.assertEqual(state["current_plan"], [])
+        self.assertEqual(state["last_result"], "")
+        self.assertFalse(state["awaiting_user_input"]["pending"])
+        self.assertEqual(len(state["messages"]), 1)
+        self.assertIn("Nuevo objetivo claro", state["messages"][0]["content"])
+
+    def test_submit_user_reply_clears_pending_question_and_runs_cycle(self):
+        state_path = TEST_RUNTIME_DIR / "session_reply_state.json"
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+
+        seeded_state = memory.normalize_state({
+            "awaiting_user_input": {
+                "pending": True,
+                "question": "Que nicho quieres trabajar?",
+                "reason": "Falta contexto",
+            }
+        })
+
+        with patch.object(memory, "STATE_FILE", state_path):
+            memory.save_state(seeded_state)
+            with patch.object(session, "run_one_cycle", return_value={"content": "Respuesta procesada"}):
+                result = session.submit_user_reply("Trabajemos el nicho fitness")
+                state = memory.load_state()
+
+        self.assertIn("Respuesta guardada", result)
+        self.assertIn("Respuesta procesada", result)
+        self.assertFalse(state["awaiting_user_input"]["pending"])
+        self.assertEqual(state["messages"][-1]["role"], "user")
+        self.assertEqual(state["messages"][-1]["content"], "Trabajemos el nicho fitness")
+
+    def test_run_auto_with_output_adds_summary_even_without_stdout(self):
+        with patch.object(session, "run_autonomous_session", return_value=3):
+            result = session.run_auto_with_output(cycles=3)
+
+        self.assertIn("Modo autonomo ejecutado por 3 ciclo(s).", result)
+
+    def test_update_ui_theme_persists_theme(self):
+        state_path = TEST_RUNTIME_DIR / "session_theme_state.json"
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+
+        with patch.object(memory, "STATE_FILE", state_path):
+            memory.save_state(memory.default_state())
+            result = session.update_ui_theme("light")
+            state = memory.load_state()
+
+        self.assertIn("Tema actualizado", result)
+        self.assertEqual(state["ui"]["theme"], "light")

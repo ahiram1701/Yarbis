@@ -25,6 +25,7 @@ DEFAULT_MAX_STEPS_PER_CYCLE = 5
 DEFAULT_AUTO_CYCLES = 5
 VALID_TASK_STATUS = {"pending", "in_progress", "blocked", "done"}
 VALID_TASK_PRIORITY = {"alta", "media", "baja"}
+VALID_UI_THEME = {"light", "dark"}
 
 
 def default_state():
@@ -51,6 +52,9 @@ def default_state():
         "autonomy": {
             "max_steps_per_cycle": DEFAULT_MAX_STEPS_PER_CYCLE,
             "auto_cycles_default": DEFAULT_AUTO_CYCLES,
+        },
+        "ui": {
+            "theme": "dark",
         },
     }
 
@@ -250,6 +254,20 @@ def _normalize_awaiting_user_input(awaiting_user_input):
     }
 
 
+def _normalize_ui(ui):
+    defaults = default_state()["ui"]
+    if not isinstance(ui, dict):
+        ui = {}
+
+    theme = str(ui.get("theme", defaults["theme"])).strip().lower()
+    if theme not in VALID_UI_THEME:
+        theme = defaults["theme"]
+
+    return {
+        "theme": theme,
+    }
+
+
 def normalize_state(state):
     normalized = default_state()
 
@@ -271,6 +289,7 @@ def normalize_state(state):
         state.get("awaiting_user_input", {}),
     )
     normalized["autonomy"] = _normalize_autonomy(state.get("autonomy", {}))
+    normalized["ui"] = _normalize_ui(state.get("ui", {}))
 
     raw_messages = state.get("messages", [])
     if isinstance(raw_messages, list):

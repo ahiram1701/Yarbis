@@ -91,3 +91,14 @@ class MemoryTestCase(unittest.TestCase):
             memory.MAX_AWAITING_INPUT_QUESTION_CHARS + len("\n\n...[truncado 99 caracteres]"),
         )
         self.assertEqual(pending["fields"], ["nicho", "audiencia"])
+
+    def test_normalize_state_uses_supported_ui_theme(self):
+        normalized = memory.normalize_state({
+            "ui": {"theme": "light"}
+        })
+        fallback = memory.normalize_state({
+            "ui": {"theme": "neon"}
+        })
+
+        self.assertEqual(normalized["ui"]["theme"], "light")
+        self.assertEqual(fallback["ui"]["theme"], "dark")

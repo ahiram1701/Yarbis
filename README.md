@@ -24,7 +24,24 @@ python -m venv .venv
 pip install -r requirements.txt
 ```
 
-## Uso
+## Uso rapido sin terminal
+
+Si ya tienes `.venv` y dependencias listas, ahora puedes abrir Yarbis con doble clic:
+
+- `abrir_yarbis.vbs`: lanza la app de escritorio sin mostrar consola
+- `abrir_yarbis.cmd`: alternativa visible por si quieres revisar errores de arranque
+
+La interfaz de escritorio te deja:
+
+- cambiar objetivo
+- ejecutar un ciclo o varios en modo autonomo
+- alternar entre modo oscuro y claro, recordando tu preferencia
+- responder preguntas pendientes
+- editar perfil
+- guardar notas y tareas
+- revisar el estado sin tocar la terminal
+
+## Uso por terminal
 
 ```bash
 python main.py
@@ -79,7 +96,7 @@ Puedes cambiar modelo y timeout sin editar el codigo:
 ```powershell
 $env:YARBIS_MODEL="qwen3.5:2b"
 $env:YARBIS_OLLAMA_TIMEOUT_SECONDS="900"
-python main.py
+.venv\Scripts\python.exe yarbis_desktop.py
 ```
 
 Si tu equipo va justo de CPU o RAM, suele ayudar mucho subir el timeout y evitar dejar `auto` corriendo demasiados ciclos seguidos.
@@ -93,7 +110,7 @@ Si tu equipo va justo de CPU o RAM, suele ayudar mucho subir el timeout y evitar
 
 ## Limitaciones actuales
 
-- Sigue siendo un agente local de terminal, no un daemon del sistema operativo.
+- Sigue siendo un agente local de escritorio o terminal, no un daemon del sistema operativo.
 - No integra aun calendario, correo, navegador ni comandos del sistema fuera del workspace.
 - Su autonomia depende del modelo disponible en Ollama y de la calidad del objetivo inicial.
 
