@@ -128,12 +128,21 @@ def submit_user_reply(reply_text: str) -> str:
         raise ValueError("La respuesta no puede quedar vacia.")
 
     state = load_state()
+    had_pending_question = has_pending_user_question(state)
+    auto_cycles_default = state["autonomy"]["auto_cycles_default"]
     state["messages"].append({
         "role": "user",
         "content": cleaned_reply,
     })
     clear_pending_user_question(state)
     save_state(state)
+
+    if had_pending_question:
+        auto_output = run_auto_with_output(cycles=auto_cycles_default)
+        return (
+            "Respuesta guardada. Retomando el modo autonomo con esta informacion.\n\n"
+            f"{auto_output}"
+        )
 
     cycle_output = run_cycle_with_output()
     return f"Respuesta guardada. Ejecutando un ciclo con esta informacion.\n\n{cycle_output}"

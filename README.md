@@ -56,7 +56,7 @@ Comandos disponibles:
 - `profile`: actualiza nombre, contexto, preferencias y restricciones
 - `note`: guarda una nota rapida persistente
 - `task`: agrega una tarea manual al backlog
-- `reply`: envia una respuesta libre al agente y ejecuta un ciclo con esa informacion
+- `reply`: envia una respuesta libre al agente; si habia una pregunta pendiente, reanuda el modo autonomo, y si no, ejecuta un ciclo con esa informacion
 - `exit`: termina la sesion
 
 Si Yarbis detecta que le falta un dato importante, ahora debe pedirlo en vez de inventarlo. Cuando eso pase:
@@ -80,7 +80,7 @@ Un flujo util suele ser:
 3. Si hace falta, agrega notas o tareas manuales con `note` y `task`.
 4. Ejecuta `run` para un paso controlado o `auto` para dejarlo avanzar solo varios ciclos.
 
-Si el agente te hace una pregunta para destrabar el trabajo, respondela y Yarbis retomara el flujo desde ahi en el siguiente ciclo.
+Si el agente te hace una pregunta para destrabar el trabajo, respondela y Yarbis retomara automaticamente el modo autonomo desde ahi.
 
 Ejemplos de cosas que puedes guardar en `profile`:
 

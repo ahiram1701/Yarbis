@@ -550,11 +550,14 @@ class YarbisDesktop(tk.Tk):
         pending_question = state["awaiting_user_input"].get("question", "").strip()
         if has_pending_user_question(state):
             self.pending_var.set(pending_question)
+            self.status_var.set("Esperando respuesta del usuario.")
+            self.send_button.configure(text="Responder y continuar")
         else:
             self.pending_var.set("Sin preguntas pendientes.")
+            self.status_var.set("Listo.")
+            self.send_button.configure(text="Enviar y ejecutar")
 
         self._set_text(self.summary_text, render_state_summary(state))
-        self.status_var.set("Listo.")
 
     def _set_busy(self, busy: bool, status_text: str = ""):
         self._busy = busy
@@ -598,9 +601,13 @@ class YarbisDesktop(tk.Tk):
         self.after(150, self._poll_worker_queue)
 
     def _run_cycle(self):
+        if self._show_pending_user_question():
+            return
         self._start_background_job("Ciclo", run_cycle_with_output)
 
     def _run_auto(self):
+        if self._show_pending_user_question():
+            return
         default_cycles = load_state()["autonomy"]["auto_cycles_default"]
         cycles = simpledialog.askinteger(
             "Modo autonomo",
@@ -613,6 +620,25 @@ class YarbisDesktop(tk.Tk):
         if cycles is None:
             return
         self._start_background_job("Modo autonomo", run_auto_with_output, cycles)
+
+    def _show_pending_user_question(self) -> bool:
+        state = load_state()
+        if not has_pending_user_question(state):
+            return False
+
+        pending_question = state["awaiting_user_input"].get("question", "").strip()
+        self.refresh_state_view()
+        self.reply_text.focus_set()
+        messagebox.showinfo(
+            "Yarbis",
+            (
+                "Yarbis necesita tu respuesta antes de continuar.\n"
+                "Cuando respondas, retomara el modo autonomo.\n\n"
+                f"{pending_question}"
+            ).strip(),
+            parent=self,
+        )
+        return True
 
     def _toggle_theme(self):
         next_theme = "light" if self.current_theme_name == "dark" else "dark"

@@ -1,4 +1,5 @@
 import os
+import re
 import sys
 
 from ollama import Client
@@ -144,6 +145,22 @@ def _handle_empty_response(state):
     return error_text
 
 
+def _build_waiting_for_user_input_result(state, used_tools: bool = False) -> dict:
+    question = state["awaiting_user_input"]["question"]
+    message = "Yarbis esta esperando una respuesta del usuario antes de continuar."
+    if question:
+        message = f"{message}\nPregunta pendiente: {question}"
+
+    _print_output(f"\nYarbis:\n{message}")
+    return {
+        "status": "waiting_for_user_input",
+        "content": message,
+        "used_tools": used_tools,
+        "looks_meta": False,
+        "needs_user_input": True,
+    }
+
+
 def _looks_like_meta_response(text: str) -> bool:
     normalized = " ".join(str(text).strip().lower().split())
     if not normalized:
@@ -181,8 +198,6 @@ def _extract_user_input_request(text: str) -> str:
     if not paragraphs:
         return ""
 
-    candidate = paragraphs[-1]
-    normalized = " ".join(candidate.lower().split())
     interactive_phrases = (
         "deseas",
         "prefieres",
@@ -197,20 +212,49 @@ def _extract_user_input_request(text: str) -> str:
         "comparteme",
         "confirmame",
         "confirma",
+        "que",
+        "qué",
         "cual",
+        "cuál",
+        "cuales",
+        "cuáles",
+        "quien",
+        "quién",
+        "como",
+        "cómo",
+        "donde",
+        "dónde",
+        "cuando",
+        "cuándo",
+        "cuanto",
+        "cuánto",
     )
 
-    if "?" not in candidate:
-        return ""
+    candidates = []
+    for paragraph in paragraphs:
+        lines = [line.strip() for line in paragraph.splitlines() if line.strip()]
+        for line in lines:
+            candidate = re.sub(r"^[-*•\d\.\)\s]+", "", line).strip()
+            if candidate:
+                candidates.append(candidate)
+        candidates.append(paragraph)
 
-    if not any(phrase in normalized for phrase in interactive_phrases):
-        return ""
+    for candidate in candidates:
+        if "?" not in candidate:
+            continue
 
-    return candidate
+        normalized = " ".join(candidate.lower().split())
+        if any(phrase in normalized for phrase in interactive_phrases):
+            return candidate
+
+    return ""
 
 
 def run_one_cycle(max_steps=None):
     state = load_state()
+    if _is_waiting_for_user_input(state):
+        return _build_waiting_for_user_input_result(state)
+
     state["cycle_count"] += 1
     save_state(state)
 
@@ -254,6 +298,7 @@ def run_one_cycle(max_steps=None):
                     for tool_call in assistant_message.tool_calls
                 ],
             })
+            save_state(state)
 
             for tool_call in assistant_message.tool_calls:
                 tool_name = tool_call.function.name
@@ -273,14 +318,18 @@ def run_one_cycle(max_steps=None):
 
                 _print_output(f"> Resultado:\n{tool_output}")
 
-                state["messages"].append({
+                refreshed_state = load_state()
+                refreshed_state["messages"].append({
                     "role": "tool",
                     "tool_name": tool_name,
                     "content": str(tool_output),
                 })
-                state["last_result"] = str(tool_output)
+                refreshed_state["last_result"] = str(tool_output)
+                save_state(refreshed_state)
+                state = refreshed_state
 
-            save_state(state)
+            if _is_waiting_for_user_input(state):
+                return _build_waiting_for_user_input_result(state, used_tools=used_tools)
             continue
 
         final_text = assistant_content.strip()

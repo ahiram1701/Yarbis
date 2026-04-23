@@ -39,7 +39,7 @@ class SessionTestCase(unittest.TestCase):
         self.assertEqual(len(state["messages"]), 1)
         self.assertIn("Nuevo objetivo claro", state["messages"][0]["content"])
 
-    def test_submit_user_reply_clears_pending_question_and_runs_cycle(self):
+    def test_submit_user_reply_clears_pending_question_and_resumes_autonomy(self):
         state_path = TEST_RUNTIME_DIR / "session_reply_state.json"
         state_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -48,20 +48,41 @@ class SessionTestCase(unittest.TestCase):
                 "pending": True,
                 "question": "Que nicho quieres trabajar?",
                 "reason": "Falta contexto",
-            }
+            },
+            "autonomy": {
+                "auto_cycles_default": 4,
+            },
         })
 
         with patch.object(memory, "STATE_FILE", state_path):
             memory.save_state(seeded_state)
-            with patch.object(session, "run_one_cycle", return_value={"content": "Respuesta procesada"}):
+            with patch.object(session, "run_auto_with_output", return_value="Modo autonomo ejecutado por 4 ciclo(s).") as auto_mock:
                 result = session.submit_user_reply("Trabajemos el nicho fitness")
                 state = memory.load_state()
 
         self.assertIn("Respuesta guardada", result)
-        self.assertIn("Respuesta procesada", result)
+        self.assertIn("Retomando el modo autonomo", result)
+        self.assertIn("Modo autonomo ejecutado por 4 ciclo(s).", result)
+        self.assertEqual(auto_mock.call_count, 1)
+        self.assertEqual(auto_mock.call_args.kwargs["cycles"], 4)
         self.assertFalse(state["awaiting_user_input"]["pending"])
         self.assertEqual(state["messages"][-1]["role"], "user")
         self.assertEqual(state["messages"][-1]["content"], "Trabajemos el nicho fitness")
+
+    def test_submit_user_reply_without_pending_question_runs_single_cycle(self):
+        state_path = TEST_RUNTIME_DIR / "session_reply_freeform_state.json"
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+
+        with patch.object(memory, "STATE_FILE", state_path):
+            memory.save_state(memory.default_state())
+            with patch.object(session, "run_cycle_with_output", return_value="Ciclo ejecutado.") as cycle_mock:
+                result = session.submit_user_reply("Te comparto mas contexto")
+                state = memory.load_state()
+
+        self.assertIn("Ejecutando un ciclo", result)
+        self.assertIn("Ciclo ejecutado.", result)
+        self.assertEqual(cycle_mock.call_count, 1)
+        self.assertEqual(state["messages"][-1]["content"], "Te comparto mas contexto")
 
     def test_run_auto_with_output_adds_summary_even_without_stdout(self):
         with patch.object(session, "run_autonomous_session", return_value=3):
