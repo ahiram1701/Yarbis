@@ -40,6 +40,7 @@ La interfaz de escritorio te deja:
 - editar perfil
 - guardar notas y tareas
 - revisar el estado sin tocar la terminal
+- recibir notificaciones nativas de Windows cuando Yarbis termina el modo autonomo o necesita una respuesta tuya
 
 ## Uso por terminal
 
@@ -96,6 +97,13 @@ Puedes cambiar modelo y timeout sin editar el codigo:
 ```powershell
 $env:YARBIS_MODEL="qwen3.5:2b"
 $env:YARBIS_OLLAMA_TIMEOUT_SECONDS="900"
+.venv\Scripts\python.exe yarbis_desktop.py
+```
+
+Si prefieres desactivar las notificaciones de Windows:
+
+```powershell
+$env:YARBIS_NOTIFICATIONS="0"
 .venv\Scripts\python.exe yarbis_desktop.py
 ```
 

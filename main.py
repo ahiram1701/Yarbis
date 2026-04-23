@@ -1,6 +1,11 @@
-from agent import run_autonomous_session, run_one_cycle
 from memory import load_state, render_state_summary
-from session import has_pending_user_question, submit_user_reply, update_goal
+from session import (
+    has_pending_user_question,
+    run_auto_with_output,
+    run_cycle_with_output,
+    submit_user_reply,
+    update_goal,
+)
 from tools import add_task, save_note, update_profile
 
 
@@ -49,7 +54,7 @@ def main():
                 print("Usa `reply` o escribe la respuesta directamente en la consola.")
                 continue
 
-            run_one_cycle()
+            print(run_cycle_with_output())
             continue
 
         if cmd == "status":
@@ -141,8 +146,7 @@ def main():
                 print("Debes indicar un numero mayor que cero.")
                 continue
 
-            executed_cycles = run_autonomous_session(cycles=cycles)
-            print(f"Modo autonomo ejecutado por {executed_cycles} ciclo(s).")
+            print(run_auto_with_output(cycles=cycles))
             continue
 
         state = load_state()

@@ -3,6 +3,7 @@ import io
 
 from agent import run_autonomous_session, run_one_cycle
 from memory import load_state, render_state_summary, save_state
+from notifications import notify_user_input_required, send_notification
 from tools import add_task, save_note, update_profile
 
 
@@ -21,6 +22,13 @@ def clear_pending_user_question(state):
         "reason": "",
         "fields": [],
     }
+
+
+def _has_open_tasks(state) -> bool:
+    return any(
+        task["status"] in {"pending", "in_progress", "blocked"}
+        for task in state.get("tasks", [])
+    )
 
 
 def update_goal(new_goal: str) -> str:
@@ -108,6 +116,14 @@ def _capture_operation_output(func, *args, **kwargs) -> tuple[str, object]:
 
 def run_cycle_with_output() -> str:
     output, _ = _capture_operation_output(run_one_cycle)
+    state = load_state()
+
+    if has_pending_user_question(state):
+        notify_user_input_required(
+            state["awaiting_user_input"].get("question", ""),
+            state["awaiting_user_input"].get("reason", ""),
+        )
+
     return output or "Ciclo ejecutado sin salida visible."
 
 
@@ -116,6 +132,24 @@ def run_auto_with_output(cycles=None) -> str:
         run_autonomous_session,
         cycles=cycles,
     )
+    state = load_state()
+
+    if has_pending_user_question(state):
+        notify_user_input_required(
+            state["awaiting_user_input"].get("question", ""),
+            state["awaiting_user_input"].get("reason", ""),
+        )
+    elif executed_cycles > 0 and not _has_open_tasks(state):
+        send_notification(
+            "Yarbis termino el trabajo actual",
+            state.get("last_result", "").strip() or "No quedan tareas abiertas.",
+        )
+    elif executed_cycles > 0:
+        send_notification(
+            "Yarbis termino el modo autonomo",
+            f"Se ejecutaron {executed_cycles} ciclo(s).",
+        )
+
     summary = f"Modo autonomo ejecutado por {executed_cycles} ciclo(s)."
     if not output:
         return summary

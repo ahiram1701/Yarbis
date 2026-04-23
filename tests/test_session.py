@@ -90,6 +90,34 @@ class SessionTestCase(unittest.TestCase):
 
         self.assertIn("Modo autonomo ejecutado por 3 ciclo(s).", result)
 
+    def test_run_cycle_with_output_notifies_when_user_input_is_pending(self):
+        state_path = TEST_RUNTIME_DIR / "session_notification_state.json"
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+
+        seeded_state = memory.normalize_state({
+            "awaiting_user_input": {
+                "pending": True,
+                "question": "Que nicho quieres trabajar?",
+                "reason": "Falta contexto",
+            },
+        })
+
+        with patch.object(memory, "STATE_FILE", state_path):
+            memory.save_state(seeded_state)
+            with patch.object(
+                session,
+                "_capture_operation_output",
+                return_value=("Ciclo ejecutado.", {"status": "waiting_for_user_input"}),
+            ):
+                with patch.object(session, "notify_user_input_required", return_value=True) as notify_mock:
+                    result = session.run_cycle_with_output()
+
+        self.assertEqual(result, "Ciclo ejecutado.")
+        notify_mock.assert_called_once_with(
+            "Que nicho quieres trabajar?",
+            "Falta contexto",
+        )
+
     def test_update_ui_theme_persists_theme(self):
         state_path = TEST_RUNTIME_DIR / "session_theme_state.json"
         state_path.parent.mkdir(parents=True, exist_ok=True)
