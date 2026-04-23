@@ -102,3 +102,28 @@ class MemoryTestCase(unittest.TestCase):
 
         self.assertEqual(normalized["ui"]["theme"], "light")
         self.assertEqual(fallback["ui"]["theme"], "dark")
+
+    def test_normalize_state_sanitizes_notification_settings(self):
+        normalized = memory.normalize_state({
+            "notifications": {
+                "enabled": True,
+                "channels": "windows, ntfy, desconocido, ntfy",
+                "ntfy": {
+                    "server": "",
+                    "topic": "/yarbis-secret/",
+                    "token": "token-123",
+                    "priority": "urgent",
+                    "tags": "yarbis,warning",
+                    "timeout_seconds": 120,
+                },
+            },
+        })
+
+        settings = normalized["notifications"]
+
+        self.assertTrue(settings["enabled"])
+        self.assertEqual(settings["channels"], ["windows", "ntfy"])
+        self.assertEqual(settings["ntfy"]["server"], memory.DEFAULT_NTFY_SERVER)
+        self.assertEqual(settings["ntfy"]["topic"], "yarbis-secret")
+        self.assertEqual(settings["ntfy"]["priority"], "urgent")
+        self.assertEqual(settings["ntfy"]["timeout_seconds"], 60)

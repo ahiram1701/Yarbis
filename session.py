@@ -72,6 +72,67 @@ def update_ui_theme(theme: str) -> str:
     return f"Tema actualizado a {cleaned_theme}."
 
 
+def get_notification_settings() -> dict:
+    return load_state().get("notifications", {})
+
+
+def update_notification_settings(
+    enabled: bool,
+    windows_enabled: bool,
+    ntfy_enabled: bool,
+    ntfy_server: str = "",
+    ntfy_topic: str = "",
+    ntfy_token: str = "",
+    ntfy_priority: str = "",
+    ntfy_tags: str = "",
+) -> str:
+    channels = []
+    if windows_enabled:
+        channels.append("windows")
+    if ntfy_enabled:
+        channels.append("ntfy")
+
+    if enabled and not channels:
+        raise ValueError("Activa al menos un canal de notificacion o desactiva las notificaciones.")
+
+    cleaned_topic = str(ntfy_topic).strip().strip("/")
+    if enabled and ntfy_enabled and not cleaned_topic:
+        raise ValueError("Para usar ntfy necesitas indicar un topic.")
+
+    state = load_state()
+    defaults = state.get("notifications", {})
+    default_ntfy = defaults.get("ntfy", {}) if isinstance(defaults.get("ntfy", {}), dict) else {}
+    state["notifications"] = {
+        "enabled": bool(enabled),
+        "channels": channels,
+        "ntfy": {
+            "server": str(ntfy_server).strip() or default_ntfy.get("server", "https://ntfy.sh"),
+            "topic": cleaned_topic,
+            "token": str(ntfy_token).strip(),
+            "priority": str(ntfy_priority).strip().lower(),
+            "tags": str(ntfy_tags).strip(),
+            "timeout_seconds": default_ntfy.get("timeout_seconds", 10),
+        },
+    }
+    save_state(state)
+
+    if not enabled:
+        return "Notificaciones desactivadas."
+
+    return "Notificaciones actualizadas: " + ", ".join(channels) + "."
+
+
+def send_test_notification() -> str:
+    sent = send_notification(
+        "Prueba de Yarbis",
+        "Las notificaciones estan configuradas correctamente.",
+    )
+    if sent:
+        return "Notificacion de prueba enviada."
+
+    return "No pude enviar la notificacion de prueba. Revisa el canal, el topic y tu conexion."
+
+
 def update_profile_text(
     name: str = "",
     role: str = "",

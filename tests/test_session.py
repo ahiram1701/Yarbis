@@ -129,3 +129,42 @@ class SessionTestCase(unittest.TestCase):
 
         self.assertIn("Tema actualizado", result)
         self.assertEqual(state["ui"]["theme"], "light")
+
+    def test_update_notification_settings_persists_ntfy_channel(self):
+        state_path = TEST_RUNTIME_DIR / "session_notifications_state.json"
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+
+        with patch.object(memory, "STATE_FILE", state_path):
+            memory.save_state(memory.default_state())
+            result = session.update_notification_settings(
+                enabled=True,
+                windows_enabled=True,
+                ntfy_enabled=True,
+                ntfy_server="https://ntfy.sh",
+                ntfy_topic="yarbis-secret",
+                ntfy_token="",
+                ntfy_priority="high",
+                ntfy_tags="yarbis",
+            )
+            state = memory.load_state()
+
+        self.assertIn("windows, ntfy", result)
+        self.assertTrue(state["notifications"]["enabled"])
+        self.assertEqual(state["notifications"]["channels"], ["windows", "ntfy"])
+        self.assertEqual(state["notifications"]["ntfy"]["topic"], "yarbis-secret")
+        self.assertEqual(state["notifications"]["ntfy"]["priority"], "high")
+
+    def test_update_notification_settings_requires_topic_for_ntfy(self):
+        state_path = TEST_RUNTIME_DIR / "session_notifications_invalid_state.json"
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+
+        with patch.object(memory, "STATE_FILE", state_path):
+            memory.save_state(memory.default_state())
+            with self.assertRaises(ValueError):
+                session.update_notification_settings(
+                    enabled=True,
+                    windows_enabled=False,
+                    ntfy_enabled=True,
+                    ntfy_server="https://ntfy.sh",
+                    ntfy_topic="",
+                )

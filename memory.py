@@ -26,6 +26,10 @@ DEFAULT_AUTO_CYCLES = 5
 VALID_TASK_STATUS = {"pending", "in_progress", "blocked", "done"}
 VALID_TASK_PRIORITY = {"alta", "media", "baja"}
 VALID_UI_THEME = {"light", "dark"}
+VALID_NOTIFICATION_CHANNELS = {"windows", "ntfy"}
+VALID_NTFY_PRIORITIES = {"", "min", "low", "default", "high", "urgent", "1", "2", "3", "4", "5"}
+DEFAULT_NTFY_SERVER = "https://ntfy.sh"
+DEFAULT_NTFY_TIMEOUT_SECONDS = 10
 
 
 def default_state():
@@ -55,6 +59,18 @@ def default_state():
         },
         "ui": {
             "theme": "dark",
+        },
+        "notifications": {
+            "enabled": True,
+            "channels": ["windows"],
+            "ntfy": {
+                "server": DEFAULT_NTFY_SERVER,
+                "topic": "",
+                "token": "",
+                "priority": "",
+                "tags": "",
+                "timeout_seconds": DEFAULT_NTFY_TIMEOUT_SECONDS,
+            },
         },
     }
 
@@ -268,6 +284,65 @@ def _normalize_ui(ui):
     }
 
 
+def _normalize_notification_channels(value):
+    if isinstance(value, str):
+        raw_channels = [item.strip().lower() for item in re.split(r"[\n,;]+", value)]
+    elif isinstance(value, list):
+        raw_channels = [str(item).strip().lower() for item in value]
+    else:
+        raw_channels = []
+
+    channels = []
+    for channel in raw_channels:
+        if channel in VALID_NOTIFICATION_CHANNELS and channel not in channels:
+            channels.append(channel)
+
+    return channels or ["windows"]
+
+
+def _normalize_notifications(notifications):
+    defaults = default_state()["notifications"]
+    if not isinstance(notifications, dict):
+        notifications = {}
+
+    ntfy = notifications.get("ntfy", {})
+    if not isinstance(ntfy, dict):
+        ntfy = {}
+
+    priority = _truncate_text(ntfy.get("priority", defaults["ntfy"]["priority"]), 20).strip().lower()
+    if priority not in VALID_NTFY_PRIORITIES:
+        priority = defaults["ntfy"]["priority"]
+
+    try:
+        timeout_seconds = max(
+            1,
+            min(
+                60,
+                int(ntfy.get("timeout_seconds", defaults["ntfy"]["timeout_seconds"])),
+            ),
+        )
+    except (TypeError, ValueError):
+        timeout_seconds = defaults["ntfy"]["timeout_seconds"]
+
+    return {
+        "enabled": bool(notifications.get("enabled", defaults["enabled"])),
+        "channels": _normalize_notification_channels(
+            notifications.get("channels", defaults["channels"]),
+        ),
+        "ntfy": {
+            "server": _truncate_text(
+                ntfy.get("server", defaults["ntfy"]["server"]),
+                200,
+            ).strip() or defaults["ntfy"]["server"],
+            "topic": _truncate_text(ntfy.get("topic", ""), 180).strip().strip("/"),
+            "token": _truncate_text(ntfy.get("token", ""), 240).strip(),
+            "priority": priority,
+            "tags": _truncate_text(ntfy.get("tags", ""), 120).strip(),
+            "timeout_seconds": timeout_seconds,
+        },
+    }
+
+
 def normalize_state(state):
     normalized = default_state()
 
@@ -290,6 +365,7 @@ def normalize_state(state):
     )
     normalized["autonomy"] = _normalize_autonomy(state.get("autonomy", {}))
     normalized["ui"] = _normalize_ui(state.get("ui", {}))
+    normalized["notifications"] = _normalize_notifications(state.get("notifications", {}))
 
     raw_messages = state.get("messages", [])
     if isinstance(raw_messages, list):
@@ -368,6 +444,13 @@ def render_state_summary(state, task_limit: int = 8, note_limit: int = 3) -> str
             )
     else:
         lines.append("Esperando respuesta del usuario: no.")
+
+    notification_settings = normalized["notifications"]
+    notification_status = "activadas" if notification_settings["enabled"] else "desactivadas"
+    lines.append(
+        "Notificaciones: "
+        f"{notification_status}, canales={', '.join(notification_settings['channels'])}"
+    )
 
     if pending_tasks:
         lines.append("Tareas abiertas:")

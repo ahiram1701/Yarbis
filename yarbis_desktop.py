@@ -8,13 +8,16 @@ from tkinter.scrolledtext import ScrolledText
 from memory import load_state, render_state_summary
 from session import (
     add_task_text,
+    get_notification_settings,
     get_status_text,
     get_ui_theme,
     has_pending_user_question,
     run_auto_with_output,
     run_cycle_with_output,
     save_note_text,
+    send_test_notification,
     submit_user_reply,
+    update_notification_settings,
     update_goal,
     update_profile_text,
     update_ui_theme,
@@ -267,6 +270,87 @@ class TaskDialog(ThemedDialog):
         }
 
 
+class NotificationsDialog(ThemedDialog):
+    def __init__(self, parent, initial_settings: dict):
+        self.initial_settings = initial_settings
+        super().__init__(parent, "Notificaciones")
+
+    def body(self, master):
+        self._prepare_body(master)
+        ntfy = self.initial_settings.get("ntfy", {})
+        if not isinstance(ntfy, dict):
+            ntfy = {}
+
+        channels = set(self.initial_settings.get("channels", []))
+        self.enabled_var = tk.BooleanVar(value=bool(self.initial_settings.get("enabled", True)))
+        self.windows_var = tk.BooleanVar(value="windows" in channels)
+        self.ntfy_var = tk.BooleanVar(value="ntfy" in channels)
+
+        ttk.Checkbutton(
+            master,
+            text="Activar notificaciones",
+            variable=self.enabled_var,
+        ).grid(row=0, column=0, columnspan=2, sticky="w", padx=6, pady=(6, 4))
+
+        ttk.Checkbutton(
+            master,
+            text="Windows",
+            variable=self.windows_var,
+        ).grid(row=1, column=0, sticky="w", padx=6, pady=4)
+
+        ttk.Checkbutton(
+            master,
+            text="iPhone via ntfy",
+            variable=self.ntfy_var,
+        ).grid(row=1, column=1, sticky="w", padx=6, pady=4)
+
+        ttk.Label(master, text="Servidor ntfy").grid(row=2, column=0, sticky="w", padx=6, pady=(8, 2))
+        self.server_entry = ttk.Entry(master, width=56)
+        self.server_entry.grid(row=3, column=0, columnspan=2, sticky="ew", padx=6)
+        self.server_entry.insert(0, ntfy.get("server", "https://ntfy.sh"))
+
+        ttk.Label(master, text="Topic").grid(row=4, column=0, sticky="w", padx=6, pady=(8, 2))
+        self.topic_entry = ttk.Entry(master, width=56)
+        self.topic_entry.grid(row=5, column=0, columnspan=2, sticky="ew", padx=6)
+        self.topic_entry.insert(0, ntfy.get("topic", ""))
+
+        ttk.Label(master, text="Token").grid(row=6, column=0, sticky="w", padx=6, pady=(8, 2))
+        self.token_entry = ttk.Entry(master, width=56, show="*")
+        self.token_entry.grid(row=7, column=0, columnspan=2, sticky="ew", padx=6)
+        self.token_entry.insert(0, ntfy.get("token", ""))
+
+        ttk.Label(master, text="Prioridad").grid(row=8, column=0, sticky="w", padx=6, pady=(8, 2))
+        self.priority_combo = ttk.Combobox(
+            master,
+            values=("", "min", "low", "default", "high", "urgent"),
+            state="readonly",
+            width=20,
+        )
+        self.priority_combo.grid(row=9, column=0, sticky="w", padx=6)
+        self.priority_combo.set(ntfy.get("priority", ""))
+
+        ttk.Label(master, text="Tags").grid(row=8, column=1, sticky="w", padx=6, pady=(8, 2))
+        self.tags_entry = ttk.Entry(master, width=28)
+        self.tags_entry.grid(row=9, column=1, sticky="ew", padx=6)
+        self.tags_entry.insert(0, ntfy.get("tags", ""))
+
+        master.columnconfigure(0, weight=1)
+        master.columnconfigure(1, weight=1)
+        return self.topic_entry
+
+    def apply(self):
+        self.result = {
+            "enabled": self.enabled_var.get(),
+            "windows_enabled": self.windows_var.get(),
+            "ntfy_enabled": self.ntfy_var.get(),
+            "ntfy_server": self.server_entry.get().strip(),
+            "ntfy_topic": self.topic_entry.get().strip(),
+            "ntfy_token": self.token_entry.get().strip(),
+            "ntfy_priority": self.priority_combo.get().strip(),
+            "ntfy_tags": self.tags_entry.get().strip(),
+        }
+
+
 class YarbisDesktop(tk.Tk):
     def __init__(self):
         super().__init__()
@@ -338,6 +422,12 @@ class YarbisDesktop(tk.Tk):
         )
         self._pack_action_button(
             ttk.Button(actions, textvariable=self.theme_button_text, command=self._toggle_theme),
+        )
+        self._pack_action_button(
+            ttk.Button(actions, text="Notificaciones", command=self._edit_notifications),
+        )
+        self._pack_action_button(
+            ttk.Button(actions, text="Probar notificacion", command=self._send_test_notification),
         )
         self._pack_action_button(
             ttk.Button(actions, text="Cambiar objetivo", command=self._change_goal),
@@ -646,6 +736,23 @@ class YarbisDesktop(tk.Tk):
         self._apply_theme(next_theme)
         self._append_activity("Tema", result)
         self.status_var.set("Listo.")
+
+    def _edit_notifications(self):
+        dialog = NotificationsDialog(self, initial_settings=get_notification_settings())
+        if dialog.result is None:
+            return
+
+        try:
+            result = update_notification_settings(**dialog.result)
+        except ValueError as exc:
+            messagebox.showwarning("Yarbis", str(exc))
+            return
+
+        self._append_activity("Notificaciones", result)
+        self.refresh_state_view()
+
+    def _send_test_notification(self):
+        self._start_background_job("Prueba de notificacion", send_test_notification)
 
     def _change_goal(self):
         dialog = MultilineTextDialog(

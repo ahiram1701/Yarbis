@@ -40,7 +40,7 @@ La interfaz de escritorio te deja:
 - editar perfil
 - guardar notas y tareas
 - revisar el estado sin tocar la terminal
-- recibir notificaciones nativas de Windows cuando Yarbis termina el modo autonomo o necesita una respuesta tuya
+- recibir notificaciones nativas de Windows y, opcionalmente, avisos en iPhone via ntfy cuando Yarbis termina el modo autonomo o necesita una respuesta tuya
 
 ## Uso por terminal
 
@@ -100,7 +100,45 @@ $env:YARBIS_OLLAMA_TIMEOUT_SECONDS="900"
 .venv\Scripts\python.exe yarbis_desktop.py
 ```
 
-Si prefieres desactivar las notificaciones de Windows:
+Si quieres recibir notificaciones en tu iPhone con ntfy:
+
+1. Instala `ntfy` desde la App Store.
+2. Suscribete a un topic dificil de adivinar, por ejemplo `yarbis-tu-topic-secreto`.
+3. Abre Yarbis.
+4. Pulsa `Notificaciones`.
+5. Marca `Activar notificaciones` e `iPhone via ntfy`.
+6. Escribe el mismo topic en `Topic`.
+7. Guarda y pulsa `Probar notificacion`.
+
+Yarbis recordara esta configuracion en `state.json`.
+
+Si prefieres configurarlo desde PowerShell:
+
+```powershell
+$env:YARBIS_NOTIFICATION_CHANNELS="windows,ntfy"
+$env:YARBIS_NTFY_TOPIC="yarbis-tu-topic-secreto"
+.venv\Scripts\python.exe yarbis_desktop.py
+```
+
+Si solo quieres enviar al iPhone y no a Windows:
+
+```powershell
+$env:YARBIS_NOTIFICATION_CHANNELS="ntfy"
+$env:YARBIS_NTFY_TOPIC="yarbis-tu-topic-secreto"
+.venv\Scripts\python.exe yarbis_desktop.py
+```
+
+Opcionales utiles:
+
+```powershell
+$env:YARBIS_NTFY_SERVER="https://ntfy.sh"
+$env:YARBIS_NTFY_PRIORITY="high"
+$env:YARBIS_NTFY_TAGS="yarbis"
+```
+
+Usa un topic privado y largo. En `ntfy.sh`, si no configuras autenticacion, el topic funciona como secreto.
+
+Si prefieres desactivar todas las notificaciones:
 
 ```powershell
 $env:YARBIS_NOTIFICATIONS="0"
