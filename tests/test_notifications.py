@@ -149,3 +149,83 @@ class NotificationsTestCase(unittest.TestCase):
             token="",
             timeout=7,
         )
+
+    def test_send_notification_posts_to_telegram_when_configured(self):
+        with patch.dict(
+            os.environ,
+            {
+                "YARBIS_NOTIFICATIONS": "1",
+                "YARBIS_NOTIFICATION_CHANNELS": "telegram",
+                "YARBIS_TELEGRAM_BOT_TOKEN": "bot-123",
+                "YARBIS_TELEGRAM_CHAT_ID": "456",
+            },
+            clear=False,
+        ):
+            with patch.object(
+                notifications,
+                "telegram_api_request",
+                return_value={"ok": True, "result": {}},
+            ) as telegram_mock:
+                result = notifications.send_notification("Titulo", "Cuerpo")
+
+        self.assertTrue(result)
+        telegram_mock.assert_called_once()
+        self.assertEqual(telegram_mock.call_args.args[0], "sendMessage")
+        self.assertEqual(
+            telegram_mock.call_args.args[1],
+            {
+                "chat_id": "456",
+                "text": "Titulo\n\nCuerpo",
+                "disable_web_page_preview": True,
+            },
+        )
+
+    def test_try_link_telegram_chat_persists_latest_private_chat(self):
+        state_path = TEST_RUNTIME_DIR / "notifications_telegram_link_state.json"
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+
+        seeded_state = memory.normalize_state({
+            "notifications": {
+                "enabled": True,
+                "channels": ["telegram"],
+                "telegram": {
+                    "bot_token": "bot-123",
+                    "chat_id": "",
+                },
+            },
+        })
+
+        response = {
+            "ok": True,
+            "result": [
+                {
+                    "update_id": 10,
+                    "message": {
+                        "chat": {"id": -100, "type": "group"},
+                        "text": "/start",
+                    },
+                },
+                {
+                    "update_id": 11,
+                    "message": {
+                        "chat": {"id": 456, "type": "private"},
+                        "text": "/start",
+                    },
+                },
+            ],
+        }
+
+        with patch.object(memory, "STATE_FILE", state_path):
+            memory.save_state(seeded_state)
+            with patch.dict(os.environ, {}, clear=True):
+                with patch.object(
+                    notifications,
+                    "telegram_api_request",
+                    return_value=response,
+                ) as telegram_mock:
+                    linked = notifications.try_link_telegram_chat()
+                    state = memory.load_state()
+
+        self.assertTrue(linked)
+        telegram_mock.assert_called_once()
+        self.assertEqual(state["notifications"]["telegram"]["chat_id"], "456")

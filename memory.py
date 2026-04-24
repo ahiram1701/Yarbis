@@ -1,8 +1,10 @@
 import json
 import re
+import threading
 from pathlib import Path
 
 STATE_FILE = Path("state.json")
+STATE_LOCK = threading.RLock()
 DEFAULT_GOAL = "Ayudar al usuario de forma autonoma con tareas locales."
 MAX_MESSAGES = 40
 MAX_MESSAGE_CHARS = 4_000
@@ -26,10 +28,13 @@ DEFAULT_AUTO_CYCLES = 5
 VALID_TASK_STATUS = {"pending", "in_progress", "blocked", "done"}
 VALID_TASK_PRIORITY = {"alta", "media", "baja"}
 VALID_UI_THEME = {"light", "dark"}
-VALID_NOTIFICATION_CHANNELS = {"windows", "ntfy"}
+VALID_NOTIFICATION_CHANNELS = {"windows", "ntfy", "telegram"}
 VALID_NTFY_PRIORITIES = {"", "min", "low", "default", "high", "urgent", "1", "2", "3", "4", "5"}
 DEFAULT_NTFY_SERVER = "https://ntfy.sh"
 DEFAULT_NTFY_TIMEOUT_SECONDS = 10
+DEFAULT_TELEGRAM_API_BASE = "https://api.telegram.org"
+DEFAULT_TELEGRAM_TIMEOUT_SECONDS = 10
+DEFAULT_TELEGRAM_POLL_TIMEOUT_SECONDS = 25
 
 
 def default_state():
@@ -70,6 +75,14 @@ def default_state():
                 "priority": "",
                 "tags": "",
                 "timeout_seconds": DEFAULT_NTFY_TIMEOUT_SECONDS,
+            },
+            "telegram": {
+                "api_base": DEFAULT_TELEGRAM_API_BASE,
+                "bot_token": "",
+                "chat_id": "",
+                "timeout_seconds": DEFAULT_TELEGRAM_TIMEOUT_SECONDS,
+                "poll_timeout_seconds": DEFAULT_TELEGRAM_POLL_TIMEOUT_SECONDS,
+                "last_update_id": 0,
             },
         },
     }
@@ -309,6 +322,10 @@ def _normalize_notifications(notifications):
     if not isinstance(ntfy, dict):
         ntfy = {}
 
+    telegram = notifications.get("telegram", {})
+    if not isinstance(telegram, dict):
+        telegram = {}
+
     priority = _truncate_text(ntfy.get("priority", defaults["ntfy"]["priority"]), 20).strip().lower()
     if priority not in VALID_NTFY_PRIORITIES:
         priority = defaults["ntfy"]["priority"]
@@ -323,6 +340,41 @@ def _normalize_notifications(notifications):
         )
     except (TypeError, ValueError):
         timeout_seconds = defaults["ntfy"]["timeout_seconds"]
+
+    try:
+        telegram_timeout_seconds = max(
+            1,
+            min(
+                60,
+                int(telegram.get("timeout_seconds", defaults["telegram"]["timeout_seconds"])),
+            ),
+        )
+    except (TypeError, ValueError):
+        telegram_timeout_seconds = defaults["telegram"]["timeout_seconds"]
+
+    try:
+        telegram_poll_timeout_seconds = max(
+            1,
+            min(
+                60,
+                int(
+                    telegram.get(
+                        "poll_timeout_seconds",
+                        defaults["telegram"]["poll_timeout_seconds"],
+                    )
+                ),
+            ),
+        )
+    except (TypeError, ValueError):
+        telegram_poll_timeout_seconds = defaults["telegram"]["poll_timeout_seconds"]
+
+    try:
+        telegram_last_update_id = max(
+            0,
+            int(telegram.get("last_update_id", defaults["telegram"]["last_update_id"])),
+        )
+    except (TypeError, ValueError):
+        telegram_last_update_id = defaults["telegram"]["last_update_id"]
 
     return {
         "enabled": bool(notifications.get("enabled", defaults["enabled"])),
@@ -339,6 +391,17 @@ def _normalize_notifications(notifications):
             "priority": priority,
             "tags": _truncate_text(ntfy.get("tags", ""), 120).strip(),
             "timeout_seconds": timeout_seconds,
+        },
+        "telegram": {
+            "api_base": _truncate_text(
+                telegram.get("api_base", defaults["telegram"]["api_base"]),
+                200,
+            ).strip() or defaults["telegram"]["api_base"],
+            "bot_token": _truncate_text(telegram.get("bot_token", ""), 240).strip(),
+            "chat_id": _truncate_text(telegram.get("chat_id", ""), 80).strip(),
+            "timeout_seconds": telegram_timeout_seconds,
+            "poll_timeout_seconds": telegram_poll_timeout_seconds,
+            "last_update_id": telegram_last_update_id,
         },
     }
 
@@ -451,6 +514,14 @@ def render_state_summary(state, task_limit: int = 8, note_limit: int = 3) -> str
         "Notificaciones: "
         f"{notification_status}, canales={', '.join(notification_settings['channels'])}"
     )
+    if "telegram" in notification_settings["channels"]:
+        telegram = notification_settings.get("telegram", {})
+        if telegram.get("chat_id"):
+            lines.append(f"Telegram: vinculado al chat {telegram['chat_id']}.")
+        elif telegram.get("bot_token"):
+            lines.append("Telegram: pendiente de vincular. Envia /start al bot para completar el enlace.")
+        else:
+            lines.append("Telegram: activado, pero falta configurar el bot token.")
 
     if pending_tasks:
         lines.append("Tareas abiertas:")
@@ -480,21 +551,35 @@ def render_state_summary(state, task_limit: int = 8, note_limit: int = 3) -> str
 
 
 def load_state():
-    if not STATE_FILE.exists():
-        return default_state()
+    with STATE_LOCK:
+        if not STATE_FILE.exists():
+            return default_state()
 
-    try:
-        with open(STATE_FILE, "r", encoding="utf-8") as file:
-            state = json.load(file)
-    except (OSError, json.JSONDecodeError):
-        return default_state()
+        try:
+            with open(STATE_FILE, "r", encoding="utf-8") as file:
+                state = json.load(file)
+        except (OSError, json.JSONDecodeError):
+            return default_state()
 
-    return normalize_state(state)
+        return normalize_state(state)
 
 
 def save_state(state):
     normalized = normalize_state(state)
-    STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
 
-    with open(STATE_FILE, "w", encoding="utf-8") as file:
-        json.dump(normalized, file, ensure_ascii=False, indent=2)
+    with STATE_LOCK:
+        STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        tmp_file = STATE_FILE.with_name(f"{STATE_FILE.name}.tmp")
+
+        with open(tmp_file, "w", encoding="utf-8") as file:
+            json.dump(normalized, file, ensure_ascii=False, indent=2)
+
+        try:
+            tmp_file.replace(STATE_FILE)
+        except PermissionError:
+            with open(STATE_FILE, "w", encoding="utf-8") as file:
+                json.dump(normalized, file, ensure_ascii=False, indent=2)
+            try:
+                tmp_file.unlink()
+            except OSError:
+                pass

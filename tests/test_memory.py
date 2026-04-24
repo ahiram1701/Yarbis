@@ -107,7 +107,7 @@ class MemoryTestCase(unittest.TestCase):
         normalized = memory.normalize_state({
             "notifications": {
                 "enabled": True,
-                "channels": "windows, ntfy, desconocido, ntfy",
+                "channels": "windows, ntfy, telegram, desconocido, ntfy",
                 "ntfy": {
                     "server": "",
                     "topic": "/yarbis-secret/",
@@ -116,14 +116,43 @@ class MemoryTestCase(unittest.TestCase):
                     "tags": "yarbis,warning",
                     "timeout_seconds": 120,
                 },
+                "telegram": {
+                    "api_base": "",
+                    "bot_token": "bot-123",
+                    "chat_id": " 456 ",
+                    "timeout_seconds": 120,
+                    "poll_timeout_seconds": 0,
+                    "last_update_id": -4,
+                },
             },
         })
 
         settings = normalized["notifications"]
 
         self.assertTrue(settings["enabled"])
-        self.assertEqual(settings["channels"], ["windows", "ntfy"])
+        self.assertEqual(settings["channels"], ["windows", "ntfy", "telegram"])
         self.assertEqual(settings["ntfy"]["server"], memory.DEFAULT_NTFY_SERVER)
         self.assertEqual(settings["ntfy"]["topic"], "yarbis-secret")
         self.assertEqual(settings["ntfy"]["priority"], "urgent")
         self.assertEqual(settings["ntfy"]["timeout_seconds"], 60)
+        self.assertEqual(settings["telegram"]["api_base"], memory.DEFAULT_TELEGRAM_API_BASE)
+        self.assertEqual(settings["telegram"]["bot_token"], "bot-123")
+        self.assertEqual(settings["telegram"]["chat_id"], "456")
+        self.assertEqual(settings["telegram"]["timeout_seconds"], 60)
+        self.assertEqual(settings["telegram"]["poll_timeout_seconds"], 1)
+        self.assertEqual(settings["telegram"]["last_update_id"], 0)
+
+    def test_render_state_summary_highlights_unlinked_telegram(self):
+        summary = memory.render_state_summary({
+            "notifications": {
+                "enabled": True,
+                "channels": ["windows", "telegram"],
+                "telegram": {
+                    "bot_token": "bot-123",
+                    "chat_id": "",
+                },
+            },
+        })
+
+        self.assertIn("canales=windows, telegram", summary)
+        self.assertIn("Telegram: pendiente de vincular", summary)

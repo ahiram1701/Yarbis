@@ -22,6 +22,7 @@ from session import (
     update_profile_text,
     update_ui_theme,
 )
+from telegram_inbox import start_telegram_polling, stop_telegram_polling
 
 THEMES = {
     "dark": {
@@ -63,6 +64,8 @@ THEMES = {
         "select_fg": "#fff8f1",
     },
 }
+
+_STATE_SYNC_INTERVAL_MS = 1000
 
 
 def style_text_widget(widget, palette: dict):
@@ -285,6 +288,7 @@ class NotificationsDialog(ThemedDialog):
         self.enabled_var = tk.BooleanVar(value=bool(self.initial_settings.get("enabled", True)))
         self.windows_var = tk.BooleanVar(value="windows" in channels)
         self.ntfy_var = tk.BooleanVar(value="ntfy" in channels)
+        self.telegram_var = tk.BooleanVar(value="telegram" in channels)
 
         ttk.Checkbutton(
             master,
@@ -304,19 +308,25 @@ class NotificationsDialog(ThemedDialog):
             variable=self.ntfy_var,
         ).grid(row=1, column=1, sticky="w", padx=6, pady=4)
 
+        ttk.Checkbutton(
+            master,
+            text="Telegram",
+            variable=self.telegram_var,
+        ).grid(row=1, column=2, sticky="w", padx=6, pady=4)
+
         ttk.Label(master, text="Servidor ntfy").grid(row=2, column=0, sticky="w", padx=6, pady=(8, 2))
         self.server_entry = ttk.Entry(master, width=56)
-        self.server_entry.grid(row=3, column=0, columnspan=2, sticky="ew", padx=6)
+        self.server_entry.grid(row=3, column=0, columnspan=3, sticky="ew", padx=6)
         self.server_entry.insert(0, ntfy.get("server", "https://ntfy.sh"))
 
         ttk.Label(master, text="Topic").grid(row=4, column=0, sticky="w", padx=6, pady=(8, 2))
         self.topic_entry = ttk.Entry(master, width=56)
-        self.topic_entry.grid(row=5, column=0, columnspan=2, sticky="ew", padx=6)
+        self.topic_entry.grid(row=5, column=0, columnspan=3, sticky="ew", padx=6)
         self.topic_entry.insert(0, ntfy.get("topic", ""))
 
         ttk.Label(master, text="Token").grid(row=6, column=0, sticky="w", padx=6, pady=(8, 2))
         self.token_entry = ttk.Entry(master, width=56, show="*")
-        self.token_entry.grid(row=7, column=0, columnspan=2, sticky="ew", padx=6)
+        self.token_entry.grid(row=7, column=0, columnspan=3, sticky="ew", padx=6)
         self.token_entry.insert(0, ntfy.get("token", ""))
 
         ttk.Label(master, text="Prioridad").grid(row=8, column=0, sticky="w", padx=6, pady=(8, 2))
@@ -334,8 +344,41 @@ class NotificationsDialog(ThemedDialog):
         self.tags_entry.grid(row=9, column=1, sticky="ew", padx=6)
         self.tags_entry.insert(0, ntfy.get("tags", ""))
 
+        telegram = self.initial_settings.get("telegram", {})
+        if not isinstance(telegram, dict):
+            telegram = {}
+
+        ttk.Label(master, text="Bot token de Telegram").grid(
+            row=10,
+            column=0,
+            sticky="w",
+            padx=6,
+            pady=(12, 2),
+        )
+        self.telegram_bot_token_entry = ttk.Entry(master, width=56, show="*")
+        self.telegram_bot_token_entry.grid(row=11, column=0, columnspan=3, sticky="ew", padx=6)
+        self.telegram_bot_token_entry.insert(0, telegram.get("bot_token", ""))
+
+        ttk.Label(master, text="Chat ID (opcional)").grid(
+            row=12,
+            column=0,
+            sticky="w",
+            padx=6,
+            pady=(8, 2),
+        )
+        self.telegram_chat_id_entry = ttk.Entry(master, width=56)
+        self.telegram_chat_id_entry.grid(row=13, column=0, columnspan=3, sticky="ew", padx=6)
+        self.telegram_chat_id_entry.insert(0, telegram.get("chat_id", ""))
+
+        ttk.Label(
+            master,
+            text="Si dejas el Chat ID vacio, Yarbis vinculara el primer chat privado que escriba al bot.",
+            anchor="w",
+        ).grid(row=14, column=0, columnspan=3, sticky="w", padx=6, pady=(4, 6))
+
         master.columnconfigure(0, weight=1)
         master.columnconfigure(1, weight=1)
+        master.columnconfigure(2, weight=1)
         return self.topic_entry
 
     def apply(self):
@@ -343,11 +386,14 @@ class NotificationsDialog(ThemedDialog):
             "enabled": self.enabled_var.get(),
             "windows_enabled": self.windows_var.get(),
             "ntfy_enabled": self.ntfy_var.get(),
+            "telegram_enabled": self.telegram_var.get(),
             "ntfy_server": self.server_entry.get().strip(),
             "ntfy_topic": self.topic_entry.get().strip(),
             "ntfy_token": self.token_entry.get().strip(),
             "ntfy_priority": self.priority_combo.get().strip(),
             "ntfy_tags": self.tags_entry.get().strip(),
+            "telegram_bot_token": self.telegram_bot_token_entry.get().strip(),
+            "telegram_chat_id": self.telegram_chat_id_entry.get().strip(),
         }
 
 
@@ -372,12 +418,17 @@ class YarbisDesktop(tk.Tk):
         self._result_queue = queue.Queue()
         self._worker_thread = None
         self._busy = False
+        self._busy_sources = set()
         self._action_buttons = []
+        self._view_has_pending_question = False
+        self._last_summary_text = ""
 
         self._build_ui()
         self._apply_theme(self.current_theme_name)
         self.refresh_state_view()
+        start_telegram_polling(event_callback=self._handle_telegram_event)
         self.after(150, self._poll_worker_queue)
+        self.after(_STATE_SYNC_INTERVAL_MS, self._sync_state_view)
 
     def _build_ui(self):
         self.columnconfigure(1, weight=1)
@@ -638,24 +689,41 @@ class YarbisDesktop(tk.Tk):
         self.cycles_var.set(str(state["cycle_count"]))
 
         pending_question = state["awaiting_user_input"].get("question", "").strip()
-        if has_pending_user_question(state):
+        self._view_has_pending_question = has_pending_user_question(state)
+        if self._view_has_pending_question:
             self.pending_var.set(pending_question)
             self.status_var.set("Esperando respuesta del usuario.")
             self.send_button.configure(text="Responder y continuar")
         else:
             self.pending_var.set("Sin preguntas pendientes.")
-            self.status_var.set("Listo.")
+            if not self._busy:
+                self.status_var.set("Listo.")
             self.send_button.configure(text="Enviar y ejecutar")
 
-        self._set_text(self.summary_text, render_state_summary(state))
+        summary_text = render_state_summary(state)
+        if summary_text != self._last_summary_text:
+            self._set_text(self.summary_text, summary_text)
+            self._last_summary_text = summary_text
 
-    def _set_busy(self, busy: bool, status_text: str = ""):
-        self._busy = busy
-        state = "disabled" if busy else "normal"
+    def _sync_state_view(self):
+        self.refresh_state_view()
+        self.after(_STATE_SYNC_INTERVAL_MS, self._sync_state_view)
+
+    def _set_busy(self, busy: bool, status_text: str = "", source: str = "local"):
+        if busy:
+            self._busy_sources.add(source)
+        else:
+            self._busy_sources.discard(source)
+
+        self._busy = bool(self._busy_sources)
+        state = "disabled" if self._busy else "normal"
         for button in self._action_buttons:
             button.configure(state=state)
         self.reply_text.configure(state=state)
-        self.status_var.set(status_text or ("Trabajando..." if busy else "Listo."))
+        if status_text:
+            self.status_var.set(status_text)
+        elif not self._busy:
+            self.status_var.set("Listo.")
 
     def _start_background_job(self, label: str, func, *args, **kwargs):
         if self._busy:
@@ -678,11 +746,25 @@ class YarbisDesktop(tk.Tk):
         try:
             while True:
                 kind, label, payload = self._result_queue.get_nowait()
-                self._set_busy(False)
                 if kind == "success":
+                    self._set_busy(False, source="local")
+                    self._append_activity(label, str(payload))
+                    self.refresh_state_view()
+                elif kind == "remote_start":
+                    self._set_busy(True, str(payload), source="remote")
+                elif kind == "remote_success":
+                    self._set_busy(False, source="remote")
+                    self._append_activity(label, str(payload))
+                    self.refresh_state_view()
+                elif kind == "remote_error":
+                    self._set_busy(False, source="remote")
+                    self._append_activity(f"{label} (error)", str(payload))
+                    self.status_var.set("La accion termino con error.")
+                elif kind == "event":
                     self._append_activity(label, str(payload))
                     self.refresh_state_view()
                 else:
+                    self._set_busy(False, source="local")
                     self._append_activity(f"{label} (error)", str(payload))
                     self.status_var.set("La accion termino con error.")
         except queue.Empty:
@@ -750,6 +832,20 @@ class YarbisDesktop(tk.Tk):
 
         self._append_activity("Notificaciones", result)
         self.refresh_state_view()
+        if (
+            dialog.result.get("telegram_enabled")
+            and dialog.result.get("telegram_bot_token")
+            and not dialog.result.get("telegram_chat_id")
+        ):
+            messagebox.showinfo(
+                "Yarbis",
+                (
+                    "Telegram ya quedo configurado, pero falta vincular el chat.\n\n"
+                    "Abre tu bot en Telegram y envia /start. Despues podras usar "
+                    "'Probar notificacion' para confirmar que ya quedo enlazado."
+                ),
+                parent=self,
+            )
 
     def _send_test_notification(self):
         self._start_background_job("Prueba de notificacion", send_test_notification)
@@ -807,11 +903,54 @@ class YarbisDesktop(tk.Tk):
             messagebox.showinfo("Yarbis", "Escribe una respuesta o contexto antes de enviarlo.")
             return
 
+        displayed_pending = self._view_has_pending_question
+        actual_pending = has_pending_user_question(load_state())
+        if actual_pending != displayed_pending:
+            self.refresh_state_view()
+            if displayed_pending and not actual_pending:
+                messagebox.showinfo(
+                    "Yarbis",
+                    (
+                        "La pregunta pendiente ya se respondio desde otro canal.\n\n"
+                        "Revise el estado actualizado. Si aun quieres mandar contexto "
+                        "adicional, vuelve a presionar Enviar."
+                    ),
+                    parent=self,
+                )
+                return
+
         self.reply_text.delete("1.0", "end")
         self._start_background_job("Respuesta", submit_user_reply, reply_text)
 
     def _clear_activity(self):
         self._set_text(self.activity_text, "")
+
+    def _handle_telegram_event(self, message):
+        if isinstance(message, dict):
+            event_type = str(message.get("type", "")).strip().lower()
+            label = str(message.get("label", "")).strip() or "Telegram"
+            content = str(message.get("content", "")).strip()
+            status_text = str(message.get("status_text", "")).strip()
+
+            if event_type == "remote_job_started":
+                self._result_queue.put(("remote_start", label, status_text or f"Ejecutando: {label}..."))
+                return
+
+            if event_type == "remote_job_finished":
+                self._result_queue.put(("remote_success", label, content))
+                return
+
+            if event_type == "remote_job_failed":
+                self._result_queue.put(("remote_error", label, content or "Error desconocido."))
+                return
+
+        rendered = str(message).strip()
+        if not rendered:
+            return
+        if rendered.startswith("Telegram: procesado "):
+            return
+
+        self._result_queue.put(("event", "Telegram", rendered))
 
     def _on_close(self):
         if self._busy:
@@ -822,6 +961,7 @@ class YarbisDesktop(tk.Tk):
             )
             if not should_close:
                 return
+        stop_telegram_polling()
         self.destroy()
 
 

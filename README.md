@@ -40,7 +40,7 @@ La interfaz de escritorio te deja:
 - editar perfil
 - guardar notas y tareas
 - revisar el estado sin tocar la terminal
-- recibir notificaciones nativas de Windows y, opcionalmente, avisos en iPhone via ntfy cuando Yarbis termina el modo autonomo o necesita una respuesta tuya
+- recibir notificaciones nativas de Windows y, opcionalmente, avisos en iPhone via ntfy o Telegram cuando Yarbis termina el modo autonomo o necesita una respuesta tuya
 
 ## Uso por terminal
 
@@ -137,6 +137,39 @@ $env:YARBIS_NTFY_TAGS="yarbis"
 ```
 
 Usa un topic privado y largo. En `ntfy.sh`, si no configuras autenticacion, el topic funciona como secreto.
+
+Si prefieres usar Telegram para recibir y responder desde tu iPhone:
+
+1. Crea un bot con `@BotFather` y copia el token.
+2. Abre Yarbis.
+3. Pulsa `Notificaciones`.
+4. Marca `Activar notificaciones` y `Telegram`.
+5. Pega el `Bot token de Telegram`.
+6. Guarda.
+7. Abre el chat con tu bot en Telegram y envia `/start`.
+
+Si dejas `Chat ID` vacio, Yarbis vinculara automaticamente el primer chat privado que escriba al bot. Despues podras:
+
+- responder con texto libre cuando Yarbis te haga una pregunta
+- usar `/status` para ver el estado actual
+- usar `/run` para ejecutar un ciclo
+- usar `/auto` o `/auto 3` para lanzar el modo autonomo
+
+Si prefieres configurarlo desde PowerShell:
+
+```powershell
+$env:YARBIS_NOTIFICATION_CHANNELS="telegram"
+$env:YARBIS_TELEGRAM_BOT_TOKEN="123456:tu-token"
+.venv\Scripts\python.exe yarbis_desktop.py
+```
+
+Opcionales utiles:
+
+```powershell
+$env:YARBIS_TELEGRAM_CHAT_ID="123456789"
+$env:YARBIS_TELEGRAM_TIMEOUT_SECONDS="10"
+$env:YARBIS_TELEGRAM_POLL_TIMEOUT_SECONDS="25"
+```
 
 Si prefieres desactivar todas las notificaciones:
 

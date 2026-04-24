@@ -12,10 +12,19 @@ ENV_NTFY_TOKEN = "YARBIS_NTFY_TOKEN"
 ENV_NTFY_PRIORITY = "YARBIS_NTFY_PRIORITY"
 ENV_NTFY_TAGS = "YARBIS_NTFY_TAGS"
 ENV_NTFY_TIMEOUT_SECONDS = "YARBIS_NTFY_TIMEOUT_SECONDS"
+ENV_TELEGRAM_API_BASE = "YARBIS_TELEGRAM_API_BASE"
+ENV_TELEGRAM_BOT_TOKEN = "YARBIS_TELEGRAM_BOT_TOKEN"
+ENV_TELEGRAM_CHAT_ID = "YARBIS_TELEGRAM_CHAT_ID"
+ENV_TELEGRAM_TIMEOUT_SECONDS = "YARBIS_TELEGRAM_TIMEOUT_SECONDS"
+ENV_TELEGRAM_POLL_TIMEOUT_SECONDS = "YARBIS_TELEGRAM_POLL_TIMEOUT_SECONDS"
 
 DEFAULT_NOTIFICATION_CHANNELS = ("windows", "ntfy")
 DEFAULT_NTFY_SERVER = "https://ntfy.sh"
 DEFAULT_NTFY_TIMEOUT_SECONDS = 10
+DEFAULT_TELEGRAM_API_BASE = "https://api.telegram.org"
+DEFAULT_TELEGRAM_TIMEOUT_SECONDS = 10
+DEFAULT_TELEGRAM_POLL_TIMEOUT_SECONDS = 25
+MAX_TELEGRAM_MESSAGE_CHARS = 4000
 
 _win11toast_notify = None
 
@@ -171,6 +180,23 @@ def _post_ntfy_payload(server_url: str, payload: dict, token: str = "", timeout:
         response.read()
 
 
+def _post_json(url: str, payload: dict, timeout: int = 10) -> dict:
+    data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    json_request = request.Request(
+        url,
+        data=data,
+        headers={"Content-Type": "application/json; charset=utf-8"},
+        method="POST",
+    )
+    with request.urlopen(json_request, timeout=timeout) as response:
+        raw_body = response.read()
+
+    if not raw_body:
+        return {}
+
+    return json.loads(raw_body.decode("utf-8"))
+
+
 def _send_ntfy_notification(title: str, body: str, settings: dict | None = None) -> bool:
     settings = settings or {}
     ntfy_settings = settings.get("ntfy", {}) if isinstance(settings.get("ntfy", {}), dict) else {}
@@ -202,6 +228,193 @@ def _send_ntfy_notification(title: str, body: str, settings: dict | None = None)
     return True
 
 
+def get_telegram_settings(settings: dict | None = None) -> dict:
+    settings = settings or _load_notification_settings()
+    telegram_settings = settings.get("telegram", {}) if isinstance(settings.get("telegram", {}), dict) else {}
+    channels = _configured_channels(settings)
+
+    return {
+        "notifications_enabled": notifications_enabled(),
+        "channel_enabled": "telegram" in channels,
+        "enabled": notifications_enabled() and "telegram" in channels,
+        "api_base": (
+            _setting_or_env(
+                ENV_TELEGRAM_API_BASE,
+                telegram_settings.get("api_base", ""),
+                DEFAULT_TELEGRAM_API_BASE,
+            )
+            or DEFAULT_TELEGRAM_API_BASE
+        ).rstrip("/"),
+        "bot_token": _setting_or_env(ENV_TELEGRAM_BOT_TOKEN, telegram_settings.get("bot_token", "")),
+        "chat_id": _setting_or_env(ENV_TELEGRAM_CHAT_ID, telegram_settings.get("chat_id", "")),
+        "timeout_seconds": max(
+            1,
+            _int_setting_or_env(
+                ENV_TELEGRAM_TIMEOUT_SECONDS,
+                telegram_settings.get("timeout_seconds", DEFAULT_TELEGRAM_TIMEOUT_SECONDS),
+                DEFAULT_TELEGRAM_TIMEOUT_SECONDS,
+            ),
+        ),
+        "poll_timeout_seconds": max(
+            1,
+            _int_setting_or_env(
+                ENV_TELEGRAM_POLL_TIMEOUT_SECONDS,
+                telegram_settings.get("poll_timeout_seconds", DEFAULT_TELEGRAM_POLL_TIMEOUT_SECONDS),
+                DEFAULT_TELEGRAM_POLL_TIMEOUT_SECONDS,
+            ),
+        ),
+    }
+
+
+def try_link_telegram_chat(settings: dict | None = None) -> bool:
+    config = get_telegram_settings(settings)
+    if config["chat_id"]:
+        return True
+
+    if not config["enabled"] or not config["bot_token"]:
+        return False
+
+    try:
+        response = telegram_api_request(
+            "getUpdates",
+            {
+                "offset": 0,
+                "timeout": 1,
+                "allowed_updates": ["message"],
+            },
+            settings=settings,
+            timeout=config["timeout_seconds"] + 1,
+        )
+    except Exception:
+        return False
+
+    updates = response.get("result", [])
+    if not isinstance(updates, list):
+        return False
+
+    latest_private_chat_id = ""
+    for update in reversed(updates):
+        message = update.get("message")
+        if not isinstance(message, dict):
+            continue
+
+        chat = message.get("chat", {})
+        incoming_chat_id = str(chat.get("id", "")).strip()
+        chat_type = str(chat.get("type", "")).strip().lower()
+        if incoming_chat_id and chat_type == "private":
+            latest_private_chat_id = incoming_chat_id
+            break
+
+    if not latest_private_chat_id:
+        return False
+
+    try:
+        from memory import load_state, save_state
+    except Exception:
+        return False
+
+    try:
+        state = load_state()
+        notifications_state = state.setdefault("notifications", {})
+        telegram_state = notifications_state.setdefault("telegram", {})
+        telegram_state["chat_id"] = latest_private_chat_id
+        save_state(state)
+    except Exception:
+        return False
+
+    return True
+
+
+def telegram_api_request(
+    method_name: str,
+    payload: dict | None = None,
+    settings: dict | None = None,
+    timeout: int | None = None,
+) -> dict:
+    config = get_telegram_settings(settings)
+    if not config["bot_token"]:
+        raise ValueError("Falta configurar el bot token de Telegram.")
+
+    api_url = f"{config['api_base']}/bot{config['bot_token']}/{method_name}"
+    response = _post_json(
+        api_url,
+        payload or {},
+        timeout=timeout or config["timeout_seconds"],
+    )
+
+    if response.get("ok") is False:
+        description = str(response.get("description", "")).strip() or "Error desconocido"
+        raise RuntimeError(f"Telegram rechazo la solicitud: {description}")
+
+    return response
+
+
+def _compose_notification_text(title: str, body: str) -> str:
+    safe_title = str(title).strip() or "Yarbis"
+    safe_body = str(body).strip()
+    if not safe_body:
+        return safe_title
+    return f"{safe_title}\n\n{safe_body}"
+
+
+def _split_telegram_text(text: str) -> list[str]:
+    safe_text = str(text).strip()
+    if not safe_text:
+        return []
+
+    if len(safe_text) <= MAX_TELEGRAM_MESSAGE_CHARS:
+        return [safe_text]
+
+    chunks = []
+    remaining = safe_text
+    while remaining:
+        if len(remaining) <= MAX_TELEGRAM_MESSAGE_CHARS:
+            chunks.append(remaining)
+            break
+
+        split_at = remaining.rfind("\n", 0, MAX_TELEGRAM_MESSAGE_CHARS)
+        if split_at <= 0:
+            split_at = remaining.rfind(" ", 0, MAX_TELEGRAM_MESSAGE_CHARS)
+        if split_at <= 0:
+            split_at = MAX_TELEGRAM_MESSAGE_CHARS
+
+        chunks.append(remaining[:split_at].strip())
+        remaining = remaining[split_at:].strip()
+
+    return [chunk for chunk in chunks if chunk]
+
+
+def send_telegram_message(text: str, settings: dict | None = None, chat_id: str = "") -> bool:
+    config = get_telegram_settings(settings)
+    target_chat_id = str(chat_id).strip() or config["chat_id"]
+    if not target_chat_id and not chat_id and try_link_telegram_chat(settings=settings):
+        config = get_telegram_settings(settings)
+        target_chat_id = config["chat_id"]
+    message_chunks = _split_telegram_text(text)
+    if not config["bot_token"] or not target_chat_id or not message_chunks:
+        return False
+
+    for chunk in message_chunks:
+        telegram_api_request(
+            "sendMessage",
+            {
+                "chat_id": target_chat_id,
+                "text": chunk,
+                "disable_web_page_preview": True,
+            },
+            settings=settings,
+        )
+
+    return True
+
+
+def _send_telegram_notification(title: str, body: str, settings: dict | None = None) -> bool:
+    try:
+        return send_telegram_message(_compose_notification_text(title, body), settings=settings)
+    except Exception:
+        return False
+
+
 def send_notification(title: str, body: str = "") -> bool:
     settings = _load_notification_settings()
 
@@ -218,6 +431,9 @@ def send_notification(title: str, body: str = "") -> bool:
 
     if "ntfy" in channels:
         sent = _send_ntfy_notification(safe_title, safe_body, settings=settings) or sent
+
+    if "telegram" in channels:
+        sent = _send_telegram_notification(safe_title, safe_body, settings=settings) or sent
 
     return sent
 

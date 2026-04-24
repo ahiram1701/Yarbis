@@ -154,6 +154,29 @@ class SessionTestCase(unittest.TestCase):
         self.assertEqual(state["notifications"]["ntfy"]["topic"], "yarbis-secret")
         self.assertEqual(state["notifications"]["ntfy"]["priority"], "high")
 
+    def test_update_notification_settings_persists_telegram_channel(self):
+        state_path = TEST_RUNTIME_DIR / "session_notifications_telegram_state.json"
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+
+        with patch.object(memory, "STATE_FILE", state_path):
+            memory.save_state(memory.default_state())
+            result = session.update_notification_settings(
+                enabled=True,
+                windows_enabled=False,
+                ntfy_enabled=False,
+                telegram_enabled=True,
+                telegram_bot_token="bot-123",
+                telegram_chat_id="",
+            )
+            state = memory.load_state()
+
+        self.assertIn("telegram", result)
+        self.assertTrue(state["notifications"]["enabled"])
+        self.assertEqual(state["notifications"]["channels"], ["telegram"])
+        self.assertEqual(state["notifications"]["telegram"]["bot_token"], "bot-123")
+        self.assertEqual(state["notifications"]["telegram"]["chat_id"], "")
+        self.assertIn("envia /start", result.lower())
+
     def test_update_notification_settings_requires_topic_for_ntfy(self):
         state_path = TEST_RUNTIME_DIR / "session_notifications_invalid_state.json"
         state_path.parent.mkdir(parents=True, exist_ok=True)
@@ -168,3 +191,44 @@ class SessionTestCase(unittest.TestCase):
                     ntfy_server="https://ntfy.sh",
                     ntfy_topic="",
                 )
+
+    def test_update_notification_settings_requires_bot_token_for_telegram(self):
+        state_path = TEST_RUNTIME_DIR / "session_notifications_invalid_telegram_state.json"
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+
+        with patch.object(memory, "STATE_FILE", state_path):
+            memory.save_state(memory.default_state())
+            with self.assertRaises(ValueError):
+                session.update_notification_settings(
+                    enabled=True,
+                    windows_enabled=False,
+                    ntfy_enabled=False,
+                    telegram_enabled=True,
+                    telegram_bot_token="",
+                    telegram_chat_id="",
+                )
+
+    def test_send_test_notification_attempts_telegram_link_before_failing(self):
+        state_path = TEST_RUNTIME_DIR / "session_test_notification_telegram_state.json"
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+
+        seeded_state = memory.normalize_state({
+            "notifications": {
+                "enabled": True,
+                "channels": ["telegram"],
+                "telegram": {
+                    "bot_token": "bot-123",
+                    "chat_id": "",
+                },
+            },
+        })
+
+        with patch.object(memory, "STATE_FILE", state_path):
+            memory.save_state(seeded_state)
+            with patch.object(session, "try_link_telegram_chat", return_value=True) as link_mock:
+                with patch.object(session, "send_notification", return_value=True) as send_mock:
+                    result = session.send_test_notification()
+
+        link_mock.assert_called_once()
+        send_mock.assert_called_once()
+        self.assertEqual(result, "Notificacion de prueba enviada.")
