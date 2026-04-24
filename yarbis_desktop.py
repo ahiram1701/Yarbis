@@ -3,7 +3,6 @@ import threading
 import tkinter as tk
 from datetime import datetime
 from tkinter import messagebox, simpledialog, ttk
-from tkinter.scrolledtext import ScrolledText
 
 from memory import load_state, render_state_summary
 from session import (
@@ -26,23 +25,29 @@ from telegram_inbox import start_telegram_polling, stop_telegram_polling
 
 THEMES = {
     "dark": {
-        "bg": "#101318",
-        "panel": "#171c23",
-        "panel_alt": "#1d2430",
-        "border": "#313947",
-        "fg": "#f2ede3",
-        "muted": "#bfae93",
-        "field_bg": "#0f141b",
-        "field_fg": "#f2ede3",
-        "button_bg": "#232b36",
-        "button_active": "#2b3441",
-        "disabled_bg": "#171c23",
-        "disabled_fg": "#6f7883",
-        "accent": "#f0a35b",
-        "accent_hover": "#f6b372",
-        "accent_fg": "#23160b",
-        "select_bg": "#42546b",
-        "select_fg": "#f8f4ee",
+        "bg": "#000000",
+        "panel": "#05080c",
+        "panel_alt": "#08131a",
+        "border": "#123746",
+        "fg": "#f4fbff",
+        "muted": "#8fb8c8",
+        "field_bg": "#030609",
+        "field_fg": "#f4fbff",
+        "button_bg": "#071016",
+        "button_active": "#0b1d27",
+        "disabled_bg": "#05080c",
+        "disabled_fg": "#51616a",
+        "accent": "#00d9ff",
+        "accent_hover": "#54e8ff",
+        "accent_fg": "#001116",
+        "secondary": "#00ff88",
+        "secondary_hover": "#5dffb2",
+        "secondary_fg": "#00150b",
+        "danger": "#ff3b5c",
+        "danger_hover": "#ff6b82",
+        "danger_fg": "#190006",
+        "select_bg": "#004f63",
+        "select_fg": "#f4fbff",
     },
     "light": {
         "bg": "#f3ede2",
@@ -60,12 +65,36 @@ THEMES = {
         "accent": "#d97a34",
         "accent_hover": "#e38a49",
         "accent_fg": "#fff8f1",
+        "secondary": "#177b4d",
+        "secondary_hover": "#20915d",
+        "secondary_fg": "#fffdfa",
+        "danger": "#c7364d",
+        "danger_hover": "#d64c61",
+        "danger_fg": "#fffdfa",
         "select_bg": "#d97a34",
         "select_fg": "#fff8f1",
     },
 }
 
 _STATE_SYNC_INTERVAL_MS = 1000
+
+
+def style_scrollbar_widget(scrollbar, palette: dict):
+    try:
+        scrollbar.configure(style="Yarbis.Vertical.TScrollbar")
+    except tk.TclError:
+        try:
+            scrollbar.configure(
+                bg=palette["button_bg"],
+                activebackground=palette["button_active"],
+                troughcolor=palette["panel"],
+                highlightbackground=palette["panel"],
+                bd=0,
+                relief="flat",
+                width=14,
+            )
+        except tk.TclError:
+            pass
 
 
 def style_text_widget(widget, palette: dict):
@@ -96,16 +125,7 @@ def style_text_widget(widget, palette: dict):
 
     vbar = getattr(widget, "vbar", None)
     if vbar is not None:
-        try:
-            vbar.configure(
-                bg=palette["button_bg"],
-                activebackground=palette["button_active"],
-                troughcolor=palette["panel"],
-                highlightbackground=palette["panel"],
-                bd=0,
-            )
-        except tk.TclError:
-            pass
+        style_scrollbar_widget(vbar, palette)
 
 
 class ThemedDialog(simpledialog.Dialog):
@@ -462,41 +482,69 @@ class YarbisDesktop(tk.Tk):
             pady=(4, 10),
         )
 
-        actions = ttk.LabelFrame(self, text="Acciones")
-        actions.grid(row=1, column=0, sticky="ns", padx=(12, 6), pady=6)
+        actions_shell = ttk.Frame(self)
+        actions_shell.grid(row=1, column=0, sticky="nsew", padx=(12, 6), pady=6)
+        actions_shell.columnconfigure(0, weight=1)
+        actions_shell.rowconfigure(0, weight=1)
 
-        self._pack_action_button(
-            ttk.Button(actions, text="Ejecutar ciclo", command=self._run_cycle, style="Accent.TButton"),
+        self.actions_canvas = tk.Canvas(
+            actions_shell,
+            width=220,
+            height=1,
+            highlightthickness=0,
+            bd=0,
         )
-        self._pack_action_button(
-            ttk.Button(actions, text="Modo autonomo", command=self._run_auto),
+        self.actions_canvas.grid(row=0, column=0, sticky="nsew")
+        self.actions_scrollbar = ttk.Scrollbar(
+            actions_shell,
+            orient="vertical",
+            command=self.actions_canvas.yview,
         )
-        self._pack_action_button(
-            ttk.Button(actions, textvariable=self.theme_button_text, command=self._toggle_theme),
+        self.actions_scrollbar.grid(row=0, column=1, sticky="ns")
+        self.actions_canvas.configure(yscrollcommand=self.actions_scrollbar.set)
+
+        actions = ttk.Frame(self.actions_canvas)
+        self.actions_window = self.actions_canvas.create_window((0, 0), window=actions, anchor="nw")
+        actions.bind("<Configure>", self._on_actions_content_configure)
+        self.actions_canvas.bind("<Configure>", self._on_actions_canvas_configure)
+        self.actions_canvas.bind("<Enter>", self._bind_action_mousewheel)
+        self.actions_canvas.bind("<Leave>", self._unbind_action_mousewheel)
+        actions.columnconfigure(0, weight=1)
+
+        self._build_action_group(
+            actions,
+            "Ejecucion",
+            (
+                {"text": "Ejecutar ciclo", "command": self._run_cycle, "style": "Accent.TButton"},
+                {"text": "Modo autonomo", "command": self._run_auto, "style": "Secondary.TButton"},
+            ),
         )
-        self._pack_action_button(
-            ttk.Button(actions, text="Notificaciones", command=self._edit_notifications),
+        self._build_action_group(
+            actions,
+            "Contexto",
+            (
+                {"text": "Cambiar objetivo", "command": self._change_goal},
+                {"text": "Editar perfil", "command": self._edit_profile},
+                {"text": "Guardar nota", "command": self._save_note},
+                {"text": "Crear tarea", "command": self._create_task},
+            ),
         )
-        self._pack_action_button(
-            ttk.Button(actions, text="Probar notificacion", command=self._send_test_notification),
+        self._build_action_group(
+            actions,
+            "Comunicacion",
+            (
+                {"text": "Notificaciones", "command": self._edit_notifications},
+                {"text": "Probar notificacion", "command": self._send_test_notification},
+            ),
         )
-        self._pack_action_button(
-            ttk.Button(actions, text="Cambiar objetivo", command=self._change_goal),
-        )
-        self._pack_action_button(
-            ttk.Button(actions, text="Editar perfil", command=self._edit_profile),
-        )
-        self._pack_action_button(
-            ttk.Button(actions, text="Guardar nota", command=self._save_note),
-        )
-        self._pack_action_button(
-            ttk.Button(actions, text="Crear tarea", command=self._create_task),
-        )
-        self._pack_action_button(
-            ttk.Button(actions, text="Refrescar estado", command=self.refresh_state_view),
-        )
-        self._pack_action_button(
-            ttk.Button(actions, text="Limpiar actividad", command=self._clear_activity),
+        self._build_action_group(
+            actions,
+            "Vista",
+            (
+                {"textvariable": self.theme_button_text, "command": self._toggle_theme},
+                {"text": "Refrescar estado", "command": self.refresh_state_view},
+                {"text": "Limpiar actividad", "command": self._clear_activity, "style": "Danger.TButton"},
+            ),
         )
 
         main_panel = ttk.Frame(self)
@@ -510,16 +558,16 @@ class YarbisDesktop(tk.Tk):
         summary_frame.grid(row=0, column=0, sticky="nsew", padx=(0, 4))
         summary_frame.columnconfigure(0, weight=1)
         summary_frame.rowconfigure(0, weight=1)
-        self.summary_text = ScrolledText(summary_frame, wrap="word", height=16)
-        self.summary_text.grid(row=0, column=0, sticky="nsew", padx=8, pady=8)
+        self.summary_text = self._create_scrolled_text(summary_frame, wrap="word", height=16)
+        self.summary_text.frame.grid(row=0, column=0, sticky="nsew", padx=8, pady=8)
         self.summary_text.configure(state="disabled")
 
         activity_frame = ttk.LabelFrame(main_panel, text="Actividad")
         activity_frame.grid(row=0, column=1, sticky="nsew", padx=(4, 0))
         activity_frame.columnconfigure(0, weight=1)
         activity_frame.rowconfigure(0, weight=1)
-        self.activity_text = ScrolledText(activity_frame, wrap="word", height=18)
-        self.activity_text.grid(row=0, column=0, sticky="nsew", padx=8, pady=8)
+        self.activity_text = self._create_scrolled_text(activity_frame, wrap="word", height=18)
+        self.activity_text.frame.grid(row=0, column=0, sticky="nsew", padx=8, pady=8)
         self.activity_text.configure(state="disabled")
 
         composer = ttk.LabelFrame(main_panel, text="Respuesta o contexto libre")
@@ -541,9 +589,59 @@ class YarbisDesktop(tk.Tk):
 
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
+    def _create_scrolled_text(self, parent, **text_options):
+        frame = tk.Frame(parent, bd=0, highlightthickness=0)
+        frame.columnconfigure(0, weight=1)
+        frame.rowconfigure(0, weight=1)
+
+        text = tk.Text(frame, **text_options)
+        scrollbar = ttk.Scrollbar(
+            frame,
+            orient="vertical",
+            command=text.yview,
+            style="Yarbis.Vertical.TScrollbar",
+        )
+        text.configure(yscrollcommand=scrollbar.set)
+        text.grid(row=0, column=0, sticky="nsew")
+        scrollbar.grid(row=0, column=1, sticky="ns")
+
+        text.frame = frame
+        text.vbar = scrollbar
+        return text
+
+    def _build_action_group(self, parent, title: str, button_specs):
+        group = ttk.LabelFrame(parent, text=title)
+        group.pack(fill="x", pady=(0, 8))
+
+        for spec in button_specs:
+            button_options = {
+                "command": spec["command"],
+                "style": spec.get("style", "TButton"),
+            }
+            if "textvariable" in spec:
+                button_options["textvariable"] = spec["textvariable"]
+            else:
+                button_options["text"] = spec["text"]
+            self._pack_action_button(ttk.Button(group, **button_options))
+
     def _pack_action_button(self, button):
-        button.pack(fill="x", padx=10, pady=6)
+        button.pack(fill="x", padx=8, pady=3)
         self._action_buttons.append(button)
+
+    def _on_actions_content_configure(self, _event=None):
+        self.actions_canvas.configure(scrollregion=self.actions_canvas.bbox("all"))
+
+    def _on_actions_canvas_configure(self, event):
+        self.actions_canvas.itemconfigure(self.actions_window, width=event.width)
+
+    def _bind_action_mousewheel(self, _event=None):
+        self.actions_canvas.bind_all("<MouseWheel>", self._on_action_mousewheel)
+
+    def _unbind_action_mousewheel(self, _event=None):
+        self.actions_canvas.unbind_all("<MouseWheel>")
+
+    def _on_action_mousewheel(self, event):
+        self.actions_canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
 
     def _apply_theme(self, theme_name: str):
         self.current_theme_name = theme_name if theme_name in THEMES else "dark"
@@ -552,6 +650,10 @@ class YarbisDesktop(tk.Tk):
 
         self.style.theme_use("clam")
         self.configure(bg=palette["bg"])
+        if hasattr(self, "actions_canvas"):
+            self.actions_canvas.configure(bg=palette["bg"])
+        if hasattr(self, "actions_scrollbar"):
+            style_scrollbar_widget(self.actions_scrollbar, palette)
 
         self.style.configure(".", background=palette["bg"], foreground=palette["fg"])
         self.style.configure("TFrame", background=palette["bg"])
@@ -595,6 +697,38 @@ class YarbisDesktop(tk.Tk):
             "Accent.TButton",
             background=[
                 ("active", palette["accent_hover"]),
+                ("disabled", palette["disabled_bg"]),
+            ],
+            foreground=[
+                ("disabled", palette["disabled_fg"]),
+            ],
+        )
+        self.style.configure(
+            "Secondary.TButton",
+            background=palette["secondary"],
+            foreground=palette["secondary_fg"],
+            bordercolor=palette["secondary"],
+        )
+        self.style.map(
+            "Secondary.TButton",
+            background=[
+                ("active", palette["secondary_hover"]),
+                ("disabled", palette["disabled_bg"]),
+            ],
+            foreground=[
+                ("disabled", palette["disabled_fg"]),
+            ],
+        )
+        self.style.configure(
+            "Danger.TButton",
+            background=palette["danger"],
+            foreground=palette["danger_fg"],
+            bordercolor=palette["danger"],
+        )
+        self.style.map(
+            "Danger.TButton",
+            background=[
+                ("active", palette["danger_hover"]),
                 ("disabled", palette["disabled_bg"]),
             ],
             foreground=[
@@ -647,13 +781,32 @@ class YarbisDesktop(tk.Tk):
                 ("disabled", palette["disabled_fg"]),
             ],
         )
-        self.style.configure(
-            "TScrollbar",
-            background=palette["button_bg"],
-            troughcolor=palette["panel"],
-            bordercolor=palette["panel"],
-            arrowcolor=palette["fg"],
-        )
+        for scrollbar_style in ("TScrollbar", "Yarbis.Vertical.TScrollbar"):
+            self.style.configure(
+                scrollbar_style,
+                background=palette["button_bg"],
+                troughcolor=palette["panel"],
+                bordercolor=palette["border"],
+                darkcolor=palette["button_bg"],
+                lightcolor=palette["button_bg"],
+                arrowcolor=palette["fg"],
+                relief="flat",
+                borderwidth=0,
+                arrowsize=12,
+                width=14,
+            )
+            self.style.map(
+                scrollbar_style,
+                background=[
+                    ("active", palette["button_active"]),
+                    ("pressed", palette["accent"]),
+                    ("disabled", palette["disabled_bg"]),
+                ],
+                arrowcolor=[
+                    ("pressed", palette["accent_fg"]),
+                    ("disabled", palette["disabled_fg"]),
+                ],
+            )
 
         self.option_add("*TCombobox*Listbox*Background", palette["field_bg"])
         self.option_add("*TCombobox*Listbox*Foreground", palette["field_fg"])
