@@ -35,6 +35,15 @@ DEFAULT_NTFY_TIMEOUT_SECONDS = 10
 DEFAULT_TELEGRAM_API_BASE = "https://api.telegram.org"
 DEFAULT_TELEGRAM_TIMEOUT_SECONDS = 10
 DEFAULT_TELEGRAM_POLL_TIMEOUT_SECONDS = 25
+DEFAULT_INTERNET_MODE = "auto"
+VALID_INTERNET_MODES = {"off", "auto"}
+DEFAULT_SEARCH_PROVIDER = "duckduckgo_html"
+VALID_SEARCH_PROVIDERS = {DEFAULT_SEARCH_PROVIDER}
+DEFAULT_INTERNET_MAX_SEARCH_RESULTS = 5
+DEFAULT_INTERNET_MAX_PAGE_CHARS = 12_000
+DEFAULT_INTERNET_REQUEST_TIMEOUT_SECONDS = 10
+MAX_INTERNET_DOMAIN_ITEMS = 20
+MAX_INTERNET_DOMAIN_CHARS = 120
 
 
 def default_state():
@@ -64,6 +73,15 @@ def default_state():
         },
         "ui": {
             "theme": "dark",
+        },
+        "internet": {
+            "mode": DEFAULT_INTERNET_MODE,
+            "provider": DEFAULT_SEARCH_PROVIDER,
+            "max_search_results": DEFAULT_INTERNET_MAX_SEARCH_RESULTS,
+            "max_page_chars": DEFAULT_INTERNET_MAX_PAGE_CHARS,
+            "request_timeout_seconds": DEFAULT_INTERNET_REQUEST_TIMEOUT_SECONDS,
+            "allowed_domains": [],
+            "blocked_domains": [],
         },
         "notifications": {
             "enabled": True,
@@ -297,6 +315,88 @@ def _normalize_ui(ui):
     }
 
 
+def _normalize_domain_list(value) -> list[str]:
+    items = _normalize_string_list(
+        value,
+        item_limit=MAX_INTERNET_DOMAIN_ITEMS,
+        char_limit=MAX_INTERNET_DOMAIN_CHARS,
+    )
+
+    normalized = []
+    seen = set()
+    for item in items:
+        domain = str(item).strip().lower()
+        domain = re.sub(r"^https?://", "", domain)
+        domain = domain.strip("/")
+        if not domain:
+            continue
+        if domain in seen:
+            continue
+        normalized.append(domain)
+        seen.add(domain)
+
+    return normalized
+
+
+def _normalize_internet(internet):
+    defaults = default_state()["internet"]
+    if not isinstance(internet, dict):
+        internet = {}
+
+    mode = str(internet.get("mode", defaults["mode"])).strip().lower()
+    if mode not in VALID_INTERNET_MODES:
+        mode = defaults["mode"]
+
+    provider = str(internet.get("provider", defaults["provider"])).strip().lower()
+    if provider not in VALID_SEARCH_PROVIDERS:
+        provider = defaults["provider"]
+
+    try:
+        max_search_results = max(
+            1,
+            min(
+                10,
+                int(internet.get("max_search_results", defaults["max_search_results"])),
+            ),
+        )
+    except (TypeError, ValueError):
+        max_search_results = defaults["max_search_results"]
+
+    try:
+        max_page_chars = max(
+            1_000,
+            min(30_000, int(internet.get("max_page_chars", defaults["max_page_chars"]))),
+        )
+    except (TypeError, ValueError):
+        max_page_chars = defaults["max_page_chars"]
+
+    try:
+        request_timeout_seconds = max(
+            3,
+            min(
+                60,
+                int(
+                    internet.get(
+                        "request_timeout_seconds",
+                        defaults["request_timeout_seconds"],
+                    )
+                ),
+            ),
+        )
+    except (TypeError, ValueError):
+        request_timeout_seconds = defaults["request_timeout_seconds"]
+
+    return {
+        "mode": mode,
+        "provider": provider,
+        "max_search_results": max_search_results,
+        "max_page_chars": max_page_chars,
+        "request_timeout_seconds": request_timeout_seconds,
+        "allowed_domains": _normalize_domain_list(internet.get("allowed_domains", [])),
+        "blocked_domains": _normalize_domain_list(internet.get("blocked_domains", [])),
+    }
+
+
 def _normalize_notification_channels(value):
     if isinstance(value, str):
         raw_channels = [item.strip().lower() for item in re.split(r"[\n,;]+", value)]
@@ -428,6 +528,7 @@ def normalize_state(state):
     )
     normalized["autonomy"] = _normalize_autonomy(state.get("autonomy", {}))
     normalized["ui"] = _normalize_ui(state.get("ui", {}))
+    normalized["internet"] = _normalize_internet(state.get("internet", {}))
     normalized["notifications"] = _normalize_notifications(state.get("notifications", {}))
 
     raw_messages = state.get("messages", [])
@@ -507,6 +608,26 @@ def render_state_summary(state, task_limit: int = 8, note_limit: int = 3) -> str
             )
     else:
         lines.append("Esperando respuesta del usuario: no.")
+
+    internet_settings = normalized["internet"]
+    lines.append(
+        "Internet: "
+        f"modo={internet_settings['mode']}, "
+        f"proveedor={internet_settings['provider']}, "
+        f"max_resultados={internet_settings['max_search_results']}, "
+        f"max_pagina={internet_settings['max_page_chars']} chars, "
+        f"timeout={internet_settings['request_timeout_seconds']}s"
+    )
+    if internet_settings["allowed_domains"]:
+        lines.append(
+            "Internet permitido solo para: "
+            + ", ".join(internet_settings["allowed_domains"])
+        )
+    if internet_settings["blocked_domains"]:
+        lines.append(
+            "Internet bloqueado para: "
+            + ", ".join(internet_settings["blocked_domains"])
+        )
 
     notification_settings = normalized["notifications"]
     notification_status = "activadas" if notification_settings["enabled"] else "desactivadas"

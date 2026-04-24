@@ -103,6 +103,29 @@ class MemoryTestCase(unittest.TestCase):
         self.assertEqual(normalized["ui"]["theme"], "light")
         self.assertEqual(fallback["ui"]["theme"], "dark")
 
+    def test_normalize_state_sanitizes_internet_settings(self):
+        normalized = memory.normalize_state({
+            "internet": {
+                "mode": "AUTO",
+                "provider": "desconocido",
+                "max_search_results": 99,
+                "max_page_chars": 999_999,
+                "request_timeout_seconds": 1,
+                "allowed_domains": "example.com, https://docs.python.org/, example.com",
+                "blocked_domains": ["localhost", "https://news.ycombinator.com/"],
+            }
+        })
+
+        settings = normalized["internet"]
+
+        self.assertEqual(settings["mode"], "auto")
+        self.assertEqual(settings["provider"], memory.DEFAULT_SEARCH_PROVIDER)
+        self.assertEqual(settings["max_search_results"], 10)
+        self.assertEqual(settings["max_page_chars"], 30_000)
+        self.assertEqual(settings["request_timeout_seconds"], 3)
+        self.assertEqual(settings["allowed_domains"], ["example.com", "docs.python.org"])
+        self.assertEqual(settings["blocked_domains"], ["localhost", "news.ycombinator.com"])
+
     def test_normalize_state_sanitizes_notification_settings(self):
         normalized = memory.normalize_state({
             "notifications": {
@@ -144,6 +167,9 @@ class MemoryTestCase(unittest.TestCase):
 
     def test_render_state_summary_highlights_unlinked_telegram(self):
         summary = memory.render_state_summary({
+            "internet": {
+                "mode": "auto",
+            },
             "notifications": {
                 "enabled": True,
                 "channels": ["windows", "telegram"],
@@ -154,5 +180,6 @@ class MemoryTestCase(unittest.TestCase):
             },
         })
 
+        self.assertIn("Internet: modo=auto", summary)
         self.assertIn("canales=windows, telegram", summary)
         self.assertIn("Telegram: pendiente de vincular", summary)

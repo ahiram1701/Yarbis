@@ -7,7 +7,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
 
+from internet import fetch_web_page as fetch_public_web_page
+from internet import search_web as search_public_web
 from memory import (
+    VALID_INTERNET_MODES,
+    VALID_SEARCH_PROVIDERS,
     VALID_TASK_PRIORITY,
     VALID_TASK_STATUS,
     load_state,
@@ -531,6 +535,223 @@ def run_project_tests(
         f"Comando: {' '.join(command)}\n"
         f"Salida:\n{combined_output}"
     )
+
+
+def _get_internet_settings() -> dict:
+    state = load_state()
+    return state.get("internet", {})
+
+
+def update_internet_settings(
+    mode: str = "",
+    provider: str = "",
+    max_search_results: int = 0,
+    max_page_chars: int = 0,
+    request_timeout_seconds: int = 0,
+    allowed_domains: str = "",
+    blocked_domains: str = "",
+) -> str:
+    """
+    Actualiza la politica de acceso a internet y los limites de busqueda del agente.
+
+    Args:
+        mode (str): Modo de internet. Valores soportados: off, auto.
+        provider (str): Proveedor de busqueda. Actualmente: duckduckgo_html.
+        max_search_results (int): Maximo de resultados por busqueda.
+        max_page_chars (int): Maximo de caracteres legibles por pagina.
+        request_timeout_seconds (int): Timeout maximo por request.
+        allowed_domains (str): Lista opcional de dominios permitidos.
+        blocked_domains (str): Lista opcional de dominios bloqueados.
+
+    Returns:
+        str: Resumen de la configuracion persistida.
+    """
+    state = load_state()
+    internet = state.setdefault("internet", {})
+
+    if str(mode).strip():
+        cleaned_mode = str(mode).strip().lower()
+        if cleaned_mode not in VALID_INTERNET_MODES:
+            return (
+                "Modo de internet invalido. "
+                f"Valores soportados: {', '.join(sorted(VALID_INTERNET_MODES))}."
+            )
+        internet["mode"] = cleaned_mode
+
+    if str(provider).strip():
+        cleaned_provider = str(provider).strip().lower()
+        if cleaned_provider not in VALID_SEARCH_PROVIDERS:
+            return (
+                "Proveedor de busqueda invalido. "
+                f"Valores soportados: {', '.join(sorted(VALID_SEARCH_PROVIDERS))}."
+            )
+        internet["provider"] = cleaned_provider
+
+    if max_search_results:
+        try:
+            internet["max_search_results"] = int(max_search_results)
+        except (TypeError, ValueError):
+            return "max_search_results debe ser un entero."
+
+    if max_page_chars:
+        try:
+            internet["max_page_chars"] = int(max_page_chars)
+        except (TypeError, ValueError):
+            return "max_page_chars debe ser un entero."
+
+    if request_timeout_seconds:
+        try:
+            internet["request_timeout_seconds"] = int(request_timeout_seconds)
+        except (TypeError, ValueError):
+            return "request_timeout_seconds debe ser un entero."
+
+    if str(allowed_domains).strip():
+        if str(allowed_domains).strip() == CLEAR_VALUE:
+            internet["allowed_domains"] = []
+        else:
+            internet["allowed_domains"] = _split_text_items(str(allowed_domains))
+
+    if str(blocked_domains).strip():
+        if str(blocked_domains).strip() == CLEAR_VALUE:
+            internet["blocked_domains"] = []
+        else:
+            internet["blocked_domains"] = _split_text_items(str(blocked_domains))
+
+    save_state(state)
+    refreshed = _get_internet_settings()
+
+    lines = [
+        "Configuracion de internet actualizada.",
+        f"Modo: {refreshed.get('mode', '-')}",
+        f"Proveedor: {refreshed.get('provider', '-')}",
+        f"Max resultados: {refreshed.get('max_search_results', '-')}",
+        f"Max pagina: {refreshed.get('max_page_chars', '-')} chars",
+        f"Timeout: {refreshed.get('request_timeout_seconds', '-')}s",
+    ]
+
+    allowed = refreshed.get("allowed_domains", [])
+    blocked = refreshed.get("blocked_domains", [])
+    lines.append("Dominios permitidos: " + (", ".join(allowed) if allowed else "sin restriccion"))
+    lines.append("Dominios bloqueados: " + (", ".join(blocked) if blocked else "ninguno"))
+    return "\n".join(lines)
+
+
+def web_search(query: str, limit: int = 5, reason: str = "") -> str:
+    """
+    Busca informacion publica y reciente en internet.
+
+    Args:
+        query (str): Consulta a buscar en la web.
+        limit (int): Numero maximo de resultados a devolver.
+        reason (str): Motivo breve de por que hace falta buscar afuera.
+
+    Returns:
+        str: Resultados resumidos con titulo, URL y snippet.
+    """
+    settings = _get_internet_settings()
+    if settings.get("mode") != "auto":
+        return (
+            "La busqueda web esta desactivada por politica "
+            f"(modo={settings.get('mode', 'off')}). "
+            "Usa `update_internet_settings` para cambiarlo."
+        )
+
+    try:
+        requested_limit = int(limit)
+    except (TypeError, ValueError):
+        requested_limit = 5
+
+    effective_limit = max(
+        1,
+        min(requested_limit, int(settings.get("max_search_results", 5))),
+    )
+
+    try:
+        results = search_public_web(
+            query=query,
+            limit=effective_limit,
+            timeout_seconds=int(settings.get("request_timeout_seconds", 10)),
+            provider=str(settings.get("provider", "duckduckgo_html")),
+            allowed_domains=list(settings.get("allowed_domains", [])),
+            blocked_domains=list(settings.get("blocked_domains", [])),
+        )
+    except Exception as exc:
+        return f"No pude completar la busqueda web: {exc}"
+
+    lines = [
+        "Busqueda web completada.",
+        f"Consulta: {str(query).strip()}",
+        f"Proveedor: {settings.get('provider', '-')}",
+        f"Resultados devueltos: {len(results)}",
+    ]
+
+    if str(reason).strip():
+        lines.append(f"Motivo: {str(reason).strip()}")
+
+    if not results:
+        lines.append("No encontre resultados publicos que cumplieran la politica configurada.")
+        return "\n".join(lines)
+
+    for index, result in enumerate(results, start=1):
+        lines.append(f"{index}. {result['title']}")
+        lines.append(f"URL: {result['url']}")
+        if result.get("snippet"):
+            lines.append(f"Snippet: {result['snippet']}")
+
+    return "\n".join(lines)
+
+
+def fetch_web_page(url: str, max_chars: int = 0) -> str:
+    """
+    Lee una pagina web publica y devuelve su texto principal en formato compacto.
+
+    Args:
+        url (str): URL publica de la pagina.
+        max_chars (int): Maximo de caracteres a devolver.
+
+    Returns:
+        str: Titulo, URL final y contenido legible de la pagina.
+    """
+    settings = _get_internet_settings()
+    if settings.get("mode") != "auto":
+        return (
+            "La lectura de paginas web esta desactivada por politica "
+            f"(modo={settings.get('mode', 'off')}). "
+            "Usa `update_internet_settings` para cambiarlo."
+        )
+
+    configured_max_chars = int(settings.get("max_page_chars", 12_000))
+    try:
+        requested_max_chars = int(max_chars)
+    except (TypeError, ValueError):
+        requested_max_chars = 0
+
+    effective_max_chars = configured_max_chars
+    if requested_max_chars > 0:
+        effective_max_chars = min(requested_max_chars, configured_max_chars)
+
+    try:
+        page = fetch_public_web_page(
+            url=url,
+            timeout_seconds=int(settings.get("request_timeout_seconds", 10)),
+            max_page_chars=effective_max_chars,
+            allowed_domains=list(settings.get("allowed_domains", [])),
+            blocked_domains=list(settings.get("blocked_domains", [])),
+        )
+    except Exception as exc:
+        return f"No pude leer la pagina web: {exc}"
+
+    lines = [
+        "Pagina web obtenida.",
+        f"URL final: {page['url']}",
+        f"Tipo: {page.get('content_type', '-')}",
+        f"Contenido truncado: {'si' if page.get('truncated') else 'no'}",
+    ]
+    if page.get("title"):
+        lines.append(f"Titulo: {page['title']}")
+    lines.append("Contenido:")
+    lines.append(page["content"])
+    return "\n".join(lines)
 
 
 def _split_text_items(value: str) -> list[str]:

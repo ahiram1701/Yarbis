@@ -163,3 +163,72 @@ class ToolsTestCase(unittest.TestCase):
             state["awaiting_user_input"]["fields"],
             ["nicho", "audiencia"],
         )
+
+    def test_update_internet_settings_persists_policy(self):
+        state_path = self.runtime_dir / "tool_internet_state.json"
+
+        with patch.object(memory, "STATE_FILE", state_path):
+            result = tools.update_internet_settings(
+                mode="off",
+                allowed_domains="docs.python.org, example.com",
+                blocked_domains="news.ycombinator.com",
+                max_search_results=7,
+                max_page_chars=8_000,
+                request_timeout_seconds=15,
+            )
+            state = memory.load_state()
+
+        self.assertIn("Configuracion de internet actualizada", result)
+        self.assertEqual(state["internet"]["mode"], "off")
+        self.assertEqual(state["internet"]["allowed_domains"], ["docs.python.org", "example.com"])
+        self.assertEqual(state["internet"]["blocked_domains"], ["news.ycombinator.com"])
+        self.assertEqual(state["internet"]["max_search_results"], 7)
+        self.assertEqual(state["internet"]["max_page_chars"], 8_000)
+        self.assertEqual(state["internet"]["request_timeout_seconds"], 15)
+
+    def test_web_search_uses_persisted_settings(self):
+        state_path = self.runtime_dir / "tool_web_search_state.json"
+
+        with patch.object(memory, "STATE_FILE", state_path):
+            memory.save_state(memory.normalize_state({
+                "internet": {
+                    "mode": "auto",
+                    "provider": "duckduckgo_html",
+                    "max_search_results": 3,
+                    "request_timeout_seconds": 12,
+                    "allowed_domains": ["docs.python.org"],
+                }
+            }))
+            with patch.object(tools, "search_public_web", return_value=[
+                {
+                    "title": "unittest docs",
+                    "url": "https://docs.python.org/3/library/unittest.html",
+                    "snippet": "Documentacion oficial",
+                }
+            ]) as search_mock:
+                result = tools.web_search("python unittest", limit=9, reason="validar sintaxis actual")
+
+        self.assertIn("Busqueda web completada", result)
+        self.assertIn("unittest docs", result)
+        self.assertIn("Documentacion oficial", result)
+        search_mock.assert_called_once_with(
+            query="python unittest",
+            limit=3,
+            timeout_seconds=12,
+            provider="duckduckgo_html",
+            allowed_domains=["docs.python.org"],
+            blocked_domains=[],
+        )
+
+    def test_fetch_web_page_respects_internet_mode(self):
+        state_path = self.runtime_dir / "tool_fetch_web_state.json"
+
+        with patch.object(memory, "STATE_FILE", state_path):
+            memory.save_state(memory.normalize_state({
+                "internet": {
+                    "mode": "off",
+                }
+            }))
+            result = tools.fetch_web_page("https://example.com/demo")
+
+        self.assertIn("desactivada por politica", result)

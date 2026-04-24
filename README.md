@@ -9,6 +9,7 @@ En esta version ya funciona mas como un agente personal local:
 - Lleva una cola de tareas con estados (`pending`, `in_progress`, `blocked`, `done`).
 - Puede sostener un plan actual de varios pasos.
 - Tiene un modo autonomo que ejecuta varios ciclos y puede detenerse cuando ya no quedan tareas abiertas.
+- Puede buscar informacion publica y reciente en internet cuando hace falta para destrabar una tarea.
 - Puede editar archivos del workspace con un flujo mas seguro: checkpoint previo, diff de cambios y restauracion.
 - Puede validar cambios de codigo ejecutando los tests del proyecto.
 
@@ -91,6 +92,27 @@ Ejemplos de cosas que puedes guardar en `profile`:
 - Restricciones: "no usar nube, no borrar archivos, no tocar .git sin pedirlo"
 
 El agente tambien puede mantener ese contexto por si mismo durante la ejecucion usando sus propias tools internas (`add_task`, `update_task_status`, `save_note`, `set_plan`, etc.).
+
+## Busqueda web bajo demanda
+
+Yarbis ahora puede:
+
+- buscar informacion publica y reciente con `web_search`
+- leer paginas puntuales con `fetch_web_page`
+- decidir por si mismo cuando conviene buscar afuera antes de pedirte un dato que en realidad es publico
+
+La politica de internet queda persistida en el estado y por defecto usa:
+
+- modo `auto`
+- proveedor `duckduckgo_html`
+- lectura solo de URLs `http` o `https`
+- bloqueo de `localhost`, IPs privadas y dominios restringidos por politica
+
+Si quieres cambiar esa politica, puedes pedirselo en lenguaje natural, por ejemplo:
+
+- "desactiva internet por ahora"
+- "limita internet a docs.python.org"
+- "bloquea wikipedia.org en las busquedas"
 
 ## Autoedicion segura del proyecto
 
@@ -207,6 +229,7 @@ Si tu equipo va justo de CPU o RAM, suele ayudar mucho subir el timeout y evitar
 - Las lecturas y escrituras tienen limites de tamano para evitar inflar el contexto y el estado.
 - Las escrituras crean checkpoints previos y muestran un diff resumido.
 - Algunas rutas sensibles no pueden modificarse desde las tools (`.git`, `.venv`, `state.json`, etc.).
+- Las consultas web solo aceptan URLs publicas `http/https` y bloquean `localhost` e IPs privadas o locales.
 - El agente puede restaurar checkpoints y ejecutar tests del proyecto despues de tocar codigo.
 - El estado se normaliza y recorta antes de persistirse.
 - Los errores de Ollama ya no tumban la aplicacion completa.
@@ -214,7 +237,8 @@ Si tu equipo va justo de CPU o RAM, suele ayudar mucho subir el timeout y evitar
 ## Limitaciones actuales
 
 - Sigue siendo un agente local de escritorio o terminal, no un daemon del sistema operativo.
-- No integra aun calendario, correo, navegador ni comandos del sistema fuera del workspace.
+- No integra aun calendario, correo ni comandos del sistema fuera del workspace.
+- La parte web sigue siendo limitada: busca y lee paginas publicas, pero no hace navegacion completa ni automatizacion del navegador.
 - Su autonomia depende del modelo disponible en Ollama y de la calidad del objetivo inicial.
 
 ## Tests

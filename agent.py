@@ -8,6 +8,7 @@ from memory import load_state, render_state_summary, save_state
 from tools import (
     add_task,
     agent_overview,
+    fetch_web_page,
     list_files,
     list_checkpoints,
     list_notes,
@@ -18,8 +19,10 @@ from tools import (
     run_project_tests,
     save_note,
     set_plan,
+    update_internet_settings,
     update_profile,
     update_task_status,
+    web_search,
     write_text_file,
 )
 
@@ -53,6 +56,7 @@ client = Client(timeout=OLLAMA_TIMEOUT_SECONDS)
 tool_definitions = [
     agent_overview,
     update_profile,
+    update_internet_settings,
     request_user_input,
     save_note,
     list_notes,
@@ -66,11 +70,14 @@ tool_definitions = [
     list_checkpoints,
     restore_checkpoint,
     run_project_tests,
+    web_search,
+    fetch_web_page,
 ]
 
 available_functions = {
     "agent_overview": agent_overview,
     "update_profile": update_profile,
+    "update_internet_settings": update_internet_settings,
     "request_user_input": request_user_input,
     "save_note": save_note,
     "list_notes": list_notes,
@@ -84,6 +91,8 @@ available_functions = {
     "list_checkpoints": list_checkpoints,
     "restore_checkpoint": restore_checkpoint,
     "run_project_tests": run_project_tests,
+    "web_search": web_search,
+    "fetch_web_page": fetch_web_page,
 }
 
 SYSTEM_PROMPT = """
@@ -99,6 +108,9 @@ Reglas:
 - No respondas con metacomentarios como "voy a empezar", "ahora me enfoco", "mi objetivo es" o "trabajare paso a paso" si todavia no has dado un resultado util.
 - Si el objetivo aun no esta aterrizado, crea un plan corto con `set_plan` y tareas concretas con `add_task`.
 - Si falta un dato clave para avanzar bien (por ejemplo nicho, audiencia, tono, archivo exacto, formato o criterio de exito), no lo inventes.
+- Si falta informacion publica, verificable o reciente, prioriza `web_search` y luego `fetch_web_page` antes de preguntarle al usuario.
+- Usa `request_user_input` solo cuando falte contexto privado, preferencias, decisiones, archivos concretos o criterios que el usuario debe definir.
+- Respeta la politica de internet visible en el estado. Si el usuario pide cambiarla, usa `update_internet_settings`.
 - Cuando necesites una respuesta del usuario, usa `request_user_input` con una sola pregunta clara y concreta, explica brevemente por que falta ese dato y detente. No sigas produciendo contenido que dependa de esa respuesta.
 - Manten las tareas sincronizadas: usa `update_task_status` para moverlas a `in_progress`, `blocked` o `done`.
 - Si una tarea queda frenada por falta de informacion del usuario, marcalo con `update_task_status(..., status="blocked", result="...")`.
