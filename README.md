@@ -9,6 +9,8 @@ En esta version ya funciona mas como un agente personal local:
 - Lleva una cola de tareas con estados (`pending`, `in_progress`, `blocked`, `done`).
 - Puede sostener un plan actual de varios pasos.
 - Tiene un modo autonomo que ejecuta varios ciclos y puede detenerse cuando ya no quedan tareas abiertas.
+- Puede editar archivos del workspace con un flujo mas seguro: checkpoint previo, diff de cambios y restauracion.
+- Puede validar cambios de codigo ejecutando los tests del proyecto.
 
 ## Requisitos
 
@@ -89,6 +91,25 @@ Ejemplos de cosas que puedes guardar en `profile`:
 - Restricciones: "no usar nube, no borrar archivos, no tocar .git sin pedirlo"
 
 El agente tambien puede mantener ese contexto por si mismo durante la ejecucion usando sus propias tools internas (`add_task`, `update_task_status`, `save_note`, `set_plan`, etc.).
+
+## Autoedicion segura del proyecto
+
+Yarbis ya puede trabajar sobre archivos del propio workspace, incluido su codigo fuente, pero ahora lo hace con mas control:
+
+- Antes de escribir un archivo crea un checkpoint automatico en `.yarbis_checkpoints/`.
+- Cada escritura devuelve una vista previa y un diff resumido del cambio.
+- Si modifica codigo o tests, ahora esta instruido para ejecutar validaciones con los tests del proyecto.
+- Si un cambio sale mal, puede listar checkpoints y restaurar un estado anterior del archivo.
+
+Rutas protegidas actualmente:
+
+- `.git`
+- `.venv`
+- `__pycache__`
+- `.yarbis_checkpoints`
+- `state.json`
+
+Esto no convierte a Yarbis en un sistema infalible, pero si reduce bastante el riesgo de que una autoedicion deje el proyecto en peor estado sin una forma simple de volver atras.
 
 ## Ajustes utiles para PCs lentas
 
@@ -183,7 +204,10 @@ Si tu equipo va justo de CPU o RAM, suele ayudar mucho subir el timeout y evitar
 ## Endurecimiento incluido
 
 - Las tools solo pueden leer y escribir dentro del workspace.
-- Las lecturas y escrituras tienen limites de tamano para evitar inflar `state.json`.
+- Las lecturas y escrituras tienen limites de tamano para evitar inflar el contexto y el estado.
+- Las escrituras crean checkpoints previos y muestran un diff resumido.
+- Algunas rutas sensibles no pueden modificarse desde las tools (`.git`, `.venv`, `state.json`, etc.).
+- El agente puede restaurar checkpoints y ejecutar tests del proyecto despues de tocar codigo.
 - El estado se normaliza y recorta antes de persistirse.
 - Los errores de Ollama ya no tumban la aplicacion completa.
 

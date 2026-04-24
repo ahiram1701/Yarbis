@@ -1,19 +1,24 @@
+import json
+import subprocess
 import unittest
 from pathlib import Path
 from unittest.mock import patch
+from uuid import uuid4
 
 import memory
 import tools
 
-TEST_RUNTIME_DIR = tools.WORKSPACE_ROOT / "tests_runtime" / "tools_case"
+TEST_RUNTIME_ROOT = tools.WORKSPACE_ROOT / "tests_runtime" / "tools_case"
 
 
 class ToolsTestCase(unittest.TestCase):
     def setUp(self):
-        TEST_RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
+        self.runtime_dir = TEST_RUNTIME_ROOT / f"{self._testMethodName}-{uuid4().hex[:8]}"
+        self.runtime_dir.mkdir(parents=True, exist_ok=True)
+        self.checkpoints_dir = self.runtime_dir / ".yarbis_checkpoints"
 
     def test_read_text_file_truncates_large_content(self):
-        file_path = TEST_RUNTIME_DIR / "large.txt"
+        file_path = self.runtime_dir / "large.txt"
         file_path.write_text("a" * (tools.MAX_READ_BYTES + 25), encoding="utf-8")
 
         result = tools.read_text_file(file_path.relative_to(tools.WORKSPACE_ROOT).as_posix())
@@ -26,17 +31,81 @@ class ToolsTestCase(unittest.TestCase):
 
         self.assertIn("Acceso denegado", result)
 
+    def test_write_text_file_blocks_protected_state_file(self):
+        result = tools.write_text_file("state.json", "{}")
+
+        self.assertIn("Escritura bloqueada", result)
+
+    def test_write_text_file_creates_checkpoint_and_diff_for_existing_file(self):
+        file_path = self.runtime_dir / "self_edit.py"
+        file_path.write_text("print('old')\n", encoding="utf-8")
+
+        with patch.object(tools, "CHECKPOINTS_DIR", self.checkpoints_dir):
+            result = tools.write_text_file(
+                file_path.relative_to(tools.WORKSPACE_ROOT).as_posix(),
+                "print('new')\n",
+            )
+
+        checkpoint_dirs = [item for item in self.checkpoints_dir.iterdir() if item.is_dir()]
+        self.assertEqual(len(checkpoint_dirs), 1)
+        metadata = json.loads((checkpoint_dirs[0] / "meta.json").read_text(encoding="utf-8"))
+
+        self.assertIn("Checkpoint previo:", result)
+        self.assertIn("Diff:", result)
+        self.assertIn("-print('old')", result)
+        self.assertIn("+print('new')", result)
+        self.assertEqual(
+            metadata["target_path"],
+            file_path.relative_to(tools.WORKSPACE_ROOT).as_posix(),
+        )
+        self.assertTrue(metadata["existed_before"])
+
+    def test_restore_checkpoint_recovers_previous_content(self):
+        file_path = self.runtime_dir / "recover_me.py"
+        file_path.write_text("print('stable')\n", encoding="utf-8")
+
+        with patch.object(tools, "CHECKPOINTS_DIR", self.checkpoints_dir):
+            write_result = tools.write_text_file(
+                file_path.relative_to(tools.WORKSPACE_ROOT).as_posix(),
+                "print('broken')\n",
+            )
+            checkpoint_id = next(
+                line.split(":", 1)[1].strip()
+                for line in write_result.splitlines()
+                if line.startswith("Checkpoint previo:")
+            )
+
+            restore_result = tools.restore_checkpoint(checkpoint_id)
+
+        self.assertIn("Archivo restaurado", restore_result)
+        self.assertEqual(file_path.read_text(encoding="utf-8"), "print('stable')\n")
+
+    def test_run_project_tests_reports_success(self):
+        fake_result = subprocess.CompletedProcess(
+            args=["python", "-m", "unittest"],
+            returncode=0,
+            stdout="Ran 1 test\nOK",
+            stderr="",
+        )
+
+        with patch.object(tools.subprocess, "run", return_value=fake_result) as run_mock:
+            result = tools.run_project_tests()
+
+        self.assertIn("Tests OK.", result)
+        self.assertIn("Ran 1 test", result)
+        self.assertEqual(run_mock.call_count, 1)
+
     def test_list_files_returns_relative_paths(self):
-        nested_dir = TEST_RUNTIME_DIR / "docs"
+        nested_dir = self.runtime_dir / "docs"
         nested_dir.mkdir(parents=True, exist_ok=True)
         (nested_dir / "note.txt").write_text("hola", encoding="utf-8")
 
-        result = tools.list_files(TEST_RUNTIME_DIR.relative_to(tools.WORKSPACE_ROOT).as_posix())
+        result = tools.list_files(self.runtime_dir.relative_to(tools.WORKSPACE_ROOT).as_posix())
 
-        self.assertIn("tests_runtime/tools_case/docs", result)
+        self.assertIn(nested_dir.relative_to(tools.WORKSPACE_ROOT).as_posix(), result)
 
     def test_state_tools_manage_profile_tasks_and_notes(self):
-        state_path = TEST_RUNTIME_DIR / "tool_state.json"
+        state_path = self.runtime_dir / "tool_state.json"
 
         with patch.object(memory, "STATE_FILE", state_path):
             profile_result = tools.update_profile(
@@ -74,7 +143,7 @@ class ToolsTestCase(unittest.TestCase):
         self.assertIn("Rutina", personal_notes)
 
     def test_request_user_input_persists_pending_question(self):
-        state_path = TEST_RUNTIME_DIR / "tool_pending_input_state.json"
+        state_path = self.runtime_dir / "tool_pending_input_state.json"
 
         with patch.object(memory, "STATE_FILE", state_path):
             result = tools.request_user_input(

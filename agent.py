@@ -9,10 +9,13 @@ from tools import (
     add_task,
     agent_overview,
     list_files,
+    list_checkpoints,
     list_notes,
     list_tasks,
     read_text_file,
     request_user_input,
+    restore_checkpoint,
+    run_project_tests,
     save_note,
     set_plan,
     update_profile,
@@ -60,6 +63,9 @@ tool_definitions = [
     list_files,
     read_text_file,
     write_text_file,
+    list_checkpoints,
+    restore_checkpoint,
+    run_project_tests,
 ]
 
 available_functions = {
@@ -75,6 +81,9 @@ available_functions = {
     "list_files": list_files,
     "read_text_file": read_text_file,
     "write_text_file": write_text_file,
+    "list_checkpoints": list_checkpoints,
+    "restore_checkpoint": restore_checkpoint,
+    "run_project_tests": run_project_tests,
 }
 
 SYSTEM_PROMPT = """
@@ -95,6 +104,10 @@ Reglas:
 - Si una tarea queda frenada por falta de informacion del usuario, marcalo con `update_task_status(..., status="blocked", result="...")`.
 - Guarda contexto personal estable con `update_profile` y hallazgos utiles con `save_note`.
 - Antes de actuar a ciegas, revisa el estado con `agent_overview`, `list_tasks` o `list_notes`.
+- Antes de editar archivos de codigo, lee primero el archivo actual con `read_text_file`.
+- `write_text_file` crea un checkpoint automatico y devuelve un diff. Usalo para cambios pequenos, enfocados y bien entendidos.
+- Despues de modificar codigo o tests, ejecuta `run_project_tests`.
+- Si un cambio rompe algo, revisa `list_checkpoints` y usa `restore_checkpoint` para volver al estado anterior.
 - Despues de cada accion, evalua el siguiente mejor paso.
 - Si una tarea ya quedo resuelta, dilo claramente y deja evidencia en el estado.
 - Responde en espanol.

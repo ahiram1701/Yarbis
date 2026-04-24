@@ -1,4 +1,9 @@
+import difflib
+import json
 import re
+import subprocess
+import sys
+from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
 
@@ -11,11 +16,27 @@ from memory import (
 )
 
 WORKSPACE_ROOT = Path(__file__).resolve().parent
+CHECKPOINTS_DIR = WORKSPACE_ROOT / ".yarbis_checkpoints"
 MAX_LIST_ITEMS = 200
 MAX_READ_BYTES = 16_000
 MAX_WRITE_BYTES = 64_000
 MAX_WRITE_PREVIEW_CHARS = 600
-IGNORED_LISTING_NAMES = {".git", ".venv", "__pycache__", "tests_runtime"}
+MAX_DIFF_LINES = 160
+MAX_TEST_OUTPUT_CHARS = 6_000
+IGNORED_LISTING_NAMES = {
+    ".git",
+    ".venv",
+    "__pycache__",
+    "tests_runtime",
+    ".yarbis_checkpoints",
+}
+PROTECTED_WRITE_ROOT_NAMES = {
+    ".git",
+    ".venv",
+    "__pycache__",
+    ".yarbis_checkpoints",
+}
+PROTECTED_WRITE_PATHS = {"state.json"}
 CLEAR_VALUE = "[clear]"
 
 
@@ -29,6 +50,152 @@ def _resolve_workspace_path(path: str) -> tuple[Path | None, str | None]:
         return None, f"Acceso denegado. Solo puedes usar rutas dentro de: {WORKSPACE_ROOT}"
 
     return resolved, None
+
+
+def _workspace_relative(path: Path) -> str:
+    return path.relative_to(WORKSPACE_ROOT).as_posix()
+
+
+def _validate_write_path(path: Path) -> str | None:
+    try:
+        relative_path = path.relative_to(WORKSPACE_ROOT)
+    except ValueError:
+        return f"Acceso denegado. Solo puedes usar rutas dentro de: {WORKSPACE_ROOT}"
+
+    if relative_path.as_posix() in PROTECTED_WRITE_PATHS:
+        return (
+            f"Escritura bloqueada en {relative_path.as_posix()}. "
+            "Usa las tools del agente para modificar ese estado."
+        )
+
+    if relative_path.parts and relative_path.parts[0] in PROTECTED_WRITE_ROOT_NAMES:
+        return (
+            f"Escritura bloqueada en {relative_path.parts[0]}. "
+            "Esa ruta esta protegida."
+        )
+
+    return None
+
+
+def _truncate_output(text: str, limit: int) -> str:
+    rendered = str(text)
+    if len(rendered) <= limit:
+        return rendered
+
+    omitted = len(rendered) - limit
+    return f"{rendered[:limit]}\n\n...[truncado {omitted} caracteres]"
+
+
+def _new_id(prefix: str) -> str:
+    return f"{prefix}-{uuid4().hex[:8]}"
+
+
+def _new_checkpoint_id() -> str:
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+    return f"checkpoint-{timestamp}-{uuid4().hex[:6]}"
+
+
+def _create_checkpoint(
+    file_path: Path,
+    previous_content: str,
+    existed_before: bool,
+    reason: str,
+) -> tuple[str | None, str | None]:
+    checkpoint_id = _new_checkpoint_id()
+    checkpoint_dir = CHECKPOINTS_DIR / checkpoint_id
+    metadata = {
+        "id": checkpoint_id,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "target_path": _workspace_relative(file_path),
+        "existed_before": bool(existed_before),
+        "reason": str(reason).strip() or "auto_before_write",
+    }
+
+    try:
+        checkpoint_dir.mkdir(parents=True, exist_ok=False)
+        if existed_before:
+            (checkpoint_dir / "before.txt").write_text(previous_content, encoding="utf-8")
+        (checkpoint_dir / "meta.json").write_text(
+            json.dumps(metadata, ensure_ascii=True, indent=2),
+            encoding="utf-8",
+        )
+    except OSError as exc:
+        return None, f"No pude crear el checkpoint previo: {exc}"
+
+    return checkpoint_id, None
+
+
+def _load_checkpoint_metadata(checkpoint_dir: Path) -> dict | None:
+    meta_path = checkpoint_dir / "meta.json"
+    if not meta_path.exists():
+        return None
+
+    try:
+        return json.loads(meta_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
+def _iter_checkpoint_entries() -> list[tuple[dict, Path]]:
+    if not CHECKPOINTS_DIR.exists():
+        return []
+
+    entries = []
+    for checkpoint_dir in CHECKPOINTS_DIR.iterdir():
+        if not checkpoint_dir.is_dir():
+            continue
+
+        metadata = _load_checkpoint_metadata(checkpoint_dir)
+        if metadata is None:
+            continue
+
+        entries.append((metadata, checkpoint_dir))
+
+    entries.sort(key=lambda item: str(item[0].get("timestamp", "")), reverse=True)
+    return entries
+
+
+def _find_checkpoint_dir(checkpoint_id: str) -> tuple[Path | None, dict | None, str | None]:
+    cleaned_id = str(checkpoint_id).strip().lower()
+    if not cleaned_id:
+        return None, None, "Debes indicar un checkpoint."
+
+    matches = []
+    for metadata, checkpoint_dir in _iter_checkpoint_entries():
+        if str(metadata.get("id", "")).lower().startswith(cleaned_id):
+            matches.append((checkpoint_dir, metadata))
+
+    if not matches:
+        return None, None, f"No encontre un checkpoint con id o prefijo: {checkpoint_id}"
+
+    if len(matches) > 1:
+        return None, None, f"El prefijo coincide con varios checkpoints: {checkpoint_id}"
+
+    checkpoint_dir, metadata = matches[0]
+    return checkpoint_dir, metadata, None
+
+
+def _render_diff_preview(path: Path, previous_content: str, new_content: str) -> str:
+    diff_lines = list(
+        difflib.unified_diff(
+            previous_content.splitlines(),
+            new_content.splitlines(),
+            fromfile=f"a/{_workspace_relative(path)}",
+            tofile=f"b/{_workspace_relative(path)}",
+            lineterm="",
+        )
+    )
+
+    if not diff_lines:
+        return "Sin cambios detectados."
+
+    preview_lines = diff_lines[:MAX_DIFF_LINES]
+    if len(diff_lines) > MAX_DIFF_LINES:
+        preview_lines.append(
+            f"... diff truncado, {len(diff_lines) - MAX_DIFF_LINES} lineas mas."
+        )
+
+    return "\n".join(preview_lines)
 
 
 def list_files(path: str = ".") -> str:
@@ -107,18 +274,22 @@ def read_text_file(path: str) -> str:
 
 def write_text_file(path: str, content: str) -> str:
     """
-    Escribe texto en un archivo.
+    Escribe texto en un archivo de forma segura.
 
     Args:
         path (str): Ruta destino.
         content (str): Contenido a guardar.
 
     Returns:
-        str: Resultado de la operacion.
+        str: Resultado de la operacion, con checkpoint y diff.
     """
     file_path, error = _resolve_workspace_path(path)
     if error:
         return error
+
+    write_error = _validate_write_path(file_path)
+    if write_error:
+        return write_error
 
     encoded_content = content.encode("utf-8")
     if len(encoded_content) > MAX_WRITE_BYTES:
@@ -127,20 +298,238 @@ def write_text_file(path: str, content: str) -> str:
             f"{len(encoded_content)} bytes. Limite: {MAX_WRITE_BYTES} bytes."
         )
 
+    existed_before = file_path.exists()
+    if existed_before and not file_path.is_file():
+        return f"No es un archivo valido: {path}"
+
+    previous_content = ""
+    if existed_before:
+        try:
+            previous_content = file_path.read_text(encoding="utf-8")
+        except OSError as exc:
+            return f"No pude leer el archivo antes de escribir: {exc}"
+
+    if existed_before and previous_content == content:
+        return (
+            f"Sin cambios en: {_workspace_relative(file_path)}\n"
+            "El contenido nuevo coincide con el archivo actual."
+        )
+
+    checkpoint_id, checkpoint_error = _create_checkpoint(
+        file_path=file_path,
+        previous_content=previous_content,
+        existed_before=existed_before,
+        reason="auto_before_write",
+    )
+    if checkpoint_error:
+        return checkpoint_error
+
     try:
         file_path.parent.mkdir(parents=True, exist_ok=True)
         file_path.write_text(content, encoding="utf-8")
     except OSError as exc:
-        return f"Error escribiendo archivo: {exc}"
+        return (
+            f"Error escribiendo archivo despues de crear {checkpoint_id}: {exc}\n"
+            "Puedes restaurar el checkpoint si hace falta."
+        )
 
     preview = content[:MAX_WRITE_PREVIEW_CHARS]
     if len(content) > MAX_WRITE_PREVIEW_CHARS:
         preview += "\n... (vista previa truncada)"
 
+    diff_preview = _render_diff_preview(file_path, previous_content, content)
+    operation = "Archivo actualizado" if existed_before else "Archivo creado"
+
     return (
-        f"Archivo guardado correctamente en: {file_path.relative_to(WORKSPACE_ROOT).as_posix()}\n"
+        f"{operation} correctamente en: {_workspace_relative(file_path)}\n"
+        f"Checkpoint previo: {checkpoint_id}\n"
         f"Caracteres escritos: {len(content)}\n"
-        f"Vista previa:\n{preview}"
+        "Vista previa:\n"
+        f"{preview}\n"
+        "Diff:\n"
+        f"{diff_preview}\n"
+        "Siguiente paso recomendado: ejecuta `run_project_tests` si tocaste codigo o tests."
+    )
+
+
+def list_checkpoints(path: str = "", limit: int = 10) -> str:
+    """
+    Lista checkpoints disponibles para restaurar cambios.
+
+    Args:
+        path (str): Ruta opcional para filtrar por archivo.
+        limit (int): Maximo de checkpoints a mostrar.
+
+    Returns:
+        str: Listado resumido de checkpoints.
+    """
+    entries = _iter_checkpoint_entries()
+    if not entries:
+        return "No hay checkpoints guardados."
+
+    filtered_entries = entries
+    if str(path).strip():
+        target_path, error = _resolve_workspace_path(path)
+        if error:
+            return error
+        target_relative = _workspace_relative(target_path)
+        filtered_entries = [
+            (metadata, checkpoint_dir)
+            for metadata, checkpoint_dir in entries
+            if metadata.get("target_path") == target_relative
+        ]
+
+    if not filtered_entries:
+        return "No hay checkpoints que coincidan."
+
+    try:
+        normalized_limit = max(1, min(20, int(limit)))
+    except (TypeError, ValueError):
+        normalized_limit = 10
+
+    lines = []
+    for metadata, _ in filtered_entries[:normalized_limit]:
+        existed_before = "si" if metadata.get("existed_before") else "no"
+        lines.append(
+            f"[{metadata.get('id', 'checkpoint-desconocido')}] "
+            f"{metadata.get('target_path', '?')} "
+            f"(antes_existia={existed_before}, motivo={metadata.get('reason', '-')}, "
+            f"fecha={metadata.get('timestamp', '-')})"
+        )
+
+    return "\n".join(lines)
+
+
+def restore_checkpoint(checkpoint_id: str) -> str:
+    """
+    Restaura un archivo usando un checkpoint previo.
+
+    Args:
+        checkpoint_id (str): Id completo o prefijo unico del checkpoint.
+
+    Returns:
+        str: Resultado de la restauracion.
+    """
+    checkpoint_dir, metadata, error = _find_checkpoint_dir(checkpoint_id)
+    if error:
+        return error
+
+    target_path, resolve_error = _resolve_workspace_path(str(metadata.get("target_path", "")))
+    if resolve_error:
+        return resolve_error
+
+    write_error = _validate_write_path(target_path)
+    if write_error:
+        return write_error
+
+    existed_before = bool(metadata.get("existed_before"))
+    try:
+        if existed_before:
+            before_path = checkpoint_dir / "before.txt"
+            if not before_path.exists():
+                return f"El checkpoint {metadata.get('id')} no tiene contenido para restaurar."
+            previous_content = before_path.read_text(encoding="utf-8")
+            target_path.parent.mkdir(parents=True, exist_ok=True)
+            target_path.write_text(previous_content, encoding="utf-8")
+            action = "Archivo restaurado desde el checkpoint."
+        else:
+            if target_path.exists():
+                if not target_path.is_file():
+                    return f"No puedo restaurar sobre una ruta no valida: {_workspace_relative(target_path)}"
+                target_path.unlink()
+            action = "Checkpoint restaurado. Se elimino el archivo creado despues del checkpoint."
+    except OSError as exc:
+        return f"No pude restaurar el checkpoint {metadata.get('id')}: {exc}"
+
+    return (
+        f"{action}\n"
+        f"Checkpoint usado: {metadata.get('id')}\n"
+        f"Archivo: {metadata.get('target_path')}\n"
+        "Siguiente paso recomendado: ejecuta `run_project_tests` para validar el estado restaurado."
+    )
+
+
+def run_project_tests(
+    test_target: str = "tests",
+    pattern: str = "test*.py",
+    timeout_seconds: int = 120,
+) -> str:
+    """
+    Ejecuta tests del proyecto dentro del workspace.
+
+    Args:
+        test_target (str): Carpeta o archivo de tests a ejecutar.
+        pattern (str): Patron para discovery si el objetivo es una carpeta.
+        timeout_seconds (int): Timeout maximo para la corrida.
+
+    Returns:
+        str: Resumen del resultado y salida relevante.
+    """
+    cleaned_target = str(test_target).strip() or "tests"
+    target_path, error = _resolve_workspace_path(cleaned_target)
+    if error:
+        return error
+    if not target_path.exists():
+        return f"No existe la ruta de tests: {cleaned_target}"
+
+    try:
+        normalized_timeout = max(10, min(600, int(timeout_seconds)))
+    except (TypeError, ValueError):
+        normalized_timeout = 120
+
+    if target_path.is_dir():
+        relative_target = _workspace_relative(target_path)
+        command = [
+            sys.executable,
+            "-m",
+            "unittest",
+            "discover",
+            "-s",
+            relative_target,
+            "-p",
+            str(pattern).strip() or "test*.py",
+        ]
+    elif target_path.is_file():
+        if target_path.suffix.lower() != ".py":
+            return "Solo puedo ejecutar archivos de tests Python."
+        module_name = target_path.relative_to(WORKSPACE_ROOT).with_suffix("").as_posix().replace("/", ".")
+        command = [sys.executable, "-m", "unittest", module_name]
+    else:
+        return f"No es una ruta valida para tests: {cleaned_target}"
+
+    try:
+        completed = subprocess.run(
+            command,
+            cwd=str(WORKSPACE_ROOT),
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=normalized_timeout,
+        )
+    except subprocess.TimeoutExpired:
+        return (
+            f"Los tests excedieron el timeout de {normalized_timeout} segundos.\n"
+            f"Comando: {' '.join(command)}"
+        )
+    except OSError as exc:
+        return f"No pude ejecutar los tests: {exc}"
+
+    combined_output = "\n".join(
+        part.strip()
+        for part in (completed.stdout, completed.stderr)
+        if str(part).strip()
+    )
+    if not combined_output:
+        combined_output = "La corrida no produjo salida visible."
+
+    combined_output = _truncate_output(combined_output, MAX_TEST_OUTPUT_CHARS)
+    status_line = "Tests OK." if completed.returncode == 0 else f"Tests con fallos (exit={completed.returncode})."
+
+    return (
+        f"{status_line}\n"
+        f"Comando: {' '.join(command)}\n"
+        f"Salida:\n{combined_output}"
     )
 
 
@@ -150,10 +539,6 @@ def _split_text_items(value: str) -> list[str]:
 
     items = [item.strip() for item in re.split(r"[\n,;]+", value)]
     return [item for item in items if item]
-
-
-def _new_id(prefix: str) -> str:
-    return f"{prefix}-{uuid4().hex[:8]}"
 
 
 def _find_task(tasks: list[dict], task_id: str) -> dict | None:
