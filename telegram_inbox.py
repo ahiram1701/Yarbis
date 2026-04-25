@@ -4,7 +4,13 @@ from typing import Any, Callable
 
 from memory import load_state, save_state
 from notifications import get_telegram_settings, send_telegram_message, telegram_api_request
-from session import get_status_text, run_auto_with_output, run_cycle_with_output, submit_user_reply
+from session import (
+    get_status_text,
+    run_auto_with_output,
+    run_cycle_with_output,
+    submit_user_reply,
+    update_goal,
+)
 
 _POLL_IDLE_SECONDS = 3
 _poller_thread = None
@@ -78,6 +84,8 @@ def _help_text() -> str:
         "Yarbis por Telegram listo.\n\n"
         "Comandos disponibles:\n"
         "/status - ver el estado actual\n"
+        "/goal TEXTO - cambiar el objetivo\n"
+        "/objetivo TEXTO - cambiar el objetivo\n"
         "/run - ejecutar un ciclo\n"
         "/auto - ejecutar el modo autonomo con los ciclos por defecto\n"
         "/auto N - ejecutar N ciclos\n"
@@ -141,19 +149,29 @@ def _job_label_for_message(text: str) -> str:
         return "Ciclo"
     if command == "/auto":
         return "Modo autonomo"
+    if command in {"/goal", "/objetivo"}:
+        return "Objetivo"
 
     return ""
 
 
 def _dispatch_command(command_text: str) -> str:
-    parts = str(command_text).strip().split()
+    cleaned_text = str(command_text).strip()
+    parts = cleaned_text.split()
+    command_parts = cleaned_text.split(maxsplit=1)
     command = parts[0].split("@")[0].lower() if parts else ""
+    argument_text = command_parts[1].strip() if len(command_parts) > 1 else ""
 
     if command in {"/start", "/help"}:
         return _help_text()
 
     if command == "/status":
         return get_status_text()
+
+    if command in {"/goal", "/objetivo"}:
+        if not argument_text:
+            return "Uso: /goal nuevo objetivo"
+        return update_goal(argument_text)
 
     if command == "/run":
         return run_cycle_with_output(emit_notifications=False)

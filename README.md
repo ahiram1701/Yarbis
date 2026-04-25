@@ -195,6 +195,7 @@ Si dejas `Chat ID` vacio, Yarbis vinculara automaticamente el primer chat privad
 
 - responder con texto libre cuando Yarbis te haga una pregunta
 - usar `/status` para ver el estado actual
+- usar `/goal nuevo objetivo` o `/objetivo nuevo objetivo` para cambiar el objetivo y reiniciar el contexto operativo
 - usar `/run` para ejecutar un ciclo
 - usar `/auto` o `/auto 3` para lanzar el modo autonomo
 

@@ -86,6 +86,79 @@ class TelegramInboxTestCase(unittest.TestCase):
         )
         send_mock.assert_called_once_with("Respuesta procesada.", chat_id="123")
 
+    def test_process_telegram_update_routes_goal_command_to_update_goal(self):
+        state_path = TEST_RUNTIME_DIR / "telegram_goal_state.json"
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+
+        seeded_state = memory.normalize_state({
+            "goal": "Objetivo anterior",
+            "messages": [{"role": "assistant", "content": "avance previo"}],
+            "tasks": [{"id": "task-1", "title": "Vieja tarea", "status": "pending"}],
+            "current_plan": ["Paso viejo"],
+            "notifications": {
+                "enabled": True,
+                "channels": ["telegram"],
+                "telegram": {
+                    "bot_token": "bot-123",
+                    "chat_id": "123",
+                },
+            },
+        })
+
+        update = {
+            "update_id": 3,
+            "message": {
+                "chat": {"id": 123, "type": "private"},
+                "text": "/objetivo Preparar el lanzamiento del producto",
+            },
+        }
+
+        with patch.object(memory, "STATE_FILE", state_path):
+            memory.save_state(seeded_state)
+            with patch.object(telegram_inbox, "send_telegram_message", return_value=True) as send_mock:
+                summary = telegram_inbox.process_telegram_update(update)
+                state = memory.load_state()
+
+        self.assertEqual(state["goal"], "Preparar el lanzamiento del producto")
+        self.assertEqual(state["tasks"], [])
+        self.assertEqual(state["current_plan"], [])
+        self.assertIn("Objetivo actualizado", send_mock.call_args.args[0])
+        self.assertEqual(send_mock.call_args.kwargs["chat_id"], "123")
+        self.assertIn("Telegram: procesado", summary)
+
+    def test_goal_command_without_text_returns_usage(self):
+        state_path = TEST_RUNTIME_DIR / "telegram_goal_usage_state.json"
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+
+        seeded_state = memory.normalize_state({
+            "goal": "Objetivo anterior",
+            "notifications": {
+                "enabled": True,
+                "channels": ["telegram"],
+                "telegram": {
+                    "bot_token": "bot-123",
+                    "chat_id": "123",
+                },
+            },
+        })
+
+        update = {
+            "update_id": 4,
+            "message": {
+                "chat": {"id": 123, "type": "private"},
+                "text": "/goal",
+            },
+        }
+
+        with patch.object(memory, "STATE_FILE", state_path):
+            memory.save_state(seeded_state)
+            with patch.object(telegram_inbox, "send_telegram_message", return_value=True) as send_mock:
+                telegram_inbox.process_telegram_update(update)
+                state = memory.load_state()
+
+        self.assertEqual(state["goal"], "Objetivo anterior")
+        send_mock.assert_called_once_with("Uso: /goal nuevo objetivo", chat_id="123")
+
     def test_process_telegram_update_emits_activity_before_finishing_processing(self):
         state_path = TEST_RUNTIME_DIR / "telegram_activity_state.json"
         state_path.parent.mkdir(parents=True, exist_ok=True)
