@@ -1,54 +1,105 @@
 # Yarbis
 
-Yarbis es un agente local para convertir un objetivo general en trabajo accionable usando Ollama, memoria persistente y herramientas seguras de filesystem.
+Yarbis es un agente local para convertir un objetivo general en trabajo accionable usando Ollama, memoria persistente, herramientas seguras de workspace, busqueda web controlada y notificaciones opcionales.
 
-En esta version ya funciona mas como un agente personal local:
+Funciona en tres modos:
 
-- Mantiene un perfil personal con preferencias y restricciones.
-- Guarda notas persistentes para no perder contexto entre ciclos.
-- Lleva una cola de tareas con estados (`pending`, `in_progress`, `blocked`, `done`).
-- Puede sostener un plan actual de varios pasos.
-- Tiene un modo autonomo que ejecuta varios ciclos y puede detenerse cuando ya no quedan tareas abiertas.
-- Puede buscar informacion publica y reciente en internet cuando hace falta para destrabar una tarea.
-- Puede editar archivos del workspace con un flujo mas seguro: checkpoint previo, diff de cambios y restauracion.
-- Puede validar cambios de codigo ejecutando los tests del proyecto.
+- app de escritorio con Tkinter (`yarbis_desktop.py`)
+- terminal interactiva (`main.py`)
+- servicio de fondo de usuario (`yarbis_service.py`) gestionado desde la interfaz grafica
+
+## Estado actual
+
+Yarbis ya funciona como agente personal local:
+
+- mantiene un perfil personal con nombre, contexto, preferencias y restricciones
+- guarda notas persistentes para conservar contexto entre ciclos
+- mantiene tareas con estados `pending`, `in_progress`, `blocked` y `done`
+- sostiene un plan actual de pasos cortos
+- ejecuta un ciclo controlado o varios ciclos en modo autonomo
+- se detiene cuando necesita una respuesta del usuario, cuando ya no quedan tareas abiertas o cuando el ciclo ya cerro sin seguimiento util
+- puede buscar informacion publica con DuckDuckGo HTML y leer paginas web publicas bajo una politica persistente
+- puede editar archivos dentro del workspace con checkpoint previo, vista previa y diff resumido
+- puede restaurar checkpoints y ejecutar tests del proyecto
+- ejecuta un autoanalisis de identidad, codigo fuente, sistema operativo y hardware al arrancar
+- puede recibir y responder mensajes por Telegram cuando ese canal esta configurado
+- puede ejecutarse en segundo plano y arrancar con Windows desde la interfaz grafica
 
 ## Requisitos
 
+- Windows para la app de escritorio, notificaciones nativas y arranque con Windows
 - Python 3.11 o superior
 - Ollama ejecutandose localmente
-- Un modelo disponible con el nombre configurado en `agent.py`
+- un modelo disponible en Ollama; por defecto se usa `qwen3.5:2b`
+
+Dependencias Python declaradas:
+
+- `ollama==0.6.1`
+- `win11toast==0.36.3`
 
 ## Instalacion
 
-```bash
+```powershell
 python -m venv .venv
-.venv\Scripts\activate
-pip install -r requirements.txt
+.\.venv\Scripts\activate
+python -m pip install -r requirements.txt
 ```
 
 ## Uso rapido sin terminal
 
-Si ya tienes `.venv` y dependencias listas, ahora puedes abrir Yarbis con doble clic:
+Si ya tienes `.venv` y dependencias listas, puedes abrir Yarbis con doble clic:
 
-- `abrir_yarbis.vbs`: lanza la app de escritorio sin mostrar consola
-- `abrir_yarbis.cmd`: alternativa visible por si quieres revisar errores de arranque
+- `abrir_yarbis.vbs`: abre la app de escritorio sin mostrar consola
+- `abrir_yarbis.cmd`: abre la app con una ventana visible por si necesitas revisar errores de arranque
 
-La interfaz de escritorio te deja:
+Tambien puedes iniciarlo desde PowerShell:
 
-- cambiar objetivo
-- ejecutar un ciclo o varios en modo autonomo
-- alternar entre modo oscuro y claro, recordando tu preferencia
+```powershell
+.\.venv\Scripts\python.exe yarbis_desktop.py
+```
+
+La interfaz de escritorio permite:
+
+- cambiar el objetivo
+- ejecutar un ciclo
+- ejecutar modo autonomo indicando de 1 a 20 ciclos
 - responder preguntas pendientes
+- enviar contexto libre al agente
 - editar perfil
-- guardar notas y tareas
-- revisar el estado sin tocar la terminal
-- recibir notificaciones nativas de Windows y, opcionalmente, avisos en iPhone via ntfy o Telegram cuando Yarbis termina el modo autonomo o necesita una respuesta tuya
+- guardar notas
+- crear tareas manuales
+- revisar estado y actividad
+- alternar tema claro/oscuro
+- configurar y probar notificaciones
+- activar o desactivar el servicio de fondo
+- configurar si el servicio se abre al iniciar Windows
+
+## Servicio de fondo
+
+El grupo `Servicio` de la interfaz grafica permite dejar Yarbis corriendo sin ventana. Este servicio es un proceso de usuario, no un Windows Service registrado en el Service Control Manager.
+
+Cuando esta activo:
+
+- se lanza con `.venv\Scripts\pythonw.exe` si existe, o con el Python actual como respaldo
+- ejecuta `yarbis_service.py`
+- escribe su PID en `.yarbis_runtime/service.pid`
+- escucha la marca de parada `.yarbis_runtime/service.stop`
+- registra actividad y errores en `.yarbis_runtime/service.log`
+- mantiene activo el inbox de Telegram si Telegram esta configurado
+- evita que la app de escritorio o la terminal inicien un segundo lector de Telegram
+
+La casilla `Abrir al iniciar Windows` registra o elimina el comando de arranque en:
+
+```text
+HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Run
+```
+
+El valor se llama `Yarbis Service`, asi que no requiere permisos de administrador y aplica al usuario actual de Windows.
 
 ## Uso por terminal
 
-```bash
-python main.py
+```powershell
+.\.venv\Scripts\python.exe main.py
 ```
 
 Comandos disponibles:
@@ -56,75 +107,219 @@ Comandos disponibles:
 - `goal`: actualiza el objetivo actual
 - `run`: ejecuta un ciclo del agente
 - `auto`: ejecuta varios ciclos seguidos
-- `status`: muestra objetivo, perfil, plan, tareas y notas recientes
-- `self`: muestra lo que Yarbis sabe de si mismo, su codigo fuente, el sistema operativo y el hardware local
+- `status`: muestra objetivo, perfil, plan, tareas, notas, internet, autoconocimiento y notificaciones
+- `self`: refresca y muestra lo que Yarbis sabe de si mismo, su codigo fuente, el sistema operativo y el hardware local
 - `profile`: actualiza nombre, contexto, preferencias y restricciones
-- `note`: guarda una nota rapida persistente
+- `note`: guarda una nota persistente
 - `task`: agrega una tarea manual al backlog
-- `reply`: envia una respuesta libre al agente; si habia una pregunta pendiente, reanuda el modo autonomo, y si no, ejecuta un ciclo con esa informacion
+- `reply`: envia una respuesta libre; si habia una pregunta pendiente, reanuda el modo autonomo
 - `exit`: termina la sesion
 
-Si Yarbis detecta que le falta un dato importante, ahora debe pedirlo en vez de inventarlo. Cuando eso pase:
+Si escribes texto libre mientras hay una pregunta pendiente, Yarbis lo toma como respuesta. Si no hay pregunta pendiente, usa `reply` para mandar contexto libre.
 
-- el modo `auto` se detiene para no seguir asumiendo cosas
-- la pregunta queda registrada en el estado
-- puedes responder con `reply` o escribiendo la respuesta directamente si hay una pregunta pendiente
+## Flujo recomendado
 
-Al cambiar `goal`, Yarbis reinicia el contexto operativo de ese objetivo:
+1. Define un objetivo claro con `goal` o desde la interfaz.
+2. Carga contexto personal con `profile`.
+3. Guarda notas o tareas cuando haya informacion estable.
+4. Ejecuta `run` para un paso controlado o `auto` para dejar avanzar varios ciclos.
+5. Si Yarbis pregunta algo, responde desde la app, la terminal o Telegram.
 
-- limpia mensajes conversacionales previos
+Al cambiar `goal`, Yarbis reinicia el contexto operativo del objetivo:
+
+- limpia mensajes previos
 - vacia tareas y plan actual
-- conserva perfil y notas persistentes
+- borra el ultimo resultado
+- limpia preguntas pendientes
+- conserva perfil, notas, ajustes, notificaciones e internet
 
-## Como usarlo como agente personal local
+## Telegram
 
-Un flujo util suele ser:
+Telegram funciona como canal de notificaciones y tambien como inbox remoto.
 
-1. Define tu objetivo con `goal`.
-2. Carga tu contexto personal con `profile`.
-3. Si hace falta, agrega notas o tareas manuales con `note` y `task`.
-4. Ejecuta `run` para un paso controlado o `auto` para dejarlo avanzar solo varios ciclos.
+Para configurarlo desde la interfaz:
 
-Si el agente te hace una pregunta para destrabar el trabajo, respondela y Yarbis retomara automaticamente el modo autonomo desde ahi.
+1. Crea un bot con `@BotFather`.
+2. Copia el token.
+3. Abre Yarbis.
+4. Pulsa `Notificaciones`.
+5. Marca `Activar notificaciones` y `Telegram`.
+6. Pega el `Bot token de Telegram`.
+7. Guarda.
+8. Abre el chat con el bot y envia `/start`.
 
-Ejemplos de cosas que puedes guardar en `profile`:
+Si `Chat ID` queda vacio, Yarbis vincula automaticamente el primer chat privado que escriba al bot.
 
-- Preferencias: "respuestas breves, soluciones locales, prioridad a Python"
-- Restricciones: "no usar nube, no borrar archivos, no tocar .git sin pedirlo"
+Comandos disponibles por Telegram:
 
-El agente tambien puede mantener ese contexto por si mismo durante la ejecucion usando sus propias tools internas (`add_task`, `update_task_status`, `save_note`, `set_plan`, etc.).
+- `/start` o `/help`: muestra ayuda
+- `/status`: muestra el estado actual
+- `/goal nuevo objetivo`: cambia el objetivo
+- `/objetivo nuevo objetivo`: alias de `/goal`
+- `/run`: ejecuta un ciclo
+- `/auto`: ejecuta modo autonomo con los ciclos por defecto
+- `/auto 3`: ejecuta el numero indicado de ciclos
 
-## Busqueda web bajo demanda
+Los mensajes de texto sin `/` se procesan como respuesta o contexto libre. Por ahora Telegram solo procesa texto.
 
-Yarbis ahora puede:
+## Notificaciones
 
-- buscar informacion publica y reciente con `web_search`
-- leer paginas puntuales con `fetch_web_page`
-- decidir por si mismo cuando conviene buscar afuera antes de pedirte un dato que en realidad es publico
+Canales soportados:
 
-La politica de internet queda persistida en el estado y por defecto usa:
+- Windows, usando `win11toast`
+- ntfy
+- Telegram
 
-- modo `auto`
-- proveedor `duckduckgo_html`
-- lectura solo de URLs `http` o `https`
-- bloqueo de `localhost`, IPs privadas y dominios restringidos por politica
+Desde la interfaz, el boton `Notificaciones` permite:
 
-Si quieres cambiar esa politica, puedes pedirselo en lenguaje natural, por ejemplo:
+- activar o desactivar notificaciones
+- elegir canales
+- configurar servidor, topic, token, prioridad y tags de ntfy
+- configurar token y chat ID de Telegram
+- enviar una prueba con `Probar notificacion`
+
+Ejemplo con ntfy:
+
+```powershell
+$env:YARBIS_NOTIFICATION_CHANNELS="windows,ntfy"
+$env:YARBIS_NTFY_TOPIC="yarbis-tu-topic-secreto"
+.\.venv\Scripts\python.exe yarbis_desktop.py
+```
+
+Ejemplo con Telegram:
+
+```powershell
+$env:YARBIS_NOTIFICATION_CHANNELS="telegram"
+$env:YARBIS_TELEGRAM_BOT_TOKEN="123456:tu-token"
+.\.venv\Scripts\python.exe yarbis_desktop.py
+```
+
+Para desactivar todas las notificaciones:
+
+```powershell
+$env:YARBIS_NOTIFICATIONS="0"
+.\.venv\Scripts\python.exe yarbis_desktop.py
+```
+
+## Variables de entorno
+
+Modelo y ejecucion:
+
+```powershell
+$env:YARBIS_MODEL="qwen3.5:2b"
+$env:YARBIS_OLLAMA_TIMEOUT_SECONDS="900"
+$env:YARBIS_EMPTY_RESPONSE_RETRIES="1"
+```
+
+Notificaciones:
+
+```powershell
+$env:YARBIS_NOTIFICATIONS="1"
+$env:YARBIS_NOTIFICATION_CHANNELS="windows,ntfy,telegram"
+$env:YARBIS_NTFY_SERVER="https://ntfy.sh"
+$env:YARBIS_NTFY_TOPIC="yarbis-tu-topic-secreto"
+$env:YARBIS_NTFY_TOKEN=""
+$env:YARBIS_NTFY_PRIORITY="high"
+$env:YARBIS_NTFY_TAGS="yarbis"
+$env:YARBIS_NTFY_TIMEOUT_SECONDS="10"
+$env:YARBIS_TELEGRAM_API_BASE="https://api.telegram.org"
+$env:YARBIS_TELEGRAM_BOT_TOKEN="123456:tu-token"
+$env:YARBIS_TELEGRAM_CHAT_ID="123456789"
+$env:YARBIS_TELEGRAM_TIMEOUT_SECONDS="10"
+$env:YARBIS_TELEGRAM_POLL_TIMEOUT_SECONDS="25"
+```
+
+Los ajustes guardados en `state.json` se usan cuando no hay una variable de entorno que los sobrescriba.
+
+## Memoria y configuracion
+
+El archivo `state.json` guarda:
+
+- objetivo actual
+- historial conversacional reciente
+- ultimo resultado
+- conteo de ciclos
+- perfil
+- notas
+- tareas
+- plan actual
+- pregunta pendiente
+- limites de autonomia
+- tema de la interfaz
+- politica de internet
+- resumen de autoconocimiento
+- configuracion de notificaciones
+
+El estado se normaliza antes de guardarse:
+
+- historial: hasta 40 mensajes
+- notas: hasta 30
+- tareas: hasta 60
+- plan: hasta 12 pasos
+- perfil: hasta 12 preferencias y 12 restricciones
+- pregunta pendiente: hasta 280 caracteres
+- resumen de autoconocimiento: hasta 20,000 caracteres
+
+`state.json` y `state.json.tmp` estan ignorados por git.
+
+## Busqueda web
+
+La politica de internet queda persistida en `state.json`.
+
+Valores actuales:
+
+- modo: `auto` u `off`
+- proveedor: `duckduckgo_html`
+- resultados por busqueda: 1 a 10, por defecto 5
+- caracteres por pagina: 1,000 a 30,000, por defecto 12,000
+- timeout por request: 3 a 60 segundos, por defecto 10
+- dominios permitidos opcionales
+- dominios bloqueados opcionales
+
+La lectura web solo permite URLs publicas `http` y `https`. Bloquea `localhost`, dominios `.local`, IPs privadas, loopback, link-local, multicast, reservadas o no especificadas.
+
+Puedes pedir cambios en lenguaje natural, por ejemplo:
 
 - "desactiva internet por ahora"
 - "limita internet a docs.python.org"
 - "bloquea wikipedia.org en las busquedas"
 
-## Autoedicion segura del proyecto
+Internamente el agente usa `update_internet_settings`, `web_search` y `fetch_web_page`.
 
-Yarbis ya puede trabajar sobre archivos del propio workspace, incluido su codigo fuente, pero ahora lo hace con mas control:
+## Tools internas
 
-- Antes de escribir un archivo crea un checkpoint automatico en `.yarbis_checkpoints/`.
-- Cada escritura devuelve una vista previa y un diff resumido del cambio.
-- Si modifica codigo o tests, ahora esta instruido para ejecutar validaciones con los tests del proyecto.
-- Si un cambio sale mal, puede listar checkpoints y restaurar un estado anterior del archivo.
+Yarbis expone al modelo estas herramientas:
 
-Rutas protegidas actualmente:
+- `agent_overview`: resumen del estado actual
+- `self_overview`: identidad, codigo fuente y entorno local
+- `update_profile`: perfil personal
+- `update_internet_settings`: politica web
+- `request_user_input`: registra una pregunta pendiente
+- `save_note` y `list_notes`: memoria persistente
+- `add_task`, `list_tasks` y `update_task_status`: backlog de trabajo
+- `set_plan`: plan actual
+- `list_files` y `read_text_file`: lectura dentro del workspace
+- `write_text_file`: escritura con checkpoint y diff
+- `list_checkpoints` y `restore_checkpoint`: recuperacion de cambios
+- `run_project_tests`: validacion con `unittest`
+- `web_search` y `fetch_web_page`: acceso web publico bajo politica
+
+## Autoedicion segura
+
+Las tools de archivos trabajan solo dentro del workspace.
+
+Limites actuales:
+
+- lectura de archivos: 16,000 bytes
+- escritura por operacion: 64,000 bytes
+- vista previa de escritura: 600 caracteres
+- diff resumido: 160 lineas
+- salida de tests: 6,000 caracteres
+- listado de archivos: 200 elementos
+
+Antes de escribir, `write_text_file` crea un checkpoint en `.yarbis_checkpoints/`. Si un cambio sale mal, `restore_checkpoint` puede recuperar el estado previo.
+
+Rutas protegidas contra escritura desde tools:
 
 - `.git`
 - `.venv`
@@ -132,135 +327,80 @@ Rutas protegidas actualmente:
 - `.yarbis_checkpoints`
 - `state.json`
 
-Esto no convierte a Yarbis en un sistema infalible, pero si reduce bastante el riesgo de que una autoedicion deje el proyecto en peor estado sin una forma simple de volver atras.
+Rutas omitidas del listado de archivos:
+
+- `.git`
+- `.venv`
+- `__pycache__`
+- `tests_runtime`
+- `.yarbis_checkpoints`
 
 ## Autoconocimiento local
 
-En cada ciclo, Yarbis recibe un resumen compacto de:
+Al arrancar desde terminal, app de escritorio o servicio, Yarbis ejecuta un autoanalisis y guarda el resumen en `state.json`.
 
-- que es Yarbis y cual es su proposito
-- el workspace actual y un mapa de sus archivos fuente
+Ese resumen incluye:
+
+- identidad del proyecto tomada del README
+- inventario compacto de archivos fuente
 - rama y commit de Git, si estan disponibles
-- sistema operativo, version de Python, proceso actual y modelo de Ollama configurado
-- hardware visible desde el sistema: CPU, RAM, disco del workspace y GPU cuando Windows lo reporta
+- sistema operativo
+- host y modelo de equipo cuando Windows lo reporta
+- CPU, RAM, disco del workspace y GPU cuando Windows lo reporta
+- version de Python, ejecutable, PID y cwd
+- modelo Ollama configurado
 
-Tambien tiene la tool interna `self_overview`, que puede refrescar esa informacion bajo demanda. Si necesita razonar con precision sobre un archivo de su propio codigo, sigue usando `list_files` y `read_text_file` antes de proponer o aplicar cambios.
+Durante una sesion, puedes pedir:
 
-Al iniciar desde terminal o desde la app de escritorio, Yarbis ejecuta un autoanalisis inicial y lo guarda en `state.json` con la hora de actualizacion. Ese autoanalisis se recalcula forzosamente en cada arranque, asi que si cambia el codigo, la rama, el sistema o el hardware visible, la siguiente ejecucion empieza con una foto actual. Durante una sesion larga, la tool `self_overview(refresh=True)` permite refrescarlo de nuevo sin reiniciar.
+- `self`
+- "hazte un autoanalisis"
+- "refresca tu autoanalisis"
+- "que sabes de ti"
 
-Tambien puedes pedirlo en lenguaje natural, por ejemplo: "hazte un autoanalisis" o "refresca tu autoanalisis". Esas frases se atienden directamente desde la aplicacion y no dependen de que el modelo decida llamar la tool correcta.
+## Archivos runtime y git
 
-## Ajustes utiles para PCs lentas
+Archivos no versionados:
 
-Puedes cambiar modelo y timeout sin editar el codigo:
+- `state.json`
+- `state.json.tmp`
+- `.yarbis_checkpoints/`
+- `.yarbis_runtime/`
+- `tests_runtime/`
+- `__pycache__/`
+- `.venv/`
+- `*.log`
 
-```powershell
-$env:YARBIS_MODEL="qwen3.5:2b"
-$env:YARBIS_OLLAMA_TIMEOUT_SECONDS="900"
-.venv\Scripts\python.exe yarbis_desktop.py
-```
+El servicio usa `.yarbis_runtime/` para PID, marca de parada y log. Los checkpoints de autoedicion viven en `.yarbis_checkpoints/`.
 
-Si quieres recibir notificaciones en tu iPhone con ntfy:
+## Estructura principal
 
-1. Instala `ntfy` desde la App Store.
-2. Suscribete a un topic dificil de adivinar, por ejemplo `yarbis-tu-topic-secreto`.
-3. Abre Yarbis.
-4. Pulsa `Notificaciones`.
-5. Marca `Activar notificaciones` e `iPhone via ntfy`.
-6. Escribe el mismo topic en `Topic`.
-7. Guarda y pulsa `Probar notificacion`.
-
-Yarbis recordara esta configuracion en `state.json`.
-
-Si prefieres configurarlo desde PowerShell:
-
-```powershell
-$env:YARBIS_NOTIFICATION_CHANNELS="windows,ntfy"
-$env:YARBIS_NTFY_TOPIC="yarbis-tu-topic-secreto"
-.venv\Scripts\python.exe yarbis_desktop.py
-```
-
-Si solo quieres enviar al iPhone y no a Windows:
-
-```powershell
-$env:YARBIS_NOTIFICATION_CHANNELS="ntfy"
-$env:YARBIS_NTFY_TOPIC="yarbis-tu-topic-secreto"
-.venv\Scripts\python.exe yarbis_desktop.py
-```
-
-Opcionales utiles:
-
-```powershell
-$env:YARBIS_NTFY_SERVER="https://ntfy.sh"
-$env:YARBIS_NTFY_PRIORITY="high"
-$env:YARBIS_NTFY_TAGS="yarbis"
-```
-
-Usa un topic privado y largo. En `ntfy.sh`, si no configuras autenticacion, el topic funciona como secreto.
-
-Si prefieres usar Telegram para recibir y responder desde tu iPhone:
-
-1. Crea un bot con `@BotFather` y copia el token.
-2. Abre Yarbis.
-3. Pulsa `Notificaciones`.
-4. Marca `Activar notificaciones` y `Telegram`.
-5. Pega el `Bot token de Telegram`.
-6. Guarda.
-7. Abre el chat con tu bot en Telegram y envia `/start`.
-
-Si dejas `Chat ID` vacio, Yarbis vinculara automaticamente el primer chat privado que escriba al bot. Despues podras:
-
-- responder con texto libre cuando Yarbis te haga una pregunta
-- usar `/status` para ver el estado actual
-- usar `/goal nuevo objetivo` o `/objetivo nuevo objetivo` para cambiar el objetivo y reiniciar el contexto operativo
-- usar `/run` para ejecutar un ciclo
-- usar `/auto` o `/auto 3` para lanzar el modo autonomo
-
-Si prefieres configurarlo desde PowerShell:
-
-```powershell
-$env:YARBIS_NOTIFICATION_CHANNELS="telegram"
-$env:YARBIS_TELEGRAM_BOT_TOKEN="123456:tu-token"
-.venv\Scripts\python.exe yarbis_desktop.py
-```
-
-Opcionales utiles:
-
-```powershell
-$env:YARBIS_TELEGRAM_CHAT_ID="123456789"
-$env:YARBIS_TELEGRAM_TIMEOUT_SECONDS="10"
-$env:YARBIS_TELEGRAM_POLL_TIMEOUT_SECONDS="25"
-```
-
-Si prefieres desactivar todas las notificaciones:
-
-```powershell
-$env:YARBIS_NOTIFICATIONS="0"
-.venv\Scripts\python.exe yarbis_desktop.py
-```
-
-Si tu equipo va justo de CPU o RAM, suele ayudar mucho subir el timeout y evitar dejar `auto` corriendo demasiados ciclos seguidos.
-
-## Endurecimiento incluido
-
-- Las tools solo pueden leer y escribir dentro del workspace.
-- Las lecturas y escrituras tienen limites de tamano para evitar inflar el contexto y el estado.
-- Las escrituras crean checkpoints previos y muestran un diff resumido.
-- Algunas rutas sensibles no pueden modificarse desde las tools (`.git`, `.venv`, `state.json`, etc.).
-- Las consultas web solo aceptan URLs publicas `http/https` y bloquean `localhost` e IPs privadas o locales.
-- El agente puede restaurar checkpoints y ejecutar tests del proyecto despues de tocar codigo.
-- El estado se normaliza y recorta antes de persistirse.
-- Los errores de Ollama ya no tumban la aplicacion completa.
-
-## Limitaciones actuales
-
-- Sigue siendo un agente local de escritorio o terminal, no un daemon del sistema operativo.
-- No integra aun calendario, correo ni comandos del sistema fuera del workspace.
-- La parte web sigue siendo limitada: busca y lee paginas publicas, pero no hace navegacion completa ni automatizacion del navegador.
-- Su autonomia depende del modelo disponible en Ollama y de la calidad del objetivo inicial.
+- `agent.py`: prompt, tool loop, ciclos autonomos y comunicacion con Ollama
+- `main.py`: interfaz de terminal
+- `yarbis_desktop.py`: interfaz grafica Tkinter
+- `yarbis_service.py`: proceso de fondo
+- `service_manager.py`: inicio, parada, estado y autostart del servicio
+- `memory.py`: estado persistente, defaults y normalizacion
+- `tools.py`: herramientas internas del agente
+- `internet.py`: busqueda y lectura web segura
+- `notifications.py`: Windows, ntfy y Telegram
+- `telegram_inbox.py`: polling y comandos remotos de Telegram
+- `self_knowledge.py`: autoanalisis local
+- `abrir_yarbis.vbs` y `abrir_yarbis.cmd`: lanzadores de escritorio
+- `tests/`: suite de tests con `unittest`
 
 ## Tests
 
-```bash
-.venv\Scripts\python.exe -m unittest discover -s tests -v
+```powershell
+.\.venv\Scripts\python.exe -m unittest discover -s tests
 ```
+
+Tambien puedes usar la tool interna `run_project_tests`, que ejecuta `unittest` dentro del workspace.
+
+## Limitaciones actuales
+
+- El servicio de fondo es un proceso de usuario, no un Windows Service administrado por SCM.
+- La autonomia depende del modelo local disponible en Ollama y de la calidad del objetivo inicial.
+- La web solo cubre busqueda y lectura de paginas publicas; no hace navegacion completa ni automatizacion de navegador.
+- Telegram procesa mensajes de texto, no adjuntos.
+- Las tools no ejecutan comandos arbitrarios del sistema; solo leen/escriben dentro del workspace y ejecutan tests Python del proyecto.
+- No integra aun calendario, correo, filesystem externo al workspace ni acciones del sistema fuera del alcance documentado.

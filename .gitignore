@@ -7,5 +7,6 @@ state.json.tmp
 *.log
 tests_runtime/
 .yarbis_checkpoints/
+.yarbis_runtime/
 tmp*/
 _tmp_tools_test/

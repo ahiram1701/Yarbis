@@ -9,6 +9,7 @@ from session import (
     submit_user_reply,
     update_goal,
 )
+from service_manager import is_service_running
 from telegram_inbox import start_telegram_polling, stop_telegram_polling
 from tools import add_task, save_note, self_overview, update_profile
 
@@ -16,11 +17,16 @@ from tools import add_task, save_note, self_overview, update_profile
 def main():
     startup_message = run_startup_self_analysis()
     state = load_state()
-    start_telegram_polling()
+    telegram_polling_started = False
+    if not is_service_running():
+        start_telegram_polling()
+        telegram_polling_started = True
 
     try:
         print("=== YARBIS ===")
         print(startup_message)
+        if not telegram_polling_started:
+            print("Servicio de fondo activo: Telegram queda atendido por el servicio.")
         print(f"Objetivo actual: {state['goal']}")
         print("Comandos: goal, run, auto, status, self, profile, note, task, reply, exit")
         if has_pending_user_question(state):
@@ -175,7 +181,8 @@ def main():
 
             print("Comando no reconocido. Usa `reply` para enviar contexto libre al agente.")
     finally:
-        stop_telegram_polling()
+        if telegram_polling_started:
+            stop_telegram_polling()
 
 
 if __name__ == "__main__":

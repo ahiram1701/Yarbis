@@ -22,6 +22,12 @@ from session import (
     update_profile_text,
     update_ui_theme,
 )
+from service_manager import (
+    get_service_status,
+    set_autostart_enabled,
+    start_service,
+    stop_service,
+)
 from telegram_inbox import start_telegram_polling, stop_telegram_polling
 
 THEMES = {
@@ -435,6 +441,9 @@ class YarbisDesktop(tk.Tk):
         self.theme_var = tk.StringVar()
         self.status_var = tk.StringVar(value="Listo.")
         self.theme_button_text = tk.StringVar()
+        self.service_var = tk.StringVar()
+        self.service_button_text = tk.StringVar()
+        self.service_autostart_var = tk.BooleanVar()
 
         self._result_queue = queue.Queue()
         self._worker_thread = None
@@ -443,11 +452,11 @@ class YarbisDesktop(tk.Tk):
         self._action_buttons = []
         self._view_has_pending_question = False
         self._last_summary_text = ""
+        self._local_telegram_polling = False
 
         self._build_ui()
         self._apply_theme(self.current_theme_name)
         self.refresh_state_view()
-        start_telegram_polling(event_callback=self._handle_telegram_event)
         self.after(150, self._poll_worker_queue)
         self.after(_STATE_SYNC_INTERVAL_MS, self._sync_state_view)
 
@@ -474,9 +483,18 @@ class YarbisDesktop(tk.Tk):
         ttk.Label(summary, text="Tema").grid(row=2, column=0, sticky="w", padx=10, pady=4)
         ttk.Label(summary, textvariable=self.theme_var).grid(row=2, column=1, sticky="w", pady=4)
 
-        ttk.Label(summary, text="Pendiente").grid(row=3, column=0, sticky="nw", padx=10, pady=(4, 10))
-        ttk.Label(summary, textvariable=self.pending_var, wraplength=780).grid(
+        ttk.Label(summary, text="Servicio").grid(row=3, column=0, sticky="nw", padx=10, pady=4)
+        ttk.Label(summary, textvariable=self.service_var, wraplength=780).grid(
             row=3,
+            column=1,
+            sticky="nw",
+            padx=(0, 10),
+            pady=4,
+        )
+
+        ttk.Label(summary, text="Pendiente").grid(row=4, column=0, sticky="nw", padx=10, pady=(4, 10))
+        ttk.Label(summary, textvariable=self.pending_var, wraplength=780).grid(
+            row=4,
             column=1,
             sticky="nw",
             padx=(0, 10),
@@ -538,6 +556,7 @@ class YarbisDesktop(tk.Tk):
                 {"text": "Probar notificacion", "command": self._send_test_notification},
             ),
         )
+        self._build_service_group(actions)
         self._build_action_group(
             actions,
             "Vista",
@@ -625,6 +644,27 @@ class YarbisDesktop(tk.Tk):
                 button_options["text"] = spec["text"]
             self._pack_action_button(ttk.Button(group, **button_options))
 
+    def _build_service_group(self, parent):
+        group = ttk.LabelFrame(parent, text="Servicio")
+        group.pack(fill="x", pady=(0, 8))
+
+        self.service_toggle_button = ttk.Button(
+            group,
+            textvariable=self.service_button_text,
+            command=self._toggle_service,
+            style="Secondary.TButton",
+        )
+        self._pack_action_button(self.service_toggle_button)
+
+        self.service_autostart_check = ttk.Checkbutton(
+            group,
+            text="Abrir al iniciar Windows",
+            variable=self.service_autostart_var,
+            command=self._toggle_service_autostart,
+        )
+        self.service_autostart_check.pack(fill="x", padx=8, pady=(5, 8))
+        self._action_buttons.append(self.service_autostart_check)
+
     def _pack_action_button(self, button):
         button.pack(fill="x", padx=8, pady=3)
         self._action_buttons.append(button)
@@ -670,6 +710,22 @@ class YarbisDesktop(tk.Tk):
             foreground=palette["muted"],
         )
         self.style.configure("TLabel", background=palette["bg"], foreground=palette["fg"])
+        self.style.configure(
+            "TCheckbutton",
+            background=palette["bg"],
+            foreground=palette["fg"],
+            padding=(6, 4),
+        )
+        self.style.map(
+            "TCheckbutton",
+            background=[
+                ("active", palette["button_active"]),
+                ("disabled", palette["bg"]),
+            ],
+            foreground=[
+                ("disabled", palette["disabled_fg"]),
+            ],
+        )
         self.style.configure(
             "TButton",
             background=palette["button_bg"],
@@ -842,6 +898,18 @@ class YarbisDesktop(tk.Tk):
         self.goal_var.set(state["goal"])
         self.cycles_var.set(str(state["cycle_count"]))
 
+        service_status = get_service_status()
+        if service_status["running"]:
+            self.service_var.set(
+                f"Activo en segundo plano (PID {service_status['pid']})."
+            )
+            self.service_button_text.set("Desactivar servicio")
+        else:
+            self.service_var.set("Inactivo.")
+            self.service_button_text.set("Activar servicio")
+        self.service_autostart_var.set(bool(service_status["autostart_enabled"]))
+        self._ensure_telegram_polling_matches_service(service_status["running"])
+
         pending_question = state["awaiting_user_input"].get("question", "").strip()
         self._view_has_pending_question = has_pending_user_question(state)
         if self._view_has_pending_question:
@@ -862,6 +930,20 @@ class YarbisDesktop(tk.Tk):
     def _sync_state_view(self):
         self.refresh_state_view()
         self.after(_STATE_SYNC_INTERVAL_MS, self._sync_state_view)
+
+    def _ensure_telegram_polling_matches_service(self, service_running: bool | None = None):
+        if service_running is None:
+            service_running = get_service_status()["running"]
+
+        if service_running:
+            if self._local_telegram_polling:
+                stop_telegram_polling()
+                self._local_telegram_polling = False
+            return
+
+        if not self._local_telegram_polling:
+            start_telegram_polling(event_callback=self._handle_telegram_event)
+            self._local_telegram_polling = True
 
     def _set_busy(self, busy: bool, status_text: str = "", source: str = "local"):
         if busy:
@@ -1003,6 +1085,29 @@ class YarbisDesktop(tk.Tk):
 
     def _send_test_notification(self):
         self._start_background_job("Prueba de notificacion", send_test_notification)
+
+    def _toggle_service(self):
+        service_status = get_service_status()
+        if service_status["running"]:
+            self._start_background_job("Servicio", stop_service)
+            return
+
+        if self._local_telegram_polling:
+            stop_telegram_polling()
+            self._local_telegram_polling = False
+        self._start_background_job("Servicio", start_service)
+
+    def _toggle_service_autostart(self):
+        enabled = self.service_autostart_var.get()
+        try:
+            result = set_autostart_enabled(enabled)
+        except Exception as exc:
+            messagebox.showwarning("Yarbis", str(exc), parent=self)
+            self.refresh_state_view()
+            return
+
+        self._append_activity("Servicio", result)
+        self.refresh_state_view()
 
     def _change_goal(self):
         dialog = MultilineTextDialog(
