@@ -44,6 +44,8 @@ DEFAULT_INTERNET_MAX_PAGE_CHARS = 12_000
 DEFAULT_INTERNET_REQUEST_TIMEOUT_SECONDS = 10
 MAX_INTERNET_DOMAIN_ITEMS = 20
 MAX_INTERNET_DOMAIN_CHARS = 120
+MAX_SELF_KNOWLEDGE_SUMMARY_CHARS = 20_000
+MAX_SELF_KNOWLEDGE_TIMESTAMP_CHARS = 80
 
 
 def default_state():
@@ -82,6 +84,10 @@ def default_state():
             "request_timeout_seconds": DEFAULT_INTERNET_REQUEST_TIMEOUT_SECONDS,
             "allowed_domains": [],
             "blocked_domains": [],
+        },
+        "self_knowledge": {
+            "last_analyzed_at": "",
+            "summary": "",
         },
         "notifications": {
             "enabled": True,
@@ -397,6 +403,22 @@ def _normalize_internet(internet):
     }
 
 
+def _normalize_self_knowledge(self_knowledge):
+    if not isinstance(self_knowledge, dict):
+        self_knowledge = {}
+
+    return {
+        "last_analyzed_at": _truncate_text(
+            self_knowledge.get("last_analyzed_at", ""),
+            MAX_SELF_KNOWLEDGE_TIMESTAMP_CHARS,
+        ).strip(),
+        "summary": _truncate_text(
+            self_knowledge.get("summary", ""),
+            MAX_SELF_KNOWLEDGE_SUMMARY_CHARS,
+        ).strip(),
+    }
+
+
 def _normalize_notification_channels(value):
     if isinstance(value, str):
         raw_channels = [item.strip().lower() for item in re.split(r"[\n,;]+", value)]
@@ -529,6 +551,7 @@ def normalize_state(state):
     normalized["autonomy"] = _normalize_autonomy(state.get("autonomy", {}))
     normalized["ui"] = _normalize_ui(state.get("ui", {}))
     normalized["internet"] = _normalize_internet(state.get("internet", {}))
+    normalized["self_knowledge"] = _normalize_self_knowledge(state.get("self_knowledge", {}))
     normalized["notifications"] = _normalize_notifications(state.get("notifications", {}))
 
     raw_messages = state.get("messages", [])
@@ -628,6 +651,15 @@ def render_state_summary(state, task_limit: int = 8, note_limit: int = 3) -> str
             "Internet bloqueado para: "
             + ", ".join(internet_settings["blocked_domains"])
         )
+
+    self_knowledge = normalized["self_knowledge"]
+    if self_knowledge["last_analyzed_at"]:
+        lines.append(
+            "Autoconocimiento: "
+            f"actualizado en {self_knowledge['last_analyzed_at']}."
+        )
+    else:
+        lines.append("Autoconocimiento: pendiente de autoanalisis inicial.")
 
     notification_settings = normalized["notifications"]
     notification_status = "activadas" if notification_settings["enabled"] else "desactivadas"

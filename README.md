@@ -57,6 +57,7 @@ Comandos disponibles:
 - `run`: ejecuta un ciclo del agente
 - `auto`: ejecuta varios ciclos seguidos
 - `status`: muestra objetivo, perfil, plan, tareas y notas recientes
+- `self`: muestra lo que Yarbis sabe de si mismo, su codigo fuente, el sistema operativo y el hardware local
 - `profile`: actualiza nombre, contexto, preferencias y restricciones
 - `note`: guarda una nota rapida persistente
 - `task`: agrega una tarea manual al backlog
@@ -132,6 +133,22 @@ Rutas protegidas actualmente:
 - `state.json`
 
 Esto no convierte a Yarbis en un sistema infalible, pero si reduce bastante el riesgo de que una autoedicion deje el proyecto en peor estado sin una forma simple de volver atras.
+
+## Autoconocimiento local
+
+En cada ciclo, Yarbis recibe un resumen compacto de:
+
+- que es Yarbis y cual es su proposito
+- el workspace actual y un mapa de sus archivos fuente
+- rama y commit de Git, si estan disponibles
+- sistema operativo, version de Python, proceso actual y modelo de Ollama configurado
+- hardware visible desde el sistema: CPU, RAM, disco del workspace y GPU cuando Windows lo reporta
+
+Tambien tiene la tool interna `self_overview`, que puede refrescar esa informacion bajo demanda. Si necesita razonar con precision sobre un archivo de su propio codigo, sigue usando `list_files` y `read_text_file` antes de proponer o aplicar cambios.
+
+Al iniciar desde terminal o desde la app de escritorio, Yarbis ejecuta un autoanalisis inicial y lo guarda en `state.json` con la hora de actualizacion. Ese autoanalisis se recalcula forzosamente en cada arranque, asi que si cambia el codigo, la rama, el sistema o el hardware visible, la siguiente ejecucion empieza con una foto actual. Durante una sesion larga, la tool `self_overview(refresh=True)` permite refrescarlo de nuevo sin reiniciar.
+
+Tambien puedes pedirlo en lenguaje natural, por ejemplo: "hazte un autoanalisis" o "refresca tu autoanalisis". Esas frases se atienden directamente desde la aplicacion y no dependen de que el modelo decida llamar la tool correcta.
 
 ## Ajustes utiles para PCs lentas
 

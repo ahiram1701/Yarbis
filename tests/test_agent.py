@@ -62,11 +62,14 @@ class AgentTestCase(unittest.TestCase):
         self.assertIn("Ahiram", messages[1]["content"])
         self.assertIn("Definir prioridades", messages[1]["content"])
         self.assertIn("Internet: modo=auto", messages[1]["content"])
+        self.assertIn("Autoconocimiento de Yarbis", messages[1]["content"])
+        self.assertIn("Codigo fuente", messages[1]["content"])
 
     def test_web_tools_are_registered(self):
         self.assertIn("web_search", agent.available_functions)
         self.assertIn("fetch_web_page", agent.available_functions)
         self.assertIn("update_internet_settings", agent.available_functions)
+        self.assertIn("self_overview", agent.available_functions)
 
     def test_run_one_cycle_persists_cycle_before_tools(self):
         state_path = TEST_RUNTIME_DIR / "agent_tool_cycle_state.json"

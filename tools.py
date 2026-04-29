@@ -18,6 +18,7 @@ from memory import (
     render_state_summary,
     save_state,
 )
+from self_knowledge import render_self_knowledge_summary
 
 WORKSPACE_ROOT = Path(__file__).resolve().parent
 CHECKPOINTS_DIR = WORKSPACE_ROOT / ".yarbis_checkpoints"
@@ -787,6 +788,28 @@ def agent_overview() -> str:
     """
     state = load_state()
     return render_state_summary(state)
+
+
+def self_overview(refresh: bool = False) -> str:
+    """
+    Devuelve lo que Yarbis sabe de si mismo, su codigo fuente y su entorno local.
+
+    Args:
+        refresh (bool): Si es True, recalcula la informacion aunque haya cache reciente.
+
+    Returns:
+        str: Resumen de identidad, codigo fuente, sistema operativo y hardware.
+    """
+    should_refresh = bool(refresh)
+    summary = render_self_knowledge_summary(refresh=should_refresh)
+    if should_refresh:
+        state = load_state()
+        state["self_knowledge"] = {
+            "last_analyzed_at": datetime.now(timezone.utc).isoformat(),
+            "summary": summary,
+        }
+        save_state(state)
+    return summary
 
 
 def update_profile(

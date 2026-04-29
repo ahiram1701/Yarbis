@@ -3,21 +3,26 @@ from session import (
     has_pending_user_question,
     run_auto_with_output,
     run_cycle_with_output,
+    run_self_analysis_with_output,
+    run_startup_self_analysis,
+    is_self_analysis_request,
     submit_user_reply,
     update_goal,
 )
 from telegram_inbox import start_telegram_polling, stop_telegram_polling
-from tools import add_task, save_note, update_profile
+from tools import add_task, save_note, self_overview, update_profile
 
 
 def main():
+    startup_message = run_startup_self_analysis()
     state = load_state()
     start_telegram_polling()
 
     try:
         print("=== YARBIS ===")
+        print(startup_message)
         print(f"Objetivo actual: {state['goal']}")
-        print("Comandos: goal, run, auto, status, profile, note, task, reply, exit")
+        print("Comandos: goal, run, auto, status, self, profile, note, task, reply, exit")
         if has_pending_user_question(state):
             print(f"Pendiente: {state['awaiting_user_input']['question']}")
         print()
@@ -63,6 +68,14 @@ def main():
             if cmd == "status":
                 state = load_state()
                 print(render_state_summary(state))
+                continue
+
+            if cmd == "self":
+                print(self_overview(refresh=True))
+                continue
+
+            if is_self_analysis_request(cmd):
+                print(run_self_analysis_with_output())
                 continue
 
             if cmd == "profile":

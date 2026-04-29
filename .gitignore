@@ -3,6 +3,7 @@ __pycache__/
 **/__pycache__/
 *.py[cod]
 state.json
+state.json.tmp
 *.log
 tests_runtime/
 .yarbis_checkpoints/

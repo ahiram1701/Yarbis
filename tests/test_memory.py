@@ -183,3 +183,13 @@ class MemoryTestCase(unittest.TestCase):
         self.assertIn("Internet: modo=auto", summary)
         self.assertIn("canales=windows, telegram", summary)
         self.assertIn("Telegram: pendiente de vincular", summary)
+
+    def test_render_state_summary_shows_self_knowledge_timestamp(self):
+        summary = memory.render_state_summary({
+            "self_knowledge": {
+                "last_analyzed_at": "2026-04-29T12:00:00+00:00",
+                "summary": "Identidad: Yarbis",
+            },
+        })
+
+        self.assertIn("Autoconocimiento: actualizado en 2026-04-29T12:00:00+00:00.", summary)

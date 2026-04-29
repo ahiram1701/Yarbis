@@ -39,6 +39,52 @@ class SessionTestCase(unittest.TestCase):
         self.assertEqual(len(state["messages"]), 1)
         self.assertIn("Nuevo objetivo claro", state["messages"][0]["content"])
 
+    def test_run_startup_self_analysis_persists_latest_summary(self):
+        state_path = TEST_RUNTIME_DIR / "session_self_analysis_state.json"
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+
+        with patch.object(memory, "STATE_FILE", state_path):
+            memory.save_state(memory.default_state())
+            with patch.object(
+                session,
+                "render_self_knowledge_summary",
+                return_value="Identidad:\n- Nombre: Yarbis.\n\nEntorno actual:\nSistema operativo: demo",
+            ) as summary_mock:
+                result = session.run_startup_self_analysis()
+                state = memory.load_state()
+
+        self.assertIn("Autoanalisis inicial completado", result)
+        summary_mock.assert_called_once_with(refresh=True)
+        self.assertIn("Nombre: Yarbis", state["self_knowledge"]["summary"])
+        self.assertTrue(state["self_knowledge"]["last_analyzed_at"])
+
+    def test_submit_user_reply_routes_self_analysis_request_without_model_cycle(self):
+        state_path = TEST_RUNTIME_DIR / "session_self_analysis_reply_state.json"
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+
+        with patch.object(memory, "STATE_FILE", state_path):
+            memory.save_state(memory.default_state())
+            with patch.object(
+                session,
+                "render_self_knowledge_summary",
+                return_value="Identidad:\n- Nombre: Yarbis.\n\nCodigo fuente:\n- agent.py\n\nEntorno actual:\nSistema operativo: demo\nCPU: demo\nRAM: demo",
+            ) as summary_mock:
+                with patch.object(session, "run_cycle_with_output", side_effect=RuntimeError("no debe llamarse")):
+                    result = session.submit_user_reply("hazte un autoanálisis")
+                    state = memory.load_state()
+
+        self.assertIn("Autoanalisis inicial completado", result)
+        self.assertIn("Nombre: Yarbis", result)
+        summary_mock.assert_called_once_with(refresh=True)
+        self.assertIn("agent.py", state["self_knowledge"]["summary"])
+        self.assertEqual(state["messages"], [])
+
+    def test_is_self_analysis_request_accepts_common_phrases(self):
+        self.assertTrue(session.is_self_analysis_request("hazte un autoanálisis"))
+        self.assertTrue(session.is_self_analysis_request("refresca tu auto analisis y muestramelo"))
+        self.assertTrue(session.is_self_analysis_request("dime qué sabes de ti"))
+        self.assertFalse(session.is_self_analysis_request("ayudame a escribir un correo"))
+
     def test_submit_user_reply_clears_pending_question_and_resumes_autonomy(self):
         state_path = TEST_RUNTIME_DIR / "session_reply_state.json"
         state_path.parent.mkdir(parents=True, exist_ok=True)

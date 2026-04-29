@@ -232,3 +232,17 @@ class ToolsTestCase(unittest.TestCase):
             result = tools.fetch_web_page("https://example.com/demo")
 
         self.assertIn("desactivada por politica", result)
+
+    def test_self_overview_includes_code_and_runtime_context(self):
+        state_path = self.runtime_dir / "tool_self_overview_state.json"
+
+        with patch.object(memory, "STATE_FILE", state_path):
+            result = tools.self_overview(refresh=True)
+            state = memory.load_state()
+
+        self.assertIn("Identidad:", result)
+        self.assertIn("Codigo fuente:", result)
+        self.assertIn("Sistema operativo:", result)
+        self.assertIn("agent.py", result)
+        self.assertIn("Identidad:", state["self_knowledge"]["summary"])
+        self.assertTrue(state["self_knowledge"]["last_analyzed_at"])

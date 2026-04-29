@@ -13,6 +13,7 @@ from session import (
     has_pending_user_question,
     run_auto_with_output,
     run_cycle_with_output,
+    run_startup_self_analysis,
     save_note_text,
     send_test_notification,
     submit_user_reply,
@@ -1119,7 +1120,9 @@ class YarbisDesktop(tk.Tk):
 
 
 def main():
+    startup_message = run_startup_self_analysis()
     app = YarbisDesktop()
+    app._append_activity("Autoanalisis inicial", startup_message)
     app._append_activity(
         "Interfaz lista",
         (

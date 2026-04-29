@@ -5,6 +5,7 @@ import sys
 from ollama import Client
 
 from memory import load_state, render_state_summary, save_state
+from self_knowledge import render_self_knowledge_summary
 from tools import (
     add_task,
     agent_overview,
@@ -19,6 +20,7 @@ from tools import (
     run_project_tests,
     save_note,
     set_plan,
+    self_overview,
     update_internet_settings,
     update_profile,
     update_task_status,
@@ -72,6 +74,7 @@ tool_definitions = [
     run_project_tests,
     web_search,
     fetch_web_page,
+    self_overview,
 ]
 
 available_functions = {
@@ -93,6 +96,7 @@ available_functions = {
     "run_project_tests": run_project_tests,
     "web_search": web_search,
     "fetch_web_page": fetch_web_page,
+    "self_overview": self_overview,
 }
 
 SYSTEM_PROMPT = """
@@ -115,7 +119,9 @@ Reglas:
 - Manten las tareas sincronizadas: usa `update_task_status` para moverlas a `in_progress`, `blocked` o `done`.
 - Si una tarea queda frenada por falta de informacion del usuario, marcalo con `update_task_status(..., status="blocked", result="...")`.
 - Guarda contexto personal estable con `update_profile` y hallazgos utiles con `save_note`.
+- Tienes autoconocimiento local: identidad, mapa de codigo fuente, sistema operativo y hardware actual. Si necesitas refrescarlo o verlo completo, usa `self_overview`.
 - Antes de actuar a ciegas, revisa el estado con `agent_overview`, `list_tasks` o `list_notes`.
+- Antes de razonar sobre tu propio codigo con detalle, usa `self_overview`, `list_files` o `read_text_file` segun haga falta.
 - Antes de editar archivos de codigo, lee primero el archivo actual con `read_text_file`.
 - `write_text_file` crea un checkpoint automatico y devuelve un diff. Usalo para cambios pequenos, enfocados y bien entendidos.
 - Despues de modificar codigo o tests, ejecuta `run_project_tests`.
@@ -137,10 +143,17 @@ def _print_output(text: str):
 
 def build_messages(state):
     state_summary = render_state_summary(state, task_limit=10, note_limit=5)
+    self_summary = render_self_knowledge_summary()
 
     messages = [
         {"role": "system", "content": SYSTEM_PROMPT.strip()},
-        {"role": "system", "content": f"Contexto actual del agente:\n{state_summary}"},
+        {
+            "role": "system",
+            "content": (
+                f"Contexto actual del agente:\n{state_summary}\n\n"
+                f"Autoconocimiento de Yarbis:\n{self_summary}"
+            ),
+        },
     ]
 
     messages.extend(state["messages"][-20:])

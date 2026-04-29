@@ -1,6 +1,8 @@
 import contextlib
 import io
 import threading
+import unicodedata
+from datetime import datetime, timezone
 
 from agent import run_autonomous_session, run_one_cycle
 from memory import load_state, render_state_summary, save_state
@@ -10,6 +12,7 @@ from notifications import (
     send_notification,
     try_link_telegram_chat,
 )
+from self_knowledge import render_self_knowledge_summary
 from tools import add_task, save_note, update_profile
 
 SESSION_LOCK = threading.RLock()
@@ -30,6 +33,70 @@ def clear_pending_user_question(state):
         "reason": "",
         "fields": [],
     }
+
+
+def _normalize_intent_text(text: str) -> str:
+    normalized = unicodedata.normalize("NFKD", str(text).strip().lower())
+    without_accents = "".join(
+        char for char in normalized
+        if not unicodedata.combining(char)
+    )
+    return " ".join(without_accents.replace("_", " ").split())
+
+
+def is_self_analysis_request(text: str) -> bool:
+    normalized = _normalize_intent_text(text)
+    if not normalized:
+        return False
+
+    exact_commands = {
+        "self",
+        "self overview",
+        "autoanalisis",
+        "auto analisis",
+        "hazte un autoanalisis",
+        "hazte un auto analisis",
+        "refresca tu autoanalisis",
+        "refresca tu auto analisis",
+    }
+    if normalized in exact_commands:
+        return True
+
+    direct_phrases = (
+        "autoanalisis",
+        "auto analisis",
+        "self overview",
+        "conocete",
+        "que sabes de ti",
+        "quien eres y donde estas",
+    )
+    return any(phrase in normalized for phrase in direct_phrases)
+
+
+def run_startup_self_analysis() -> str:
+    with SESSION_LOCK:
+        summary = render_self_knowledge_summary(refresh=True)
+        state = load_state()
+        state["self_knowledge"] = {
+            "last_analyzed_at": datetime.now(timezone.utc).isoformat(),
+            "summary": summary,
+        }
+        save_state(state)
+        return (
+            "Autoanalisis inicial completado. "
+            "Yarbis actualizo identidad, codigo fuente, sistema operativo y hardware."
+        )
+
+
+def run_self_analysis_with_output() -> str:
+    with SESSION_LOCK:
+        message = run_startup_self_analysis()
+        state = load_state()
+        summary = state.get("self_knowledge", {}).get("summary", "").strip()
+        if not summary:
+            return message
+
+        return f"{message}\n\n{summary}"
 
 
 def _has_open_tasks(state) -> bool:
@@ -295,6 +362,9 @@ def submit_user_reply(reply_text: str, emit_notifications: bool = True) -> str:
         cleaned_reply = str(reply_text).strip()
         if not cleaned_reply:
             raise ValueError("La respuesta no puede quedar vacia.")
+
+        if is_self_analysis_request(cleaned_reply):
+            return run_self_analysis_with_output()
 
         state = load_state()
         had_pending_question = has_pending_user_question(state)
