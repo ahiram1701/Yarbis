@@ -14,6 +14,8 @@ MAX_SOURCE_FILES = 36
 SELF_KNOWLEDGE_CACHE_SECONDS = 300
 SOURCE_SUFFIXES = {
     ".cmd",
+    ".cs",
+    ".csproj",
     ".json",
     ".md",
     ".py",
@@ -28,8 +30,11 @@ IMPORTANT_SOURCE_NAMES = {
 IGNORED_DIR_NAMES = {
     ".git",
     ".venv",
+    ".yarbis_runtime",
     ".yarbis_checkpoints",
     "__pycache__",
+    "bin",
+    "obj",
     "tests_runtime",
 }
 IGNORED_FILE_NAMES = {
@@ -44,6 +49,9 @@ SOURCE_PRIORITY = {
     "session.py": 4,
     "main.py": 5,
     "yarbis_desktop.py": 6,
+    "service_manager.py": 7,
+    "yarbis_service.py": 8,
+    "service_host/Program.cs": 9,
 }
 
 _SELF_KNOWLEDGE_CACHE = {
@@ -222,6 +230,10 @@ def _summarize_non_python_file(path: Path, content: str) -> str:
         return "documentacion Markdown"
     if path.suffix.lower() in {".cmd", ".vbs"}:
         return "lanzador local de la aplicacion"
+    if path.suffix.lower() == ".cs":
+        return "codigo C# del host nativo del servicio SCM"
+    if path.suffix.lower() == ".csproj":
+        return "proyecto .NET del host nativo del servicio SCM"
     if path.suffix.lower() in {".json", ".yaml", ".yml"}:
         return "configuracion estructurada"
     return "archivo de soporte del proyecto"

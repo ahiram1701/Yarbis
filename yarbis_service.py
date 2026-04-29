@@ -60,7 +60,7 @@ def _render_event(message: object) -> str:
     return str(message).strip()
 
 
-def main():
+def run_service_loop(should_stop=None):
     RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
     try:
         STOP_FILE.unlink()
@@ -75,7 +75,12 @@ def main():
     try:
         _log(run_startup_self_analysis())
         start_telegram_polling(event_callback=lambda message: _log(_render_event(message)))
-        while not STOP_FILE.exists():
+        while True:
+            if callable(should_stop):
+                if should_stop():
+                    break
+            elif STOP_FILE.exists():
+                break
             time.sleep(1)
     except Exception:
         _log(traceback.format_exc())
@@ -84,6 +89,10 @@ def main():
         stop_telegram_polling()
         _clear_runtime_files()
         _log("Servicio de Yarbis detenido.")
+
+
+def main():
+    run_service_loop()
 
 
 if __name__ == "__main__":

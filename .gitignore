@@ -8,5 +8,7 @@ state.json.tmp
 tests_runtime/
 .yarbis_checkpoints/
 .yarbis_runtime/
+service_host/bin/
+service_host/obj/
 tmp*/
 _tmp_tools_test/

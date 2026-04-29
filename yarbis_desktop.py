@@ -24,6 +24,7 @@ from session import (
 )
 from service_manager import (
     get_service_status,
+    remove_service,
     set_autostart_enabled,
     start_service,
     stop_service,
@@ -444,6 +445,7 @@ class YarbisDesktop(tk.Tk):
         self.service_var = tk.StringVar()
         self.service_button_text = tk.StringVar()
         self.service_autostart_var = tk.BooleanVar()
+        self.service_autostart_text = tk.StringVar()
 
         self._result_queue = queue.Queue()
         self._worker_thread = None
@@ -656,14 +658,29 @@ class YarbisDesktop(tk.Tk):
         )
         self._pack_action_button(self.service_toggle_button)
 
-        self.service_autostart_check = ttk.Checkbutton(
+        self.service_autostart_check = tk.Checkbutton(
             group,
-            text="Abrir al iniciar Windows",
+            textvariable=self.service_autostart_text,
             variable=self.service_autostart_var,
             command=self._toggle_service_autostart,
+            indicatoron=False,
+            anchor="center",
+            padx=10,
+            pady=7,
+            bd=0,
+            relief="flat",
+            highlightthickness=1,
         )
         self.service_autostart_check.pack(fill="x", padx=8, pady=(5, 8))
         self._action_buttons.append(self.service_autostart_check)
+
+        self.remove_service_button = ttk.Button(
+            group,
+            text="Quitar de SCM",
+            command=self._remove_service,
+            style="Danger.TButton",
+        )
+        self._pack_action_button(self.remove_service_button)
 
     def _pack_action_button(self, button):
         button.pack(fill="x", padx=8, pady=3)
@@ -873,10 +890,44 @@ class YarbisDesktop(tk.Tk):
         style_text_widget(self.summary_text, palette)
         style_text_widget(self.activity_text, palette)
         style_text_widget(self.reply_text, palette)
+        self._style_service_autostart_toggle()
 
         self.theme_var.set("Oscuro" if self.current_theme_name == "dark" else "Claro")
         self.theme_button_text.set(
             "Usar modo claro" if self.current_theme_name == "dark" else "Usar modo oscuro"
+        )
+
+    def _style_service_autostart_toggle(self):
+        if not hasattr(self, "service_autostart_check"):
+            return
+
+        palette = self.theme_palette
+        enabled = bool(self.service_autostart_var.get())
+        state = str(self.service_autostart_check.cget("state"))
+        disabled = state == "disabled"
+
+        if disabled:
+            bg = palette["disabled_bg"]
+            fg = palette["disabled_fg"]
+            active_bg = palette["disabled_bg"]
+        elif enabled:
+            bg = palette["secondary"]
+            fg = palette["secondary_fg"]
+            active_bg = palette["secondary_hover"]
+        else:
+            bg = palette["button_bg"]
+            fg = palette["fg"]
+            active_bg = palette["button_active"]
+
+        self.service_autostart_check.configure(
+            bg=bg,
+            fg=fg,
+            activebackground=active_bg,
+            activeforeground=fg,
+            selectcolor=bg,
+            disabledforeground=palette["disabled_fg"],
+            highlightbackground=palette["border"],
+            highlightcolor=palette["accent"],
         )
 
     def _set_text(self, widget, content: str):
@@ -899,15 +950,29 @@ class YarbisDesktop(tk.Tk):
         self.cycles_var.set(str(state["cycle_count"]))
 
         service_status = get_service_status()
-        if service_status["running"]:
+        if not service_status["installed"]:
+            self.service_var.set("No instalado en SCM.")
+            self.service_button_text.set("Instalar e iniciar")
+        elif service_status["running"]:
             self.service_var.set(
-                f"Activo en segundo plano (PID {service_status['pid']})."
+                f"Activo en SCM (PID {service_status['pid']}, arranque={service_status['start_type']})."
             )
-            self.service_button_text.set("Desactivar servicio")
+            self.service_button_text.set("Detener servicio")
         else:
-            self.service_var.set("Inactivo.")
-            self.service_button_text.set("Activar servicio")
-        self.service_autostart_var.set(bool(service_status["autostart_enabled"]))
+            self.service_var.set(
+                f"Instalado en SCM, detenido (arranque={service_status['start_type']})."
+            )
+            self.service_button_text.set("Iniciar servicio")
+        autostart_enabled = bool(service_status["autostart_enabled"])
+        self.service_autostart_var.set(autostart_enabled)
+        self.service_autostart_text.set(
+            "Iniciar con Windows: SI" if autostart_enabled else "Iniciar con Windows: NO"
+        )
+        if service_status["installed"]:
+            self.service_autostart_check.configure(state="normal")
+        else:
+            self.service_autostart_check.configure(state="disabled")
+        self._style_service_autostart_toggle()
         self._ensure_telegram_polling_matches_service(service_status["running"])
 
         pending_question = state["awaiting_user_input"].get("question", "").strip()
@@ -1098,7 +1163,21 @@ class YarbisDesktop(tk.Tk):
         self._start_background_job("Servicio", start_service)
 
     def _toggle_service_autostart(self):
+        service_status = get_service_status()
+        if not service_status["installed"]:
+            messagebox.showinfo(
+                "Yarbis",
+                "Instala el servicio en SCM antes de cambiar su arranque con Windows.",
+                parent=self,
+            )
+            self.refresh_state_view()
+            return
+
         enabled = self.service_autostart_var.get()
+        self.service_autostart_text.set(
+            "Iniciar con Windows: SI" if enabled else "Iniciar con Windows: NO"
+        )
+        self._style_service_autostart_toggle()
         try:
             result = set_autostart_enabled(enabled)
         except Exception as exc:
@@ -1108,6 +1187,26 @@ class YarbisDesktop(tk.Tk):
 
         self._append_activity("Servicio", result)
         self.refresh_state_view()
+
+    def _remove_service(self):
+        service_status = get_service_status()
+        if not service_status["installed"]:
+            self._append_activity("Servicio", "El servicio de Yarbis no esta instalado en SCM.")
+            self.refresh_state_view()
+            return
+
+        should_remove = messagebox.askyesno(
+            "Quitar servicio",
+            (
+                "Esto detendra Yarbis si esta activo y quitara el registro del servicio en SCM.\n\n"
+                "Quieres continuar?"
+            ),
+            parent=self,
+        )
+        if not should_remove:
+            return
+
+        self._start_background_job("Quitar servicio", remove_service)
 
     def _change_goal(self):
         dialog = MultilineTextDialog(

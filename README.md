@@ -6,7 +6,7 @@ Funciona en tres modos:
 
 - app de escritorio con Tkinter (`yarbis_desktop.py`)
 - terminal interactiva (`main.py`)
-- servicio de fondo de usuario (`yarbis_service.py`) gestionado desde la interfaz grafica
+- Windows Service administrado por SCM mediante el host nativo de `service_host/`
 
 ## Estado actual
 
@@ -23,14 +23,16 @@ Yarbis ya funciona como agente personal local:
 - puede restaurar checkpoints y ejecutar tests del proyecto
 - ejecuta un autoanalisis de identidad, codigo fuente, sistema operativo y hardware al arrancar
 - puede recibir y responder mensajes por Telegram cuando ese canal esta configurado
-- puede ejecutarse en segundo plano y arrancar con Windows desde la interfaz grafica
+- puede ejecutarse como Windows Service y arrancar con Windows desde SCM
 
 ## Requisitos
 
 - Windows para la app de escritorio, notificaciones nativas y arranque con Windows
 - Python 3.11 o superior
+- .NET SDK 8 para compilar el host nativo del servicio SCM
 - Ollama ejecutandose localmente
 - un modelo disponible en Ollama; por defecto se usa `qwen3.5:2b`
+- permisos de administrador para instalar, quitar o reconfigurar el servicio en SCM
 
 Dependencias Python declaradas:
 
@@ -51,6 +53,7 @@ Si ya tienes `.venv` y dependencias listas, puedes abrir Yarbis con doble clic:
 
 - `abrir_yarbis.vbs`: abre la app de escritorio sin mostrar consola
 - `abrir_yarbis.cmd`: abre la app con una ventana visible por si necesitas revisar errores de arranque
+- `abrir_yarbis_admin.cmd`: pide permisos de administrador y abre la app para instalar o reconfigurar el servicio SCM
 
 Tambien puedes iniciarlo desde PowerShell:
 
@@ -73,28 +76,26 @@ La interfaz de escritorio permite:
 - configurar y probar notificaciones
 - activar o desactivar el servicio de fondo
 - configurar si el servicio se abre al iniciar Windows
+- quitar el servicio de SCM
 
 ## Servicio de fondo
 
-El grupo `Servicio` de la interfaz grafica permite dejar Yarbis corriendo sin ventana. Este servicio es un proceso de usuario, no un Windows Service registrado en el Service Control Manager.
+El grupo `Servicio` de la interfaz grafica permite instalar y controlar Yarbis como Windows Service real administrado por SCM.
 
 Cuando esta activo:
 
-- se lanza con `.venv\Scripts\pythonw.exe` si existe, o con el Python actual como respaldo
-- ejecuta `yarbis_service.py`
+- SCM lanza el host nativo `.yarbis_runtime\service_host\YarbisServiceHost.exe`
+- el host nativo inicia `.venv\Scripts\python.exe yarbis_service.py` como proceso hijo
 - escribe su PID en `.yarbis_runtime/service.pid`
-- escucha la marca de parada `.yarbis_runtime/service.stop`
 - registra actividad y errores en `.yarbis_runtime/service.log`
 - mantiene activo el inbox de Telegram si Telegram esta configurado
 - evita que la app de escritorio o la terminal inicien un segundo lector de Telegram
 
-La casilla `Abrir al iniciar Windows` registra o elimina el comando de arranque en:
+El boton `Instalar e iniciar` compila el host con `dotnet publish` si hace falta, crea el servicio en SCM y despues lo inicia. `Detener servicio` manda la parada a SCM. `Quitar de SCM` detiene el servicio si hace falta y elimina su registro.
 
-```text
-HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Run
-```
+La casilla `Iniciar con Windows` cambia el tipo de arranque del servicio entre `auto` y `demand` usando SCM. Si el servicio aun no esta instalado, la casilla aparece deshabilitada; primero usa `Instalar e iniciar`.
 
-El valor se llama `Yarbis Service`, asi que no requiere permisos de administrador y aplica al usuario actual de Windows.
+Estas acciones suelen requerir ejecutar Yarbis como administrador. Por defecto, un servicio creado con `sc.exe create` corre bajo la cuenta `LocalSystem`; si necesitas otro usuario, ajusta la pestana `Iniciar sesion` desde `services.msc`.
 
 ## Uso por terminal
 
@@ -370,15 +371,16 @@ Archivos no versionados:
 - `.venv/`
 - `*.log`
 
-El servicio usa `.yarbis_runtime/` para PID, marca de parada y log. Los checkpoints de autoedicion viven en `.yarbis_checkpoints/`.
+El servicio usa `.yarbis_runtime/` para PID y log. La marca `.yarbis_runtime/service.stop` queda como mecanismo de parada para ejecuciones manuales de `yarbis_service.py`; cuando corre bajo SCM, la parada llega por el control `STOP` del Service Control Manager. Los checkpoints de autoedicion viven en `.yarbis_checkpoints/`.
 
 ## Estructura principal
 
 - `agent.py`: prompt, tool loop, ciclos autonomos y comunicacion con Ollama
 - `main.py`: interfaz de terminal
 - `yarbis_desktop.py`: interfaz grafica Tkinter
-- `yarbis_service.py`: proceso de fondo
+- `yarbis_service.py`: loop Python de fondo ejecutado por el host del servicio
 - `service_manager.py`: inicio, parada, estado y autostart del servicio
+- `service_host/`: host nativo .NET que se registra ante SCM y controla el proceso Python
 - `memory.py`: estado persistente, defaults y normalizacion
 - `tools.py`: herramientas internas del agente
 - `internet.py`: busqueda y lectura web segura
@@ -398,7 +400,7 @@ Tambien puedes usar la tool interna `run_project_tests`, que ejecuta `unittest` 
 
 ## Limitaciones actuales
 
-- El servicio de fondo es un proceso de usuario, no un Windows Service administrado por SCM.
+- El servicio usa SCM, pero por defecto corre como `LocalSystem`; algunos recursos de usuario, como notificaciones interactivas de Windows, pueden no comportarse igual que en la app de escritorio.
 - La autonomia depende del modelo local disponible en Ollama y de la calidad del objetivo inicial.
 - La web solo cubre busqueda y lectura de paginas publicas; no hace navegacion completa ni automatizacion de navegador.
 - Telegram procesa mensajes de texto, no adjuntos.
