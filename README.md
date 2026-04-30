@@ -69,7 +69,7 @@ La interfaz de escritorio permite:
 - responder preguntas pendientes
 - enviar contexto libre al agente
 - editar perfil
-- guardar notas
+- crear, ver y eliminar notas
 - crear tareas manuales
 - revisar estado y actividad
 - alternar tema claro/oscuro
@@ -111,7 +111,8 @@ Comandos disponibles:
 - `status`: muestra objetivo, perfil, plan, tareas, notas, internet, autoconocimiento y notificaciones
 - `self`: refresca y muestra lo que Yarbis sabe de si mismo, su codigo fuente, el sistema operativo y el hardware local
 - `profile`: actualiza nombre, contexto, preferencias y restricciones
-- `note`: guarda una nota persistente
+- `note`: menu interactivo para crear, listar, ver o borrar notas
+- `notes`: lista notas persistentes; tambien puedes usar `nota crear Titulo | contenido | categoria`, `nota ver ID` o `nota borrar ID`
 - `task`: agrega una tarea manual al backlog
 - `reply`: envia una respuesta libre; si habia una pregunta pendiente, reanuda el modo autonomo
 - `exit`: termina la sesion
@@ -150,6 +151,8 @@ Para configurarlo desde la interfaz:
 8. Abre el chat con el bot y envia `/start`.
 
 Si `Chat ID` queda vacio, Yarbis vincula automaticamente el primer chat privado que escriba al bot.
+Por seguridad, si ese primer mensaje es un comando de apagado o reinicio, solo vincula el chat; debes
+reenviar el comando una vez vinculado.
 
 Comandos disponibles por Telegram:
 
@@ -160,8 +163,26 @@ Comandos disponibles por Telegram:
 - `/run`: ejecuta un ciclo
 - `/auto`: ejecuta modo autonomo con los ciclos por defecto
 - `/auto 3`: ejecuta el numero indicado de ciclos
+- `/notas`: lista notas persistentes
+- `/notas personal`: lista notas de una categoria
+- `/nota crear Titulo | contenido | categoria`: guarda una nota
+- `/nota ID`: muestra una nota completa
+- `/nota borrar ID`: elimina una nota
+- `/apagar`: programa el apagado de esta PC en 60 segundos
+- `/apagar ahora`: apaga esta PC inmediatamente
+- `/apagar 5m`: programa el apagado en 5 minutos
+- `/reiniciar`: programa el reinicio de esta PC en 60 segundos
+- `/reiniciar ahora`: reinicia esta PC inmediatamente
+- `/reiniciar 5m`: programa el reinicio en 5 minutos
+- `/cancelar_apagado`: cancela un apagado programado
+- `/cancelar_reinicio`: cancela un reinicio programado
 
-Los mensajes de texto sin `/` se procesan como respuesta o contexto libre. Por ahora Telegram solo procesa texto.
+Tambien puedes decir `guarda una nota: Titulo | contenido | categoria`, `ver notas`
+o `borra la nota note-123` para gestionar notas con lenguaje natural. Para apagado o reinicio remoto,
+puedes decir `apaga la pc`, `Yarbis, reinicia pc` o `reinicia pc en 5 minutos`
+sin depender del modelo local. Los mensajes de texto sin `/` se procesan como respuesta
+o contexto libre cuando no coinciden con una accion remota explicita. Por ahora Telegram
+solo procesa texto.
 
 ## Notificaciones
 
@@ -386,6 +407,7 @@ El servicio usa `.yarbis_runtime/` para PID y log. La marca `.yarbis_runtime/ser
 - `internet.py`: busqueda y lectura web segura
 - `notifications.py`: Windows, ntfy y Telegram
 - `telegram_inbox.py`: polling y comandos remotos de Telegram
+- `power.py`: apagado, reinicio y cancelacion de acciones de energia de Windows
 - `self_knowledge.py`: autoanalisis local
 - `abrir_yarbis.vbs` y `abrir_yarbis.cmd`: lanzadores de escritorio
 - `tests/`: suite de tests con `unittest`

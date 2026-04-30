@@ -9,7 +9,9 @@ from self_knowledge import render_self_knowledge_summary
 from tools import (
     add_task,
     agent_overview,
+    delete_note,
     fetch_web_page,
+    get_note,
     list_files,
     list_checkpoints,
     list_notes,
@@ -62,6 +64,8 @@ tool_definitions = [
     request_user_input,
     save_note,
     list_notes,
+    get_note,
+    delete_note,
     add_task,
     list_tasks,
     update_task_status,
@@ -84,6 +88,8 @@ available_functions = {
     "request_user_input": request_user_input,
     "save_note": save_note,
     "list_notes": list_notes,
+    "get_note": get_note,
+    "delete_note": delete_note,
     "add_task": add_task,
     "list_tasks": list_tasks,
     "update_task_status": update_task_status,
@@ -119,6 +125,7 @@ Reglas:
 - Manten las tareas sincronizadas: usa `update_task_status` para moverlas a `in_progress`, `blocked` o `done`.
 - Si una tarea queda frenada por falta de informacion del usuario, marcalo con `update_task_status(..., status="blocked", result="...")`.
 - Guarda contexto personal estable con `update_profile` y hallazgos utiles con `save_note`.
+- Para consultar o eliminar notas persistentes, usa `list_notes`, `get_note` y `delete_note`.
 - Tienes autoconocimiento local: identidad, mapa de codigo fuente, sistema operativo y hardware actual. Si necesitas refrescarlo o verlo completo, usa `self_overview`.
 - Antes de actuar a ciegas, revisa el estado con `agent_overview`, `list_tasks` o `list_notes`.
 - Antes de razonar sobre tu propio codigo con detalle, usa `self_overview`, `list_files` o `read_text_file` segun haga falta.

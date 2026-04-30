@@ -1,17 +1,22 @@
 from memory import load_state, render_state_summary
 from session import (
+    delete_note_text,
+    get_note_text,
     has_pending_user_question,
+    handle_note_text_request,
+    list_notes_text,
     run_auto_with_output,
     run_cycle_with_output,
     run_self_analysis_with_output,
     run_startup_self_analysis,
+    save_note_text,
     is_self_analysis_request,
     submit_user_reply,
     update_goal,
 )
 from service_manager import is_service_running
 from telegram_inbox import start_telegram_polling, stop_telegram_polling
-from tools import add_task, save_note, self_overview, update_profile
+from tools import add_task, self_overview, update_profile
 
 
 def main():
@@ -28,7 +33,7 @@ def main():
         if not telegram_polling_started:
             print("Servicio de fondo activo: Telegram queda atendido por el servicio.")
         print(f"Objetivo actual: {state['goal']}")
-        print("Comandos: goal, run, auto, status, self, profile, note, task, reply, exit")
+        print("Comandos: goal, run, auto, status, self, profile, note, notes, task, reply, exit")
         if has_pending_user_question(state):
             print(f"Pendiente: {state['awaiting_user_input']['question']}")
         print()
@@ -104,7 +109,44 @@ def main():
                 ))
                 continue
 
-            if cmd == "note":
+            if cmd in {"notes", "notas"}:
+                print(list_notes_text(limit=20))
+                continue
+
+            if cmd in {"note", "nota"}:
+                try:
+                    action = input("Accion [crear/listar/ver/borrar]: ").strip().lower() or "crear"
+                except (EOFError, KeyboardInterrupt):
+                    print("\nOperacion cancelada.")
+                    continue
+
+                if action in {"listar", "lista", "list", "ver todas"}:
+                    try:
+                        category = input("Categoria (opcional): ").strip()
+                    except (EOFError, KeyboardInterrupt):
+                        print("\nOperacion cancelada.")
+                        continue
+                    print(list_notes_text(category=category, limit=20))
+                    continue
+
+                if action in {"ver", "mostrar", "show"}:
+                    try:
+                        identifier = input("Id o titulo de la nota: ").strip()
+                    except (EOFError, KeyboardInterrupt):
+                        print("\nOperacion cancelada.")
+                        continue
+                    print(get_note_text(identifier))
+                    continue
+
+                if action in {"borrar", "eliminar", "delete"}:
+                    try:
+                        identifier = input("Id o titulo de la nota: ").strip()
+                    except (EOFError, KeyboardInterrupt):
+                        print("\nOperacion cancelada.")
+                        continue
+                    print(delete_note_text(identifier))
+                    continue
+
                 try:
                     title = input("Titulo de la nota: ").strip()
                     content = input("Contenido: ").strip()
@@ -113,7 +155,18 @@ def main():
                     print("\nOperacion cancelada.")
                     continue
 
-                print(save_note(title=title, content=content, category=category or "general"))
+                print(save_note_text(title=title, content=content, category=category or "general"))
+                continue
+
+            if cmd.startswith(("note ", "nota ", "notes ", "notas ")):
+                note_result = handle_note_text_request(cmd)
+                if note_result is not None:
+                    print(note_result)
+                    continue
+
+            note_result = handle_note_text_request(cmd)
+            if note_result is not None:
+                print(note_result)
                 continue
 
             if cmd == "task":

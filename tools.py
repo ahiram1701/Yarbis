@@ -932,6 +932,35 @@ def save_note(title: str, content: str, category: str = "general") -> str:
     return f"Nota guardada con id {note['id']}: {note['title']} ({note['category']})"
 
 
+def _matching_notes(notes: list[dict], identifier: str) -> list[dict]:
+    cleaned_identifier = str(identifier).strip()
+    if not cleaned_identifier:
+        return []
+
+    normalized_identifier = cleaned_identifier.casefold()
+    exact_matches = [
+        note for note in notes
+        if note["id"].casefold() == normalized_identifier
+        or note["title"].casefold() == normalized_identifier
+    ]
+    if exact_matches:
+        return exact_matches
+
+    return [
+        note for note in notes
+        if normalized_identifier in note["title"].casefold()
+    ]
+
+
+def _ambiguous_note_message(matches: list[dict]) -> str:
+    lines = [
+        "Encontre varias notas que coinciden. Usa el id exacto para elegir una:"
+    ]
+    for note in matches[:10]:
+        lines.append(f"- [{note['id']}] {note['title']} ({note['category']})")
+    return "\n".join(lines)
+
+
 def list_notes(category: str = "", limit: int = 10) -> str:
     """
     Lista notas persistentes del agente.
@@ -966,6 +995,68 @@ def list_notes(category: str = "", limit: int = 10) -> str:
         lines.append(f"[{note['id']}] {note['title']} ({note['category']}): {preview}")
 
     return "\n".join(lines)
+
+
+def get_note(identifier: str) -> str:
+    """
+    Muestra el contenido completo de una nota por id o titulo.
+
+    Args:
+        identifier (str): Id exacto, titulo exacto o fragmento unico del titulo.
+
+    Returns:
+        str: Nota completa o mensaje de ayuda si no se encuentra.
+    """
+    cleaned_identifier = str(identifier).strip()
+    if not cleaned_identifier:
+        return "Indica el id o titulo de la nota que quieres ver."
+
+    state = load_state()
+    matches = _matching_notes(state["notes"], cleaned_identifier)
+    if not matches:
+        return f"No encontre una nota que coincida con '{cleaned_identifier}'."
+    if len(matches) > 1:
+        return _ambiguous_note_message(matches)
+
+    note = matches[0]
+    content = note["content"] or "Sin contenido."
+    return (
+        f"Nota [{note['id']}]\n"
+        f"Titulo: {note['title']}\n"
+        f"Categoria: {note['category']}\n\n"
+        f"{content}"
+    )
+
+
+def delete_note(identifier: str) -> str:
+    """
+    Elimina una nota persistente por id o titulo.
+
+    Args:
+        identifier (str): Id exacto, titulo exacto o fragmento unico del titulo.
+
+    Returns:
+        str: Confirmacion o mensaje de ayuda si no se puede eliminar.
+    """
+    cleaned_identifier = str(identifier).strip()
+    if not cleaned_identifier:
+        return "Indica el id o titulo de la nota que quieres eliminar."
+
+    state = load_state()
+    matches = _matching_notes(state["notes"], cleaned_identifier)
+    if not matches:
+        return f"No encontre una nota que coincida con '{cleaned_identifier}'."
+    if len(matches) > 1:
+        return _ambiguous_note_message(matches)
+
+    note = matches[0]
+    state["notes"] = [
+        existing_note for existing_note in state["notes"]
+        if existing_note["id"] != note["id"]
+    ]
+    save_state(state)
+
+    return f"Nota eliminada: [{note['id']}] {note['title']} ({note['category']})"
 
 
 def add_task(title: str, details: str = "", priority: str = "media") -> str:

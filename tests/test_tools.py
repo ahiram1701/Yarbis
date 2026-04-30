@@ -125,6 +125,8 @@ class ToolsTestCase(unittest.TestCase):
                 content="Revisar pendientes cada manana",
                 category="personal",
             )
+            note_id = note_result.split("id ", 1)[1].split(":", 1)[0]
+            full_note = tools.get_note(note_id)
             status_result = tools.update_task_status(
                 task_id=task_id,
                 status="done",
@@ -133,14 +135,19 @@ class ToolsTestCase(unittest.TestCase):
             overview = tools.agent_overview()
             done_tasks = tools.list_tasks(status="done")
             personal_notes = tools.list_notes(category="personal")
+            delete_note_result = tools.delete_note(note_id)
+            notes_after_delete = tools.list_notes(category="personal")
 
         self.assertIn("Perfil actualizado", profile_result)
         self.assertIn("Tarea creada", task_result)
         self.assertIn("Nota guardada", note_result)
+        self.assertIn("Revisar pendientes cada manana", full_note)
         self.assertIn("Nuevo estado: done", status_result)
         self.assertIn("Ahiram", overview)
         self.assertIn("Plan semanal definido", done_tasks)
         self.assertIn("Rutina", personal_notes)
+        self.assertIn("Nota eliminada", delete_note_result)
+        self.assertIn("No hay notas", notes_after_delete)
 
     def test_request_user_input_persists_pending_question(self):
         state_path = self.runtime_dir / "tool_pending_input_state.json"

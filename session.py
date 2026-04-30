@@ -1,5 +1,6 @@
 import contextlib
 import io
+import re
 import threading
 import unicodedata
 from datetime import datetime, timezone
@@ -13,7 +14,7 @@ from notifications import (
     try_link_telegram_chat,
 )
 from self_knowledge import render_self_knowledge_summary
-from tools import add_task, save_note, update_profile
+from tools import add_task, delete_note, get_note, list_notes, save_note, update_profile
 
 SESSION_LOCK = threading.RLock()
 
@@ -288,9 +289,261 @@ def save_note_text(title: str, content: str, category: str = "general") -> str:
         return save_note(title=title, content=content, category=category or "general")
 
 
+def list_notes_text(category: str = "", limit: int = 10) -> str:
+    with SESSION_LOCK:
+        return list_notes(category=category, limit=limit)
+
+
+def get_note_text(identifier: str) -> str:
+    with SESSION_LOCK:
+        return get_note(identifier=identifier)
+
+
+def delete_note_text(identifier: str) -> str:
+    with SESSION_LOCK:
+        return delete_note(identifier=identifier)
+
+
 def add_task_text(title: str, details: str = "", priority: str = "media") -> str:
     with SESSION_LOCK:
         return add_task(title=title, details=details, priority=priority or "media")
+
+
+def _normalize_command_text(text: str) -> str:
+    normalized = _normalize_intent_text(text)
+    without_punctuation = re.sub(r"[^\w\s]", " ", normalized)
+    return " ".join(without_punctuation.split())
+
+
+def _title_from_note_content(content: str) -> str:
+    compact = " ".join(str(content).strip().split())
+    if len(compact) <= 64:
+        return compact or "Nota sin titulo"
+    return compact[:64].rstrip() + "..."
+
+
+def _parse_note_create_payload(payload: str) -> dict:
+    cleaned_payload = str(payload).strip()
+    parts = [part.strip() for part in cleaned_payload.split("|")]
+    parts = [part for part in parts if part]
+
+    if not parts:
+        return {"action": "usage"}
+
+    if len(parts) == 1:
+        content = parts[0]
+        return {
+            "action": "create",
+            "title": _title_from_note_content(content),
+            "content": content,
+            "category": "general",
+        }
+
+    return {
+        "action": "create",
+        "title": parts[0],
+        "content": parts[1],
+        "category": parts[2] if len(parts) > 2 else "general",
+    }
+
+
+def _parse_note_subcommand(argument_text: str) -> dict:
+    argument_text = str(argument_text).strip()
+    normalized_argument = _normalize_command_text(argument_text)
+
+    if not argument_text:
+        return {"action": "usage"}
+
+    if normalized_argument in {"listar", "lista", "list", "ls", "ver todas", "todas"}:
+        return {"action": "list", "category": ""}
+
+    for prefix in (
+        "crear",
+        "crea",
+        "agregar",
+        "agrega",
+        "guardar",
+        "guarda",
+        "add",
+        "save",
+    ):
+        prefix_with_space = prefix + " "
+        if normalized_argument == prefix:
+            return {"action": "usage"}
+        if normalized_argument.startswith(prefix_with_space):
+            return _parse_note_create_payload(argument_text[len(prefix):].strip())
+
+    for prefix in ("borrar", "borra", "eliminar", "elimina", "delete", "rm"):
+        prefix_with_space = prefix + " "
+        if normalized_argument == prefix:
+            return {"action": "usage"}
+        if normalized_argument.startswith(prefix_with_space):
+            return {
+                "action": "delete",
+                "identifier": argument_text[len(prefix):].strip(),
+            }
+
+    for prefix in ("ver", "mostrar", "muestra", "lee", "show", "open"):
+        prefix_with_space = prefix + " "
+        if normalized_argument == prefix:
+            return {"action": "list", "category": ""}
+        if normalized_argument.startswith(prefix_with_space):
+            return {
+                "action": "show",
+                "identifier": argument_text[len(prefix):].strip(),
+            }
+
+    if "|" in argument_text:
+        return _parse_note_create_payload(argument_text)
+
+    return {"action": "show", "identifier": argument_text}
+
+
+def parse_note_text_request(text: str) -> dict | None:
+    cleaned_text = str(text).strip()
+    if not cleaned_text:
+        return None
+
+    parts = cleaned_text.split(maxsplit=1)
+    command = parts[0].split("@")[0].lower() if parts else ""
+    argument_text = parts[1].strip() if len(parts) > 1 else ""
+
+    if command in {"/notas", "notas", "notes"}:
+        return {"action": "list", "category": argument_text}
+
+    if command in {"/nota", "nota", "note"}:
+        return _parse_note_subcommand(argument_text)
+
+    if command in {"/crear_nota", "/guardar_nota"}:
+        return _parse_note_create_payload(argument_text)
+
+    if command in {"/borrar_nota", "/eliminar_nota", "/delete_note"}:
+        return {"action": "delete", "identifier": argument_text}
+
+    if command in {"/ver_nota", "/mostrar_nota", "/show_note"}:
+        return {"action": "show", "identifier": argument_text}
+
+    normalized_text = _normalize_command_text(cleaned_text)
+    if normalized_text in {
+        "ver notas",
+        "listar notas",
+        "lista notas",
+        "muestra notas",
+        "mostrar notas",
+        "muestrame notas",
+        "muestrame mis notas",
+        "mis notas",
+    }:
+        return {"action": "list", "category": ""}
+
+    list_match = re.match(
+        r"^\s*(?:ver|listar|muestra|mostrar)\s+(?:mis\s+)?notas(?:\s+(?:de|categoria)\s+(.+))?\s*$",
+        cleaned_text,
+        flags=re.IGNORECASE,
+    )
+    if list_match:
+        return {
+            "action": "list",
+            "category": (list_match.group(1) or "").strip(),
+        }
+
+    create_match = re.match(
+        r"^\s*(?:guarda|guardar|crea|crear|agrega|agregar)\s+(?:una\s+)?nota\b\s*[:\-]?\s*(.+)$",
+        cleaned_text,
+        flags=re.IGNORECASE,
+    )
+    if create_match:
+        return _parse_note_create_payload(create_match.group(1))
+
+    note_colon_match = re.match(
+        r"^\s*nota\s*:\s*(.+)$",
+        cleaned_text,
+        flags=re.IGNORECASE,
+    )
+    if note_colon_match:
+        return _parse_note_create_payload(note_colon_match.group(1))
+
+    anota_match = re.match(
+        r"^\s*anota\s*[:\-]?\s*(.+)$",
+        cleaned_text,
+        flags=re.IGNORECASE,
+    )
+    if anota_match:
+        return _parse_note_create_payload(anota_match.group(1))
+
+    delete_match = re.match(
+        r"^\s*(?:borra|borrar|elimina|eliminar)\s+(?:la\s+)?nota\s+(.+)$",
+        cleaned_text,
+        flags=re.IGNORECASE,
+    )
+    if delete_match:
+        return {
+            "action": "delete",
+            "identifier": delete_match.group(1).strip(),
+        }
+
+    show_match = re.match(
+        r"^\s*(?:ver|muestra|mostrar|lee|abre)\s+(?:la\s+)?nota\s+(.+)$",
+        cleaned_text,
+        flags=re.IGNORECASE,
+    )
+    if show_match:
+        return {
+            "action": "show",
+            "identifier": show_match.group(1).strip(),
+        }
+
+    return None
+
+
+def note_request_label(text: str) -> str:
+    parsed = parse_note_text_request(text)
+    if not parsed:
+        return ""
+
+    labels = {
+        "create": "Guardar nota",
+        "list": "Notas",
+        "show": "Notas",
+        "delete": "Eliminar nota",
+        "usage": "Notas",
+    }
+    return labels.get(parsed.get("action", ""), "Notas")
+
+
+def _note_usage_text() -> str:
+    return (
+        "Uso de notas:\n"
+        "- notas [categoria]\n"
+        "- nota crear Titulo | contenido | categoria\n"
+        "- nota ver ID_o_titulo\n"
+        "- nota borrar ID_o_titulo\n"
+        "Tambien puedes decir: guarda una nota: Titulo | contenido | categoria"
+    )
+
+
+def handle_note_text_request(text: str) -> str | None:
+    parsed = parse_note_text_request(text)
+    if not parsed:
+        return None
+
+    action = parsed.get("action", "")
+    if action == "usage":
+        return _note_usage_text()
+    if action == "list":
+        return list_notes_text(category=parsed.get("category", ""), limit=20)
+    if action == "show":
+        return get_note_text(parsed.get("identifier", ""))
+    if action == "delete":
+        return delete_note_text(parsed.get("identifier", ""))
+    if action == "create":
+        return save_note_text(
+            title=parsed.get("title", ""),
+            content=parsed.get("content", ""),
+            category=parsed.get("category", "general"),
+        )
+
+    return _note_usage_text()
 
 
 def _capture_operation_output(func, *args, **kwargs) -> tuple[str, object]:
@@ -365,6 +618,10 @@ def submit_user_reply(reply_text: str, emit_notifications: bool = True) -> str:
 
         if is_self_analysis_request(cleaned_reply):
             return run_self_analysis_with_output()
+
+        note_result = handle_note_text_request(cleaned_reply)
+        if note_result is not None:
+            return note_result
 
         state = load_state()
         had_pending_question = has_pending_user_question(state)

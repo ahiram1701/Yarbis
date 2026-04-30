@@ -1,11 +1,21 @@
 import threading
 import time
+import re
+import unicodedata
 from typing import Any, Callable
 
 from memory import load_state, save_state
 from notifications import get_telegram_settings, send_telegram_message, telegram_api_request
+from power import (
+    DEFAULT_SHUTDOWN_DELAY_SECONDS,
+    cancel_system_shutdown,
+    request_system_restart,
+    request_system_shutdown,
+)
 from session import (
     get_status_text,
+    handle_note_text_request,
+    note_request_label,
     run_auto_with_output,
     run_cycle_with_output,
     submit_user_reply,
@@ -79,6 +89,30 @@ def _telegram_state_from_memory() -> dict:
     return telegram_state
 
 
+def _update_id_from_update(update: dict) -> int:
+    try:
+        return int(update.get("update_id", 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _claim_telegram_update(update_id: int) -> bool:
+    if update_id <= 0:
+        return True
+
+    telegram_state = _telegram_state_from_memory()
+    try:
+        last_update_id = int(telegram_state.get("last_update_id", 0))
+    except (TypeError, ValueError):
+        last_update_id = 0
+
+    if last_update_id >= update_id:
+        return False
+
+    _update_telegram_state(last_update_id=update_id)
+    return True
+
+
 def _help_text() -> str:
     return (
         "Yarbis por Telegram listo.\n\n"
@@ -89,8 +123,19 @@ def _help_text() -> str:
         "/run - ejecutar un ciclo\n"
         "/auto - ejecutar el modo autonomo con los ciclos por defecto\n"
         "/auto N - ejecutar N ciclos\n"
+        "/notas - listar notas\n"
+        "/nota crear Titulo | contenido | categoria - guardar una nota\n"
+        "/nota ID - ver una nota\n"
+        "/nota borrar ID - eliminar una nota\n"
+        "/apagar - apagar esta PC en 60 segundos\n"
+        "/apagar ahora - apagar esta PC inmediatamente\n"
+        "/reiniciar - reiniciar esta PC en 60 segundos\n"
+        "/reiniciar ahora - reiniciar esta PC inmediatamente\n"
+        "/cancelar_apagado - cancelar un apagado programado\n"
+        "/cancelar_reinicio - cancelar un reinicio programado\n"
         "/help - ver esta ayuda\n\n"
-        "Tambien puedes responder con texto libre cuando Yarbis te pida algo."
+        "Tambien puedes decir 'guarda una nota: ...', 'apaga la pc', 'reinicia pc' "
+        "o responder con texto libre cuando Yarbis te pida algo."
     )
 
 
@@ -136,12 +181,234 @@ def _incoming_activity_text(text: str) -> str:
     return f"Telegram: recibido '{trimmed_text}'. Procesando..."
 
 
-def _job_label_for_message(text: str) -> str:
+def _normalize_intent_text(text: str) -> str:
+    normalized = unicodedata.normalize("NFKD", str(text).strip().lower())
+    without_accents = "".join(
+        char for char in normalized
+        if not unicodedata.combining(char)
+    )
+    without_punctuation = re.sub(r"[^\w\s]", " ", without_accents)
+    return " ".join(without_punctuation.replace("_", " ").split())
+
+
+def _strip_yarbis_prefix(text: str) -> str:
+    normalized = _normalize_intent_text(text)
+    for prefix in ("yarbis ", "oye yarbis ", "hey yarbis "):
+        if normalized.startswith(prefix):
+            return normalized[len(prefix):].strip()
+    return normalized
+
+
+def _natural_power_intent(text: str) -> str:
+    normalized = _strip_yarbis_prefix(text)
+    if not normalized:
+        return ""
+
+    shutdown_phrases = {
+        "apaga la pc",
+        "apaga pc",
+        "apaga mi pc",
+        "apaga el pc",
+        "apaga la computadora",
+        "apaga mi computadora",
+        "apaga el equipo",
+        "apaga la compu",
+        "apaga windows",
+        "apague la pc",
+        "apaque la pc",
+        "apagar pc",
+        "apagar la pc",
+        "shutdown pc",
+    }
+    restart_phrases = {
+        "reinicia la pc",
+        "reinicia pc",
+        "reinicia mi pc",
+        "reinicia el pc",
+        "reinicia la computadora",
+        "reinicia mi computadora",
+        "reinicia el equipo",
+        "reinicia la compu",
+        "reinicia windows",
+        "reinicie la pc",
+        "reiniciar pc",
+        "reiniciar la pc",
+        "restart pc",
+    }
+    immediate_suffixes = (" ahora", " ya")
+    delayed_prefixes = (
+        "apaga la pc en ",
+        "apaga pc en ",
+        "apaga mi pc en ",
+        "apaga la computadora en ",
+        "apaga el equipo en ",
+    )
+    restart_delayed_prefixes = (
+        "reinicia la pc en ",
+        "reinicia pc en ",
+        "reinicia mi pc en ",
+        "reinicia la computadora en ",
+        "reinicia el equipo en ",
+    )
+    cancel_phrases = {
+        "cancela el apagado",
+        "cancelar apagado",
+        "cancela apagado",
+        "cancela apagar la pc",
+        "cancela el reinicio",
+        "cancelar reinicio",
+        "cancela reinicio",
+        "cancela reiniciar la pc",
+        "no apagues la pc",
+        "no reinicies la pc",
+        "deten el apagado",
+        "deten el reinicio",
+        "aborta el apagado",
+        "aborta el reinicio",
+    }
+
+    if normalized in cancel_phrases:
+        return "cancel_power_action"
+    if normalized in shutdown_phrases:
+        return "shutdown"
+    if normalized in restart_phrases:
+        return "restart"
+    if any(normalized == phrase + suffix for phrase in shutdown_phrases for suffix in immediate_suffixes):
+        return "shutdown"
+    if any(normalized == phrase + suffix for phrase in restart_phrases for suffix in immediate_suffixes):
+        return "restart"
+    if any(normalized.startswith(prefix) for prefix in delayed_prefixes):
+        return "shutdown"
+    if any(normalized.startswith(prefix) for prefix in restart_delayed_prefixes):
+        return "restart"
+    return ""
+
+
+def _power_intent_for_message(text: str) -> str:
     cleaned_text = str(text).strip()
     if not cleaned_text:
         return ""
 
     if not cleaned_text.startswith("/"):
+        return _natural_power_intent(cleaned_text)
+
+    command = cleaned_text.split()[0].split("@")[0].lower()
+    if command in {"/apagar", "/apagar_pc", "/shutdown"}:
+        return "shutdown"
+    if command in {"/reiniciar", "/reiniciar_pc", "/restart", "/reboot"}:
+        return "restart"
+    if command in {
+        "/cancelar_apagado",
+        "/cancelarapagado",
+        "/abortar_apagado",
+        "/cancelar_reinicio",
+        "/cancelarreinicio",
+        "/abortar_reinicio",
+    }:
+        return "cancel_power_action"
+    return ""
+
+
+def _parse_shutdown_delay_seconds(argument_text: str) -> tuple[int | None, str | None]:
+    cleaned = _normalize_intent_text(argument_text)
+    if not cleaned:
+        return DEFAULT_SHUTDOWN_DELAY_SECONDS, None
+    if cleaned in {"ahora", "ya", "now", "inmediato", "inmediatamente"}:
+        return 0, None
+
+    match = re.search(r"\b(\d{1,4})\s*(segundo|segundos|second|seconds|sec|s)\b", cleaned)
+    if match:
+        seconds = int(match.group(1))
+        if seconds > 3600:
+            return None, "El maximo permitido es 3600 segundos."
+        return seconds, None
+
+    match = re.search(r"\b(\d{1,3})\s*(minuto|minutos|minute|minutes|min|m)\b", cleaned)
+    if match:
+        seconds = int(match.group(1)) * 60
+        if seconds > 3600:
+            return None, "El maximo permitido es 60 minutos."
+        return seconds, None
+
+    match = re.fullmatch(r"\d{1,3}", cleaned)
+    if match:
+        seconds = int(cleaned) * 60
+        if seconds > 3600:
+            return None, "El maximo permitido es 60 minutos."
+        return seconds, None
+
+    return None, "Uso: /apagar, /apagar ahora, /apagar 30s o /apagar 5m"
+
+
+def _argument_after_natural_delay_prefix(text: str) -> str:
+    normalized = _strip_yarbis_prefix(text)
+    for prefix in (
+        "apaga la pc en ",
+        "apaga pc en ",
+        "apaga mi pc en ",
+        "apaga la computadora en ",
+        "apaga el equipo en ",
+        "reinicia la pc en ",
+        "reinicia pc en ",
+        "reinicia mi pc en ",
+        "reinicia la computadora en ",
+        "reinicia el equipo en ",
+    ):
+        if normalized.startswith(prefix):
+            return normalized[len(prefix):].strip()
+    if normalized.endswith(" ahora"):
+        return "ahora"
+    if normalized.endswith(" ya"):
+        return "ya"
+    return ""
+
+
+def _dispatch_shutdown(argument_text: str = "") -> str:
+    delay_seconds, error = _parse_shutdown_delay_seconds(argument_text)
+    if error:
+        return error
+    return request_system_shutdown(delay_seconds=delay_seconds)
+
+
+def _dispatch_restart(argument_text: str = "") -> str:
+    delay_seconds, error = _parse_shutdown_delay_seconds(argument_text)
+    if error:
+        return error.replace("/apagar", "/reiniciar")
+    return request_system_restart(delay_seconds=delay_seconds)
+
+
+def _is_restart_cancel_command(command: str) -> bool:
+    return command in {"/cancelar_reinicio", "/cancelarreinicio", "/abortar_reinicio"}
+
+
+def _is_shutdown_cancel_command(command: str) -> bool:
+    return command in {"/cancelar_apagado", "/cancelarapagado", "/abortar_apagado"}
+
+
+def _cancel_label_for_natural_text(text: str) -> str:
+    normalized = _strip_yarbis_prefix(text)
+    if "reinicio" in normalized or "reiniciar" in normalized or "reinicies" in normalized:
+        return "reinicio"
+    return "apagado"
+
+
+def _job_label_for_message(text: str) -> str:
+    cleaned_text = str(text).strip()
+    if not cleaned_text:
+        return ""
+
+    note_label = note_request_label(cleaned_text)
+    if note_label:
+        return note_label
+
+    if not cleaned_text.startswith("/"):
+        natural_intent = _power_intent_for_message(cleaned_text)
+        if natural_intent == "shutdown":
+            return "Apagado"
+        if natural_intent == "restart":
+            return "Reinicio"
+        if natural_intent == "cancel_power_action":
+            return "Cancelar apagado/reinicio"
         return "Respuesta"
 
     command = cleaned_text.split()[0].split("@")[0].lower()
@@ -151,6 +418,14 @@ def _job_label_for_message(text: str) -> str:
         return "Modo autonomo"
     if command in {"/goal", "/objetivo"}:
         return "Objetivo"
+    if command in {"/notas", "/nota", "/crear_nota", "/guardar_nota", "/borrar_nota", "/eliminar_nota", "/ver_nota"}:
+        return note_request_label(cleaned_text) or "Notas"
+    if command in {"/apagar", "/apagar_pc", "/shutdown"}:
+        return "Apagado"
+    if command in {"/reiniciar", "/reiniciar_pc", "/restart", "/reboot"}:
+        return "Reinicio"
+    if _is_shutdown_cancel_command(command) or _is_restart_cancel_command(command):
+        return "Cancelar apagado/reinicio"
 
     return ""
 
@@ -167,6 +442,10 @@ def _dispatch_command(command_text: str) -> str:
 
     if command == "/status":
         return get_status_text()
+
+    note_reply = handle_note_text_request(cleaned_text)
+    if note_reply is not None:
+        return note_reply
 
     if command in {"/goal", "/objetivo"}:
         if not argument_text:
@@ -189,12 +468,28 @@ def _dispatch_command(command_text: str) -> str:
 
         return run_auto_with_output(cycles=cycles, emit_notifications=False)
 
+    if command in {"/apagar", "/apagar_pc", "/shutdown"}:
+        return _dispatch_shutdown(argument_text)
+
+    if command in {"/reiniciar", "/reiniciar_pc", "/restart", "/reboot"}:
+        return _dispatch_restart(argument_text)
+
+    if _is_restart_cancel_command(command):
+        return cancel_system_shutdown(action_label="reinicio")
+
+    if _is_shutdown_cancel_command(command):
+        return cancel_system_shutdown(action_label="apagado")
+
     return "Comando no reconocido.\n\n" + _help_text()
 
 
 def process_telegram_update(update: dict) -> str:
     message = update.get("message")
     if not isinstance(message, dict):
+        return ""
+
+    update_id = _update_id_from_update(update)
+    if not _claim_telegram_update(update_id):
         return ""
 
     if not _is_allowed_chat(message):
@@ -211,6 +506,15 @@ def process_telegram_update(update: dict) -> str:
         send_telegram_message(reply, chat_id=chat_id)
         return "Telegram: mensaje no textual ignorado."
 
+    power_intent = _power_intent_for_message(text)
+    if binding_notice and power_intent:
+        reply = (
+            f"{binding_notice}\n\n"
+            "Por seguridad, vuelve a enviar el comando de apagado o reinicio desde este chat ya vinculado."
+        )
+        send_telegram_message(reply, chat_id=chat_id)
+        return f"Telegram: vinculo chat para '{_trim_for_activity(text)}'."
+
     _emit_event(_incoming_activity_text(text))
     job_label = _job_label_for_message(text)
 
@@ -220,8 +524,18 @@ def process_telegram_update(update: dict) -> str:
     try:
         if text.startswith("/"):
             reply = _dispatch_command(text)
+        elif power_intent == "shutdown":
+            reply = _dispatch_shutdown(_argument_after_natural_delay_prefix(text))
+        elif power_intent == "restart":
+            reply = _dispatch_restart(_argument_after_natural_delay_prefix(text))
+        elif power_intent == "cancel_power_action":
+            reply = cancel_system_shutdown(action_label=_cancel_label_for_natural_text(text))
         else:
-            reply = submit_user_reply(text, emit_notifications=False)
+            note_reply = handle_note_text_request(text)
+            if note_reply is not None:
+                reply = note_reply
+            else:
+                reply = submit_user_reply(text, emit_notifications=False)
     except Exception as exc:
         if job_label:
             _emit_job_failed(job_label, str(exc))
@@ -260,14 +574,16 @@ def _poll_updates_once():
         return False
 
     for update in updates:
-        summary = process_telegram_update(update)
-        try:
-            update_id = int(update.get("update_id", 0))
-        except (TypeError, ValueError):
-            update_id = 0
+        update_id = _update_id_from_update(update)
 
-        if update_id > 0:
-            _update_telegram_state(last_update_id=update_id)
+        summary = ""
+        try:
+            summary = process_telegram_update(update)
+        except Exception as exc:
+            summary = f"Telegram: error procesando update {update_id or '?'}: {exc}"
+        finally:
+            if update_id > 0:
+                _update_telegram_state(last_update_id=update_id)
 
         if summary:
             _emit_event(summary)

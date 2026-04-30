@@ -79,11 +79,41 @@ class SessionTestCase(unittest.TestCase):
         self.assertIn("agent.py", state["self_knowledge"]["summary"])
         self.assertEqual(state["messages"], [])
 
+    def test_submit_user_reply_routes_note_requests_without_model_cycle(self):
+        state_path = TEST_RUNTIME_DIR / "session_note_reply_state.json"
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+
+        with patch.object(memory, "STATE_FILE", state_path):
+            memory.save_state(memory.default_state())
+            with patch.object(session, "run_cycle_with_output", side_effect=RuntimeError("no debe llamarse")):
+                create_result = session.submit_user_reply(
+                    "guarda una nota: Rutina | Revisar pendientes cada manana | personal"
+                )
+                state_after_create = memory.load_state()
+                note_id = state_after_create["notes"][0]["id"]
+                list_result = session.submit_user_reply("notas personal")
+                show_result = session.submit_user_reply(f"ver nota {note_id}")
+                delete_result = session.submit_user_reply(f"borra la nota {note_id}")
+                state_after_delete = memory.load_state()
+
+        self.assertIn("Nota guardada", create_result)
+        self.assertIn("Rutina", list_result)
+        self.assertIn("Revisar pendientes cada manana", show_result)
+        self.assertIn("Nota eliminada", delete_result)
+        self.assertEqual(state_after_delete["notes"], [])
+        self.assertEqual(state_after_delete["messages"], [])
+
     def test_is_self_analysis_request_accepts_common_phrases(self):
         self.assertTrue(session.is_self_analysis_request("hazte un autoanálisis"))
         self.assertTrue(session.is_self_analysis_request("refresca tu auto analisis y muestramelo"))
         self.assertTrue(session.is_self_analysis_request("dime qué sabes de ti"))
         self.assertFalse(session.is_self_analysis_request("ayudame a escribir un correo"))
+
+    def test_note_request_label_accepts_commands_and_natural_phrases(self):
+        self.assertEqual(session.note_request_label("nota crear Idea | Probar"), "Guardar nota")
+        self.assertEqual(session.note_request_label("ver notas"), "Notas")
+        self.assertEqual(session.note_request_label("elimina la nota note-123"), "Eliminar nota")
+        self.assertEqual(session.note_request_label("Te comparto mas contexto"), "")
 
     def test_submit_user_reply_clears_pending_question_and_resumes_autonomy(self):
         state_path = TEST_RUNTIME_DIR / "session_reply_state.json"

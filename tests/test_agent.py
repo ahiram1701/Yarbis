@@ -70,6 +70,8 @@ class AgentTestCase(unittest.TestCase):
         self.assertIn("fetch_web_page", agent.available_functions)
         self.assertIn("update_internet_settings", agent.available_functions)
         self.assertIn("self_overview", agent.available_functions)
+        self.assertIn("get_note", agent.available_functions)
+        self.assertIn("delete_note", agent.available_functions)
 
     def test_run_one_cycle_persists_cycle_before_tools(self):
         state_path = TEST_RUNTIME_DIR / "agent_tool_cycle_state.json"

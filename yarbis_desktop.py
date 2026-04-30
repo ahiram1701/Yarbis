@@ -1,3 +1,5 @@
+import ctypes
+import sys
 import queue
 import threading
 import tkinter as tk
@@ -7,6 +9,7 @@ from tkinter import messagebox, simpledialog, ttk
 from memory import load_state, render_state_summary
 from session import (
     add_task_text,
+    delete_note_text,
     get_notification_settings,
     get_status_text,
     get_ui_theme,
@@ -30,6 +33,73 @@ from service_manager import (
     stop_service,
 )
 from telegram_inbox import start_telegram_polling, stop_telegram_polling
+
+_SINGLE_INSTANCE_MUTEX_NAME = "Local\\YarbisDesktopSingleInstance"
+_SINGLE_INSTANCE_MUTEX_HANDLE = None
+_ERROR_ALREADY_EXISTS = 183
+
+
+def _acquire_single_instance_lock() -> bool:
+    global _SINGLE_INSTANCE_MUTEX_HANDLE
+
+    if sys.platform != "win32":
+        return True
+
+    if _SINGLE_INSTANCE_MUTEX_HANDLE:
+        return True
+
+    try:
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.CreateMutexW.argtypes = [
+            ctypes.c_void_p,
+            ctypes.wintypes.BOOL,
+            ctypes.wintypes.LPCWSTR,
+        ]
+        kernel32.CreateMutexW.restype = ctypes.wintypes.HANDLE
+        kernel32.CloseHandle.argtypes = [ctypes.wintypes.HANDLE]
+        kernel32.CloseHandle.restype = ctypes.wintypes.BOOL
+
+        handle = kernel32.CreateMutexW(None, False, _SINGLE_INSTANCE_MUTEX_NAME)
+        if not handle:
+            return True
+
+        if ctypes.get_last_error() == _ERROR_ALREADY_EXISTS:
+            kernel32.CloseHandle(handle)
+            return False
+
+        _SINGLE_INSTANCE_MUTEX_HANDLE = handle
+        return True
+    except Exception:
+        return True
+
+
+def _release_single_instance_lock():
+    global _SINGLE_INSTANCE_MUTEX_HANDLE
+
+    if sys.platform != "win32" or not _SINGLE_INSTANCE_MUTEX_HANDLE:
+        return
+
+    try:
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.CloseHandle.argtypes = [ctypes.wintypes.HANDLE]
+        kernel32.CloseHandle.restype = ctypes.wintypes.BOOL
+        kernel32.CloseHandle(_SINGLE_INSTANCE_MUTEX_HANDLE)
+    except Exception:
+        pass
+    finally:
+        _SINGLE_INSTANCE_MUTEX_HANDLE = None
+
+
+def _show_already_running_message():
+    root = tk.Tk()
+    root.withdraw()
+    messagebox.showinfo(
+        "Yarbis",
+        "Yarbis ya esta abierto. Usa la ventana existente para evitar duplicar Telegram.",
+        parent=root,
+    )
+    root.destroy()
+
 
 THEMES = {
     "dark": {
@@ -134,6 +204,20 @@ def style_text_widget(widget, palette: dict):
     vbar = getattr(widget, "vbar", None)
     if vbar is not None:
         style_scrollbar_widget(vbar, palette)
+
+
+def style_listbox_widget(widget, palette: dict):
+    widget.configure(
+        bg=palette["field_bg"],
+        fg=palette["field_fg"],
+        selectbackground=palette["select_bg"],
+        selectforeground=palette["select_fg"],
+        highlightthickness=1,
+        highlightbackground=palette["border"],
+        highlightcolor=palette["accent"],
+        relief="flat",
+        bd=0,
+    )
 
 
 class ThemedDialog(simpledialog.Dialog):
@@ -268,6 +352,193 @@ class NoteDialog(ThemedDialog):
             "content": self.content_text.get("1.0", "end-1c").strip(),
             "category": self.category_entry.get().strip() or "general",
         }
+
+
+class NotesDialog(ThemedDialog):
+    def __init__(self, parent):
+        self.notes = []
+        self.activity_messages = []
+        super().__init__(parent, "Notas")
+
+    def body(self, master):
+        self._prepare_body(master)
+        master.columnconfigure(0, weight=0)
+        master.columnconfigure(1, weight=1)
+        master.rowconfigure(0, weight=1)
+
+        list_frame = tk.Frame(master, bd=0, highlightthickness=0)
+        list_frame.grid(row=0, column=0, sticky="nsew", padx=(6, 4), pady=6)
+        list_frame.columnconfigure(0, weight=1)
+        list_frame.rowconfigure(0, weight=1)
+        list_frame.configure(bg=self.theme_palette["bg"])
+
+        self.notes_list = tk.Listbox(
+            list_frame,
+            width=38,
+            height=18,
+            activestyle="dotbox",
+            exportselection=False,
+        )
+        self.notes_list.grid(row=0, column=0, sticky="nsew")
+        style_listbox_widget(self.notes_list, self.theme_palette)
+        self.notes_list.bind("<<ListboxSelect>>", self._show_selected_note)
+
+        self.notes_scrollbar = ttk.Scrollbar(
+            list_frame,
+            orient="vertical",
+            command=self.notes_list.yview,
+            style="Yarbis.Vertical.TScrollbar",
+        )
+        self.notes_scrollbar.grid(row=0, column=1, sticky="ns")
+        self.notes_list.configure(yscrollcommand=self.notes_scrollbar.set)
+        style_scrollbar_widget(self.notes_scrollbar, self.theme_palette)
+
+        detail_frame = tk.Frame(master, bd=0, highlightthickness=0)
+        detail_frame.grid(row=0, column=1, sticky="nsew", padx=(4, 6), pady=6)
+        detail_frame.columnconfigure(0, weight=1)
+        detail_frame.rowconfigure(0, weight=1)
+        detail_frame.configure(bg=self.theme_palette["bg"])
+
+        self.detail_text = tk.Text(detail_frame, width=58, height=18, wrap="word")
+        self.detail_text.grid(row=0, column=0, sticky="nsew")
+        self._style_text_widget(self.detail_text)
+        self.detail_text.configure(state="disabled")
+
+        self.detail_scrollbar = ttk.Scrollbar(
+            detail_frame,
+            orient="vertical",
+            command=self.detail_text.yview,
+            style="Yarbis.Vertical.TScrollbar",
+        )
+        self.detail_scrollbar.grid(row=0, column=1, sticky="ns")
+        self.detail_text.configure(yscrollcommand=self.detail_scrollbar.set)
+        style_scrollbar_widget(self.detail_scrollbar, self.theme_palette)
+
+        self._refresh_notes()
+        return self.notes_list
+
+    def buttonbox(self):
+        box = ttk.Frame(self)
+        self.new_button = ttk.Button(
+            box,
+            text="Nueva nota",
+            command=self._new_note,
+            style="Accent.TButton",
+        )
+        self.new_button.pack(side="left", padx=(0, 8))
+        self.delete_button = ttk.Button(
+            box,
+            text="Eliminar",
+            command=self._delete_selected_note,
+            style="Danger.TButton",
+        )
+        self.delete_button.pack(side="left", padx=(0, 8))
+        ttk.Button(box, text="Refrescar", command=self._refresh_notes).pack(side="left", padx=(0, 8))
+        ttk.Button(box, text="Cerrar", command=self.ok).pack(side="left")
+
+        self.bind("<Escape>", self.cancel)
+        box.pack(padx=10, pady=(0, 10), anchor="e")
+        self._sync_delete_button()
+
+    def _set_detail_text(self, content: str):
+        self.detail_text.configure(state="normal")
+        self.detail_text.delete("1.0", "end")
+        self.detail_text.insert("1.0", content)
+        self.detail_text.configure(state="disabled")
+
+    def _render_note(self, note: dict) -> str:
+        content = note.get("content", "").strip() or "Sin contenido."
+        return (
+            f"[{note.get('id', '')}] {note.get('title', 'Nota sin titulo')}\n"
+            f"Categoria: {note.get('category', 'general')}\n\n"
+            f"{content}"
+        )
+
+    def _selected_note(self) -> dict | None:
+        selection = self.notes_list.curselection()
+        if not selection:
+            return None
+        index = int(selection[0])
+        if index < 0 or index >= len(self.notes):
+            return None
+        return self.notes[index]
+
+    def _sync_delete_button(self):
+        if hasattr(self, "delete_button"):
+            state = "normal" if self._selected_note() else "disabled"
+            self.delete_button.configure(state=state)
+
+    def _show_selected_note(self, _event=None):
+        note = self._selected_note()
+        if not note:
+            self._set_detail_text("Selecciona una nota para verla completa.")
+            self._sync_delete_button()
+            return
+
+        self._set_detail_text(self._render_note(note))
+        self._sync_delete_button()
+
+    def _refresh_notes(self):
+        selected_id = ""
+        selected_note = self._selected_note() if hasattr(self, "notes_list") else None
+        if selected_note:
+            selected_id = selected_note.get("id", "")
+
+        state = load_state()
+        self.notes = list(reversed(state.get("notes", [])))
+        self.notes_list.delete(0, "end")
+        for note in self.notes:
+            self.notes_list.insert(
+                "end",
+                f"[{note.get('id', '')}] {note.get('title', 'Nota sin titulo')} ({note.get('category', 'general')})",
+            )
+
+        if not self.notes:
+            self._set_detail_text("No hay notas guardadas.")
+            self._sync_delete_button()
+            return
+
+        next_index = 0
+        if selected_id:
+            for index, note in enumerate(self.notes):
+                if note.get("id", "") == selected_id:
+                    next_index = index
+                    break
+
+        self.notes_list.selection_clear(0, "end")
+        self.notes_list.selection_set(next_index)
+        self.notes_list.activate(next_index)
+        self.notes_list.see(next_index)
+        self._show_selected_note()
+
+    def _new_note(self):
+        dialog = NoteDialog(self, "Guardar nota")
+        if dialog.result is None:
+            return
+
+        result = save_note_text(**dialog.result)
+        self.activity_messages.append(result)
+        self._refresh_notes()
+
+    def _delete_selected_note(self):
+        note = self._selected_note()
+        if not note:
+            return
+
+        should_delete = messagebox.askyesno(
+            "Eliminar nota",
+            f"Quieres eliminar la nota '{note.get('title', 'Nota sin titulo')}'?",
+            parent=self,
+        )
+        if not should_delete:
+            return
+
+        result = delete_note_text(note.get("id", ""))
+        self.activity_messages.append(result)
+        self._refresh_notes()
+
+    def apply(self):
+        self.result = "\n".join(self.activity_messages).strip()
 
 
 class TaskDialog(ThemedDialog):
@@ -546,7 +817,7 @@ class YarbisDesktop(tk.Tk):
             (
                 {"text": "Cambiar objetivo", "command": self._change_goal},
                 {"text": "Editar perfil", "command": self._edit_profile},
-                {"text": "Guardar nota", "command": self._save_note},
+                {"text": "Ver notas", "command": self._manage_notes},
                 {"text": "Crear tarea", "command": self._create_task},
             ),
         )
@@ -1246,6 +1517,12 @@ class YarbisDesktop(tk.Tk):
         self._append_activity("Nota", result)
         self.refresh_state_view()
 
+    def _manage_notes(self):
+        dialog = NotesDialog(self)
+        if dialog.result:
+            self._append_activity("Notas", dialog.result)
+        self.refresh_state_view()
+
     def _create_task(self):
         dialog = TaskDialog(self, "Crear tarea")
         if dialog.result is None:
@@ -1324,18 +1601,25 @@ class YarbisDesktop(tk.Tk):
 
 
 def main():
-    startup_message = run_startup_self_analysis()
-    app = YarbisDesktop()
-    app._append_activity("Autoanalisis inicial", startup_message)
-    app._append_activity(
-        "Interfaz lista",
-        (
-            "Ya puedes usar Yarbis sin abrir terminal. "
-            "Ejecuta un ciclo, deja un objetivo o responde desde esta ventana."
-        ),
-    )
-    app._append_activity("Estado inicial", get_status_text())
-    app.mainloop()
+    if not _acquire_single_instance_lock():
+        _show_already_running_message()
+        return
+
+    try:
+        startup_message = run_startup_self_analysis()
+        app = YarbisDesktop()
+        app._append_activity("Autoanalisis inicial", startup_message)
+        app._append_activity(
+            "Interfaz lista",
+            (
+                "Ya puedes usar Yarbis sin abrir terminal. "
+                "Ejecuta un ciclo, deja un objetivo o responde desde esta ventana."
+            ),
+        )
+        app._append_activity("Estado inicial", get_status_text())
+        app.mainloop()
+    finally:
+        _release_single_instance_lock()
 
 
 if __name__ == "__main__":
