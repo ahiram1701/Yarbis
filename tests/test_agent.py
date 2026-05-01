@@ -40,11 +40,29 @@ class AgentTestCase(unittest.TestCase):
         with patch.object(memory, "STATE_FILE", state_path):
             memory.save_state(memory.default_state())
             with patch.object(agent.client, "chat", side_effect=RuntimeError("fallo controlado")):
-                agent.run_one_cycle(max_steps=1)
+                result = agent.run_one_cycle(max_steps=1)
 
             state = memory.load_state()
 
+        self.assertEqual(result["status"], "error")
+        self.assertFalse(result["used_tools"])
         self.assertIn("No pude consultar Ollama", state["last_result"])
+
+    def test_run_one_cycle_explains_ollama_timeouts(self):
+        state_path = TEST_RUNTIME_DIR / "agent_timeout_state.json"
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+
+        with patch.object(memory, "STATE_FILE", state_path):
+            memory.save_state(memory.default_state())
+            with patch.object(agent.client, "chat", side_effect=TimeoutError("timed out")):
+                result = agent.run_one_cycle(max_steps=1)
+
+            state = memory.load_state()
+
+        self.assertEqual(result["status"], "error")
+        self.assertIn("timed out", result["content"])
+        self.assertIn("YARBIS_OLLAMA_TIMEOUT_SECONDS", result["content"])
+        self.assertIn(agent.MODEL, state["last_result"])
 
     def test_build_messages_includes_personal_context(self):
         state = memory.normalize_state({
@@ -203,6 +221,36 @@ class AgentTestCase(unittest.TestCase):
             "Que tipo de negocio o servicio deseas ofrecer?",
         )
 
+    def test_run_one_cycle_marks_pending_input_when_waiting_for_instructions(self):
+        state_path = TEST_RUNTIME_DIR / "agent_waiting_instructions_state.json"
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+
+        self.assertTrue(agent._looks_like_waiting_for_instructions("Quedo atento a tus indicaciones."))
+
+        final_response = SimpleNamespace(
+            message=SimpleNamespace(
+                content=(
+                    "Termine el ciclo actual sin encontrar una accion segura adicional. "
+                    "Quedo a la espera de instrucciones del usuario."
+                ),
+                tool_calls=[],
+            )
+        )
+
+        with patch.object(memory, "STATE_FILE", state_path):
+            memory.save_state(memory.default_state())
+            with patch.object(agent.client, "chat", return_value=final_response):
+                result = agent.run_one_cycle(max_steps=1)
+                state = memory.load_state()
+
+        self.assertEqual(result["status"], "final")
+        self.assertTrue(result["needs_user_input"])
+        self.assertTrue(state["awaiting_user_input"]["pending"])
+        self.assertEqual(
+            state["awaiting_user_input"]["question"],
+            agent.WAITING_FOR_INSTRUCTIONS_QUESTION,
+        )
+
     def test_run_autonomous_session_stops_after_direct_response_without_tasks(self):
         state = memory.default_state()
 
@@ -234,6 +282,20 @@ class AgentTestCase(unittest.TestCase):
                 "used_tools": True,
                 "looks_meta": False,
                 "needs_user_input": True,
+            }):
+                completed_cycles = agent.run_autonomous_session(cycles=5)
+
+        self.assertEqual(completed_cycles, 1)
+
+    def test_run_autonomous_session_stops_after_chat_error(self):
+        state = memory.default_state()
+
+        with patch.object(agent, "load_state", return_value=state):
+            with patch.object(agent, "run_one_cycle", return_value={
+                "status": "error",
+                "content": "No pude consultar Ollama en este ciclo: timed out",
+                "used_tools": False,
+                "looks_meta": False,
             }):
                 completed_cycles = agent.run_autonomous_session(cycles=5)
 

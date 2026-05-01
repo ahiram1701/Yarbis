@@ -83,8 +83,175 @@ class TelegramInboxTestCase(unittest.TestCase):
         reply_mock.assert_called_once_with(
             "Trabajemos el nicho fitness",
             emit_notifications=False,
+            blocking=False,
         )
-        send_mock.assert_called_once_with("Respuesta procesada.", chat_id="123")
+        send_mock.assert_called_once()
+        sent_text = send_mock.call_args.args[0]
+        self.assertIn("Yarbis - Respuesta", sent_text)
+        self.assertIn("Continuidad:", sent_text)
+        self.assertIn("Respuesta procesada.", sent_text)
+        self.assertEqual(send_mock.call_args.kwargs["chat_id"], "123")
+
+    def test_process_telegram_update_defers_free_text_when_session_is_busy(self):
+        state_path = TEST_RUNTIME_DIR / "telegram_busy_reply_state.json"
+        queue_path = TEST_RUNTIME_DIR / f"telegram_busy_reply_queue_{id(self)}.json"
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+
+        seeded_state = memory.normalize_state({
+            "awaiting_user_input": {
+                "pending": True,
+                "question": "Que nicho quieres trabajar?",
+                "reason": "Falta contexto.",
+            },
+            "notifications": {
+                "enabled": True,
+                "channels": ["telegram"],
+                "telegram": {
+                    "bot_token": "bot-123",
+                    "chat_id": "123",
+                },
+            },
+        })
+
+        update = {
+            "update_id": 22,
+            "message": {
+                "chat": {"id": 123, "type": "private"},
+                "text": "Trabajemos fitness",
+            },
+        }
+
+        with patch.object(memory, "STATE_FILE", state_path):
+            with patch.object(telegram_inbox, "DEFERRED_TELEGRAM_REPLIES_FILE", queue_path):
+                memory.save_state(seeded_state)
+                with patch.object(
+                    telegram_inbox,
+                    "submit_user_reply",
+                    side_effect=telegram_inbox.SessionOperationBusy("ocupado"),
+                ) as reply_mock:
+                    with patch.object(telegram_inbox, "send_telegram_message", return_value=True) as send_mock:
+                        telegram_inbox.process_telegram_update(update)
+
+        reply_mock.assert_called_once_with(
+            "Trabajemos fitness",
+            emit_notifications=False,
+            blocking=False,
+        )
+        send_mock.assert_called_once()
+        self.assertIn("Recibi tu respuesta", send_mock.call_args.args[0])
+        self.assertTrue(queue_path.exists())
+
+    def test_process_deferred_telegram_replies_sends_queued_answer(self):
+        state_path = TEST_RUNTIME_DIR / "telegram_deferred_reply_state.json"
+        queue_path = TEST_RUNTIME_DIR / f"telegram_deferred_reply_queue_{id(self)}.json"
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+
+        with patch.object(memory, "STATE_FILE", state_path):
+            with patch.object(telegram_inbox, "DEFERRED_TELEGRAM_REPLIES_FILE", queue_path):
+                memory.save_state(memory.default_state())
+                telegram_inbox._enqueue_deferred_telegram_reply("Trabajemos fitness", "123")
+                with patch.object(
+                    telegram_inbox,
+                    "submit_user_reply",
+                    return_value="Respuesta guardada.",
+                ) as reply_mock:
+                    with patch.object(telegram_inbox, "send_telegram_message", return_value=True) as send_mock:
+                        processed = telegram_inbox.process_deferred_telegram_replies()
+
+        self.assertEqual(processed, 1)
+        reply_mock.assert_called_once_with(
+            "Trabajemos fitness",
+            emit_notifications=False,
+            blocking=False,
+        )
+        send_mock.assert_called_once()
+        sent_text = send_mock.call_args.args[0]
+        self.assertIn("Yarbis - Respuesta diferida", sent_text)
+        self.assertIn("Continuidad:", sent_text)
+        self.assertIn("Respuesta guardada.", sent_text)
+        self.assertEqual(send_mock.call_args.kwargs["chat_id"], "123")
+        self.assertEqual(telegram_inbox._load_deferred_telegram_replies(), [])
+
+    def test_format_telegram_operation_reply_extracts_final_cycle_output(self):
+        state = memory.normalize_state({
+            "cycle_count": 7,
+            "tasks": [
+                {
+                    "id": "task-1",
+                    "title": "Seguir hilo",
+                    "status": "pending",
+                    "priority": "media",
+                }
+            ],
+        })
+        raw_output = (
+            "=== CICLO 7 ===\n"
+            "--- Paso 1 ---\n"
+            "Yarbis decidio usar tools.\n"
+            "> Ejecutando tool: list_tasks\n"
+            "> Argumentos: {}\n"
+            "\nYarbis:\n"
+            "Avance listo para Telegram.\n\n"
+            "...[truncado 120 caracteres]"
+        )
+
+        rendered = telegram_inbox.format_telegram_operation_reply(
+            "Ciclo",
+            raw_output,
+            state=state,
+        )
+
+        self.assertIn("Yarbis - Ciclo", rendered)
+        self.assertIn("Continuidad: 7 ciclo(s) | 1 tarea(s) abierta(s)", rendered)
+        self.assertIn("Avance listo para Telegram.", rendered)
+        self.assertNotIn("truncado", rendered.lower())
+        self.assertIn("/run o /auto", rendered)
+
+    def test_pending_question_takes_precedence_over_natural_note_reply(self):
+        state_path = TEST_RUNTIME_DIR / "telegram_pending_beats_note_state.json"
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+
+        seeded_state = memory.normalize_state({
+            "awaiting_user_input": {
+                "pending": True,
+                "question": "Que contexto debo recordar?",
+                "reason": "Falta contexto.",
+            },
+            "notifications": {
+                "enabled": True,
+                "channels": ["telegram"],
+                "telegram": {
+                    "bot_token": "bot-123",
+                    "chat_id": "123",
+                },
+            },
+        })
+
+        update = {
+            "update_id": 23,
+            "message": {
+                "chat": {"id": 123, "type": "private"},
+                "text": "guarda una nota: Rutina | Revisar pendientes | personal",
+            },
+        }
+
+        with patch.object(memory, "STATE_FILE", state_path):
+            memory.save_state(seeded_state)
+            with patch.object(
+                telegram_inbox,
+                "submit_user_reply",
+                return_value="Respuesta procesada.",
+            ) as reply_mock:
+                with patch.object(telegram_inbox, "send_telegram_message", return_value=True):
+                    telegram_inbox.process_telegram_update(update)
+                    state = memory.load_state()
+
+        reply_mock.assert_called_once_with(
+            "guarda una nota: Rutina | Revisar pendientes | personal",
+            emit_notifications=False,
+            blocking=False,
+        )
+        self.assertEqual(state["notes"], [])
 
     def test_process_telegram_update_routes_goal_command_to_update_goal(self):
         state_path = TEST_RUNTIME_DIR / "telegram_goal_state.json"

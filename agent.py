@@ -1,6 +1,7 @@
 import os
 import re
 import sys
+import unicodedata
 
 from ollama import Client
 
@@ -33,6 +34,7 @@ from tools import (
 DEFAULT_MODEL = "qwen3.5:2b"
 DEFAULT_OLLAMA_TIMEOUT_SECONDS = 600
 DEFAULT_EMPTY_RESPONSE_RETRIES = 1
+WAITING_FOR_INSTRUCTIONS_QUESTION = "Que instruccion quieres que siga ahora?"
 
 
 def _get_env_int(name: str, default: int) -> int:
@@ -106,14 +108,18 @@ available_functions = {
 }
 
 SYSTEM_PROMPT = """
-Eres Yarbis, un agente inteligente personal, autonomo y local.
-Tu trabajo es avanzar paso a paso hacia el objetivo del usuario y organizar el trabajo para que siga progresando entre ciclos.
+Eres Yarbis, el agente inteligente personal, autonomo, local, proactivo y todologo practico del usuario.
+Tu trabajo es avanzar paso a paso hacia el objetivo del usuario, organizar el trabajo para que siga progresando entre ciclos y cuidar continuidad 24/7 cuando el servicio de fondo este activo.
 
 Reglas:
 - Se util, preciso y orientado a acciones.
 - Usa herramientas cuando sea necesario.
 - No inventes resultados de herramientas.
 - Trabaja en pasos pequenos y claros.
+- Aprende y adaptate al usuario: guarda contexto personal estable con `update_profile` y hallazgos utiles con `save_note`.
+- Si detectas un siguiente paso util, conviertelo en plan, tarea o accion concreta. No crees tareas duplicadas.
+- Persigue mejora continua: revisa tu autoconocimiento, identifica limitaciones reales y propone o ejecuta mejoras pequenas cuando ayuden al objetivo.
+- No prometas capacidades que no tienes. Tu autonomia depende de Ollama, del servicio activo, permisos, herramientas disponibles, politica de internet y contexto del usuario.
 - Si la mejor salida del ciclo es texto util para el usuario, entregalo directamente en este ciclo.
 - No respondas con metacomentarios como "voy a empezar", "ahora me enfoco", "mi objetivo es" o "trabajare paso a paso" si todavia no has dado un resultado util.
 - Si el objetivo aun no esta aterrizado, crea un plan corto con `set_plan` y tareas concretas con `add_task`.
@@ -124,7 +130,6 @@ Reglas:
 - Cuando necesites una respuesta del usuario, usa `request_user_input` con una sola pregunta clara y concreta, explica brevemente por que falta ese dato y detente. No sigas produciendo contenido que dependa de esa respuesta.
 - Manten las tareas sincronizadas: usa `update_task_status` para moverlas a `in_progress`, `blocked` o `done`.
 - Si una tarea queda frenada por falta de informacion del usuario, marcalo con `update_task_status(..., status="blocked", result="...")`.
-- Guarda contexto personal estable con `update_profile` y hallazgos utiles con `save_note`.
 - Para consultar o eliminar notas persistentes, usa `list_notes`, `get_note` y `delete_note`.
 - Tienes autoconocimiento local: identidad, mapa de codigo fuente, sistema operativo y hardware actual. Si necesitas refrescarlo o verlo completo, usa `self_overview`.
 - Antes de actuar a ciegas, revisa el estado con `agent_overview`, `list_tasks` o `list_notes`.
@@ -149,7 +154,12 @@ def _print_output(text: str):
 
 
 def build_messages(state):
-    state_summary = render_state_summary(state, task_limit=10, note_limit=5)
+    state_summary = render_state_summary(
+        state,
+        task_limit=10,
+        note_limit=5,
+        include_runtime=False,
+    )
     self_summary = render_self_knowledge_summary()
 
     messages = [
@@ -176,11 +186,51 @@ def _record_assistant_message(state, content: str):
     save_state(state)
 
 
-def _handle_chat_error(state, exc: Exception):
+def _exception_chain(exc: Exception):
+    seen = set()
+    current = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        yield current
+        current = current.__cause__ or current.__context__
+
+
+def _is_timeout_error(exc: Exception) -> bool:
+    for chained in _exception_chain(exc):
+        error_type = type(chained).__name__.lower()
+        error_text = str(chained).strip().lower()
+        if "timeout" in error_type or "timed out" in error_text or "timeout" in error_text:
+            return True
+    return False
+
+
+def _format_chat_error(exc: Exception) -> str:
     error_text = f"No pude consultar Ollama en este ciclo: {exc}"
+    if not _is_timeout_error(exc):
+        return error_text
+
+    return (
+        f"{error_text}\n\n"
+        "Diagnostico: Ollama no respondio dentro del tiempo configurado "
+        f"({OLLAMA_TIMEOUT_SECONDS}s) usando el modelo {MODEL}.\n"
+        "Para resolverlo, verifica que Ollama este activo, calienta el modelo con "
+        f"`ollama run {MODEL}`, aumenta `YARBIS_OLLAMA_TIMEOUT_SECONDS`, o usa un "
+        "modelo mas ligero con `YARBIS_MODEL`."
+    )
+
+
+def _handle_chat_error(state, exc: Exception):
+    error_text = _format_chat_error(exc)
     _print_output(f"\nYarbis:\n{error_text}")
     _record_assistant_message(state, error_text)
-    return error_text
+    return {
+        "status": "error",
+        "content": error_text,
+        "used_tools": False,
+        "looks_meta": False,
+        "needs_user_input": False,
+        "error_type": type(exc).__name__,
+    }
 
 
 def _handle_empty_response(state):
@@ -224,6 +274,42 @@ def _looks_like_meta_response(text: str) -> bool:
     )
     matches = sum(phrase in normalized for phrase in meta_phrases)
     return len(normalized) < 500 and matches >= 2
+
+
+def _normalize_intent_text(text: str) -> str:
+    normalized = unicodedata.normalize("NFKD", str(text).strip().lower())
+    without_accents = "".join(
+        char for char in normalized
+        if not unicodedata.combining(char)
+    )
+    without_punctuation = re.sub(r"[^\w\s]", " ", without_accents)
+    return " ".join(without_punctuation.replace("_", " ").split())
+
+
+def _looks_like_waiting_for_instructions(text: str) -> bool:
+    normalized = _normalize_intent_text(text)
+    if not normalized:
+        return False
+
+    negated_phrases = (
+        "no espero instrucciones",
+        "no estoy a la espera",
+        "no quedo a la espera",
+        "sin esperar instrucciones",
+        "sin esperar indicaciones",
+    )
+    if any(phrase in normalized for phrase in negated_phrases):
+        return False
+
+    return bool(re.search(
+        (
+            r"\b(?:a la espera|en espera|esperando|pendiente|atento|"
+            r"listo para recibir|listo para tus)\s+"
+            r"(?:de\s+|a\s+)?(?:tus\s+|nuevas\s+|mas\s+|las\s+)?"
+            r"(?:instrucciones|indicaciones|ordenes)\b"
+        ),
+        normalized,
+    ))
 
 
 def _has_open_tasks(state) -> bool:
@@ -291,6 +377,9 @@ def _extract_user_input_request(text: str) -> str:
         normalized = " ".join(candidate.lower().split())
         if any(phrase in normalized for phrase in interactive_phrases):
             return candidate
+
+    if _looks_like_waiting_for_instructions(text):
+        return WAITING_FOR_INSTRUCTIONS_QUESTION
 
     return ""
 
@@ -444,6 +533,14 @@ def run_autonomous_session(cycles=None):
             break
 
         cycle_result = run_one_cycle()
+        if not isinstance(cycle_result, dict):
+            cycle_result = {
+                "status": "error",
+                "content": str(cycle_result),
+                "used_tools": False,
+                "looks_meta": False,
+                "needs_user_input": False,
+            }
         completed_cycles += 1
 
         updated_state = load_state()

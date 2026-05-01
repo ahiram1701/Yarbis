@@ -103,6 +103,52 @@ class MemoryTestCase(unittest.TestCase):
         self.assertEqual(normalized["ui"]["theme"], "light")
         self.assertEqual(fallback["ui"]["theme"], "dark")
 
+    def test_normalize_state_sanitizes_runtime_thinking_state(self):
+        normalized = memory.normalize_state({
+            "runtime": {
+                "thinking": {
+                    "active": True,
+                    "label": "Ciclo" * 40,
+                    "source": "pid:1234",
+                    "started_at": "2026-05-01T12:00:00+00:00",
+                },
+            },
+        })
+        inactive = memory.normalize_state({
+            "runtime": {
+                "thinking": {
+                    "active": True,
+                    "label": "",
+                },
+            },
+        })
+
+        thinking = normalized["runtime"]["thinking"]
+        self.assertTrue(thinking["active"])
+        self.assertIn("Ciclo", thinking["label"])
+        self.assertIn("[truncado", thinking["label"])
+        self.assertEqual(thinking["source"], "pid:1234")
+        self.assertFalse(inactive["runtime"]["thinking"]["active"])
+
+    def test_normalize_state_sanitizes_service_proactive_settings(self):
+        normalized = memory.normalize_state({
+            "service": {
+                "proactive": {
+                    "enabled": "false",
+                    "interval_seconds": 10,
+                    "cycles": 99,
+                    "start_delay_seconds": -20,
+                }
+            }
+        })
+
+        proactive = normalized["service"]["proactive"]
+
+        self.assertFalse(proactive["enabled"])
+        self.assertEqual(proactive["interval_seconds"], 60)
+        self.assertEqual(proactive["cycles"], 5)
+        self.assertEqual(proactive["start_delay_seconds"], 0)
+
     def test_normalize_state_sanitizes_internet_settings(self):
         normalized = memory.normalize_state({
             "internet": {

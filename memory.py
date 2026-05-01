@@ -25,6 +25,10 @@ MAX_AWAITING_INPUT_REASON_CHARS = 240
 MAX_AWAITING_INPUT_FIELDS = 8
 DEFAULT_MAX_STEPS_PER_CYCLE = 5
 DEFAULT_AUTO_CYCLES = 5
+DEFAULT_SERVICE_PROACTIVE_ENABLED = True
+DEFAULT_SERVICE_PROACTIVE_INTERVAL_SECONDS = 30 * 60
+DEFAULT_SERVICE_PROACTIVE_CYCLES = 1
+DEFAULT_SERVICE_PROACTIVE_START_DELAY_SECONDS = 60
 VALID_TASK_STATUS = {"pending", "in_progress", "blocked", "done"}
 VALID_TASK_PRIORITY = {"alta", "media", "baja"}
 VALID_UI_THEME = {"light", "dark"}
@@ -46,6 +50,9 @@ MAX_INTERNET_DOMAIN_ITEMS = 20
 MAX_INTERNET_DOMAIN_CHARS = 120
 MAX_SELF_KNOWLEDGE_SUMMARY_CHARS = 20_000
 MAX_SELF_KNOWLEDGE_TIMESTAMP_CHARS = 80
+MAX_RUNTIME_OPERATION_LABEL_CHARS = 80
+MAX_RUNTIME_OPERATION_SOURCE_CHARS = 40
+MAX_RUNTIME_TIMESTAMP_CHARS = 80
 
 
 def default_state():
@@ -73,8 +80,24 @@ def default_state():
             "max_steps_per_cycle": DEFAULT_MAX_STEPS_PER_CYCLE,
             "auto_cycles_default": DEFAULT_AUTO_CYCLES,
         },
+        "service": {
+            "proactive": {
+                "enabled": DEFAULT_SERVICE_PROACTIVE_ENABLED,
+                "interval_seconds": DEFAULT_SERVICE_PROACTIVE_INTERVAL_SECONDS,
+                "cycles": DEFAULT_SERVICE_PROACTIVE_CYCLES,
+                "start_delay_seconds": DEFAULT_SERVICE_PROACTIVE_START_DELAY_SECONDS,
+            },
+        },
         "ui": {
             "theme": "dark",
+        },
+        "runtime": {
+            "thinking": {
+                "active": False,
+                "label": "",
+                "source": "",
+                "started_at": "",
+            },
         },
         "internet": {
             "mode": DEFAULT_INTERNET_MODE,
@@ -280,6 +303,78 @@ def _normalize_autonomy(autonomy):
     return normalized
 
 
+def _normalize_bool(value, default: bool) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        cleaned = value.strip().lower()
+        if not cleaned:
+            return default
+        return cleaned not in {"0", "false", "off", "no", "disabled"}
+    if value is None:
+        return default
+    return bool(value)
+
+
+def _normalize_service(service):
+    defaults = default_state()["service"]
+    if not isinstance(service, dict):
+        service = {}
+
+    proactive = service.get("proactive", {})
+    if not isinstance(proactive, dict):
+        proactive = {}
+    proactive_defaults = defaults["proactive"]
+
+    try:
+        interval_seconds = max(
+            60,
+            min(
+                24 * 60 * 60,
+                int(proactive.get(
+                    "interval_seconds",
+                    proactive_defaults["interval_seconds"],
+                )),
+            ),
+        )
+    except (TypeError, ValueError):
+        interval_seconds = proactive_defaults["interval_seconds"]
+
+    try:
+        cycles = max(
+            1,
+            min(5, int(proactive.get("cycles", proactive_defaults["cycles"]))),
+        )
+    except (TypeError, ValueError):
+        cycles = proactive_defaults["cycles"]
+
+    try:
+        start_delay_seconds = max(
+            0,
+            min(
+                24 * 60 * 60,
+                int(proactive.get(
+                    "start_delay_seconds",
+                    proactive_defaults["start_delay_seconds"],
+                )),
+            ),
+        )
+    except (TypeError, ValueError):
+        start_delay_seconds = proactive_defaults["start_delay_seconds"]
+
+    return {
+        "proactive": {
+            "enabled": _normalize_bool(
+                proactive.get("enabled", proactive_defaults["enabled"]),
+                proactive_defaults["enabled"],
+            ),
+            "interval_seconds": interval_seconds,
+            "cycles": cycles,
+            "start_delay_seconds": start_delay_seconds,
+        },
+    }
+
+
 def _normalize_awaiting_user_input(awaiting_user_input):
     if not isinstance(awaiting_user_input, dict):
         awaiting_user_input = {}
@@ -318,6 +413,42 @@ def _normalize_ui(ui):
 
     return {
         "theme": theme,
+    }
+
+
+def _normalize_runtime(runtime):
+    defaults = default_state()["runtime"]
+    if not isinstance(runtime, dict):
+        runtime = {}
+
+    thinking = runtime.get("thinking", {})
+    if not isinstance(thinking, dict):
+        thinking = {}
+
+    label = _truncate_text(
+        thinking.get("label", ""),
+        MAX_RUNTIME_OPERATION_LABEL_CHARS,
+    ).strip()
+    source = _truncate_text(
+        thinking.get("source", ""),
+        MAX_RUNTIME_OPERATION_SOURCE_CHARS,
+    ).strip()
+    started_at = _truncate_text(
+        thinking.get("started_at", ""),
+        MAX_RUNTIME_TIMESTAMP_CHARS,
+    ).strip()
+    active = bool(thinking.get("active")) and bool(label)
+
+    if not active:
+        return defaults
+
+    return {
+        "thinking": {
+            "active": True,
+            "label": label,
+            "source": source,
+            "started_at": started_at,
+        },
     }
 
 
@@ -549,7 +680,9 @@ def normalize_state(state):
         state.get("awaiting_user_input", {}),
     )
     normalized["autonomy"] = _normalize_autonomy(state.get("autonomy", {}))
+    normalized["service"] = _normalize_service(state.get("service", {}))
     normalized["ui"] = _normalize_ui(state.get("ui", {}))
+    normalized["runtime"] = _normalize_runtime(state.get("runtime", {}))
     normalized["internet"] = _normalize_internet(state.get("internet", {}))
     normalized["self_knowledge"] = _normalize_self_knowledge(state.get("self_knowledge", {}))
     normalized["notifications"] = _normalize_notifications(state.get("notifications", {}))
@@ -578,7 +711,12 @@ def normalize_state(state):
     return normalized
 
 
-def render_state_summary(state, task_limit: int = 8, note_limit: int = 3) -> str:
+def render_state_summary(
+    state,
+    task_limit: int = 8,
+    note_limit: int = 3,
+    include_runtime: bool = True,
+) -> str:
     normalized = normalize_state(state)
     profile = normalized["profile"]
     pending_tasks = [
@@ -595,8 +733,25 @@ def render_state_summary(state, task_limit: int = 8, note_limit: int = 3) -> str
             f"{normalized['autonomy']['max_steps_per_cycle']} pasos/ciclo, "
             f"{normalized['autonomy']['auto_cycles_default']} ciclos por defecto"
         ),
+        (
+            "Pulso proactivo: "
+            f"{'activo' if normalized['service']['proactive']['enabled'] else 'desactivado'}, "
+            f"{normalized['service']['proactive']['cycles']} ciclo(s) cada "
+            f"{normalized['service']['proactive']['interval_seconds']}s, "
+            f"espera inicial {normalized['service']['proactive']['start_delay_seconds']}s"
+        ),
         f"Ultimo resultado: {normalized['last_result'] or 'Sin resultados previos.'}",
     ]
+
+    if include_runtime:
+        thinking = normalized["runtime"]["thinking"]
+        if thinking["active"]:
+            started_at = f" desde {thinking['started_at']}" if thinking["started_at"] else ""
+            lines.append(
+                f"Estado operativo: Yarbis esta pensando en {thinking['label']}{started_at}."
+            )
+        else:
+            lines.append("Estado operativo: listo.")
 
     lines.append(
         f"Perfil: nombre={profile['name'] or '-'}, rol={profile['role'] or '-'}"

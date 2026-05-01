@@ -1,9 +1,22 @@
 import contextlib
 import io
+import os
 import re
 import threading
+import time
 import unicodedata
 from datetime import datetime, timezone
+from pathlib import Path
+
+try:
+    import msvcrt
+except ImportError:  # pragma: no cover - Windows path is covered locally.
+    msvcrt = None
+
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - POSIX fallback only.
+    fcntl = None
 
 from agent import run_autonomous_session, run_one_cycle
 from memory import load_state, render_state_summary, save_state
@@ -17,6 +30,157 @@ from self_knowledge import render_self_knowledge_summary
 from tools import add_task, delete_note, get_note, list_notes, save_note, update_profile
 
 SESSION_LOCK = threading.RLock()
+OPERATION_LOCK_FILE = Path(__file__).resolve().parent / ".yarbis_runtime" / "session.lock"
+_OPERATION_LOCK_LOCAL = threading.local()
+_OPERATION_LOCK_POLL_SECONDS = 0.25
+
+
+class SessionOperationBusy(RuntimeError):
+    pass
+
+
+def _prepare_operation_lock_file(handle):
+    handle.seek(0, os.SEEK_END)
+    if handle.tell() == 0:
+        handle.write(b" ")
+        handle.flush()
+    handle.seek(0)
+
+
+def _lock_operation_handle(handle, blocking: bool) -> bool:
+    if msvcrt is not None:
+        while True:
+            handle.seek(0)
+            try:
+                msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+                return True
+            except OSError:
+                if not blocking:
+                    return False
+                time.sleep(_OPERATION_LOCK_POLL_SECONDS)
+
+    if fcntl is not None:
+        flags = fcntl.LOCK_EX
+        if not blocking:
+            flags |= fcntl.LOCK_NB
+        try:
+            fcntl.flock(handle.fileno(), flags)
+            return True
+        except (BlockingIOError, OSError):
+            return False
+
+    return True
+
+
+def _unlock_operation_handle(handle):
+    try:
+        if msvcrt is not None:
+            handle.seek(0)
+            msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+        elif fcntl is not None:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+    except OSError:
+        pass
+
+
+def _write_operation_lock_owner(handle, label: str):
+    try:
+        owner = (
+            f"pid={os.getpid()}\n"
+            f"label={str(label).strip() or 'Operacion'}\n"
+            f"started_at={datetime.now(timezone.utc).isoformat()}\n"
+        )
+        handle.seek(0)
+        handle.truncate()
+        handle.write(owner.encode("utf-8", errors="replace"))
+        handle.flush()
+    except OSError:
+        pass
+
+
+def _acquire_operation_file_lock(label: str, blocking: bool):
+    OPERATION_LOCK_FILE.parent.mkdir(parents=True, exist_ok=True)
+    handle = open(OPERATION_LOCK_FILE, "a+b")
+    try:
+        _prepare_operation_lock_file(handle)
+        if not _lock_operation_handle(handle, blocking=blocking):
+            handle.close()
+            return None
+        _write_operation_lock_owner(handle, label)
+        return handle
+    except Exception:
+        handle.close()
+        raise
+
+
+def _release_operation_file_lock(handle):
+    try:
+        _unlock_operation_handle(handle)
+    finally:
+        handle.close()
+
+
+def _set_runtime_thinking(label: str):
+    try:
+        state = load_state()
+        state["runtime"] = {
+            "thinking": {
+                "active": True,
+                "label": str(label).strip() or "Operacion",
+                "source": f"pid:{os.getpid()}",
+                "started_at": datetime.now(timezone.utc).isoformat(),
+            },
+        }
+        save_state(state)
+    except Exception:
+        pass
+
+
+def _clear_runtime_thinking():
+    try:
+        state = load_state()
+        state["runtime"] = {
+            "thinking": {
+                "active": False,
+                "label": "",
+                "source": "",
+                "started_at": "",
+            },
+        }
+        save_state(state)
+    except Exception:
+        pass
+
+
+@contextlib.contextmanager
+def session_operation_lock(label: str = "Operacion", blocking: bool = True):
+    depth = int(getattr(_OPERATION_LOCK_LOCAL, "depth", 0) or 0)
+    if depth > 0:
+        _OPERATION_LOCK_LOCAL.depth = depth + 1
+        try:
+            yield
+        finally:
+            _OPERATION_LOCK_LOCAL.depth = depth
+        return
+
+    if not SESSION_LOCK.acquire(blocking=blocking):
+        raise SessionOperationBusy("Ya hay una operacion de Yarbis en curso.")
+
+    try:
+        handle = _acquire_operation_file_lock(label=label, blocking=blocking)
+        if handle is None:
+            raise SessionOperationBusy("Ya hay una operacion de Yarbis en curso.")
+
+        _OPERATION_LOCK_LOCAL.depth = 1
+        _set_runtime_thinking(label)
+        try:
+            yield
+        finally:
+            _OPERATION_LOCK_LOCAL.depth = 0
+            _clear_runtime_thinking()
+            _release_operation_file_lock(handle)
+    finally:
+        SESSION_LOCK.release()
 
 
 def has_pending_user_question(state) -> bool:
@@ -24,6 +188,21 @@ def has_pending_user_question(state) -> bool:
     return bool(
         awaiting_user_input.get("pending")
         and str(awaiting_user_input.get("question", "")).strip()
+    )
+
+
+def has_unanswered_user_message(state) -> bool:
+    messages = state.get("messages", [])
+    if not messages:
+        return False
+
+    last_message = messages[-1]
+    if not isinstance(last_message, dict):
+        return False
+
+    return bool(
+        last_message.get("role") == "user"
+        and str(last_message.get("content", "")).strip()
     )
 
 
@@ -150,6 +329,61 @@ def update_ui_theme(theme: str) -> str:
         state["ui"]["theme"] = cleaned_theme
         save_state(state)
         return f"Tema actualizado a {cleaned_theme}."
+
+
+def get_service_proactive_settings() -> dict:
+    with SESSION_LOCK:
+        return load_state().get("service", {}).get("proactive", {})
+
+
+def update_service_proactive_settings(
+    enabled: bool,
+    interval_seconds: int,
+    cycles: int,
+    start_delay_seconds: int,
+) -> str:
+    with SESSION_LOCK:
+        try:
+            cleaned_interval = int(interval_seconds)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("El intervalo debe ser un numero de segundos.") from exc
+
+        try:
+            cleaned_cycles = int(cycles)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("Los ciclos por pulso deben ser un numero.") from exc
+
+        try:
+            cleaned_start_delay = int(start_delay_seconds)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("La espera inicial debe ser un numero de segundos.") from exc
+
+        if not 60 <= cleaned_interval <= 24 * 60 * 60:
+            raise ValueError("El intervalo debe estar entre 60 y 86400 segundos.")
+        if not 1 <= cleaned_cycles <= 5:
+            raise ValueError("Los ciclos por pulso deben estar entre 1 y 5.")
+        if not 0 <= cleaned_start_delay <= 24 * 60 * 60:
+            raise ValueError("La espera inicial debe estar entre 0 y 86400 segundos.")
+
+        state = load_state()
+        state.setdefault("service", {})
+        state["service"]["proactive"] = {
+            "enabled": bool(enabled),
+            "interval_seconds": cleaned_interval,
+            "cycles": cleaned_cycles,
+            "start_delay_seconds": cleaned_start_delay,
+        }
+        save_state(state)
+        settings = load_state()["service"]["proactive"]
+
+        status = "activo" if settings["enabled"] else "desactivado"
+        return (
+            "Pulso proactivo actualizado.\n"
+            f"Estado: {status}\n"
+            f"Intervalo: {settings['interval_seconds']} segundos\n"
+            f"Ciclos por pulso: {settings['cycles']}\n"
+            f"Espera inicial: {settings['start_delay_seconds']} segundos"
+        )
 
 
 def get_notification_settings() -> dict:
@@ -567,7 +801,7 @@ def _capture_operation_output(func, *args, **kwargs) -> tuple[str, object]:
 
 
 def run_cycle_with_output(emit_notifications: bool = True) -> str:
-    with SESSION_LOCK:
+    with session_operation_lock("Ciclo"):
         output, _ = _capture_operation_output(run_one_cycle)
         state = load_state()
 
@@ -580,8 +814,29 @@ def run_cycle_with_output(emit_notifications: bool = True) -> str:
         return output or "Ciclo ejecutado sin salida visible."
 
 
+def recover_unanswered_user_message_with_output(
+    emit_notifications: bool = True,
+    blocking: bool = True,
+) -> str:
+    with session_operation_lock("Respuesta recuperada", blocking=blocking):
+        state = load_state()
+        if has_pending_user_question(state) or not has_unanswered_user_message(state):
+            return ""
+
+        output, _ = _capture_operation_output(run_one_cycle)
+        state = load_state()
+
+        if emit_notifications and has_pending_user_question(state):
+            notify_user_input_required(
+                state["awaiting_user_input"].get("question", ""),
+                state["awaiting_user_input"].get("reason", ""),
+            )
+
+        return output or "Respuesta pendiente recuperada sin salida visible."
+
+
 def run_auto_with_output(cycles=None, emit_notifications: bool = True) -> str:
-    with SESSION_LOCK:
+    with session_operation_lock("Modo autonomo"):
         output, executed_cycles = _capture_operation_output(
             run_autonomous_session,
             cycles=cycles,
@@ -610,8 +865,12 @@ def run_auto_with_output(cycles=None, emit_notifications: bool = True) -> str:
         return f"{output}\n\n{summary}"
 
 
-def submit_user_reply(reply_text: str, emit_notifications: bool = True) -> str:
-    with SESSION_LOCK:
+def submit_user_reply(
+    reply_text: str,
+    emit_notifications: bool = True,
+    blocking: bool = True,
+) -> str:
+    with session_operation_lock("Respuesta", blocking=blocking):
         cleaned_reply = str(reply_text).strip()
         if not cleaned_reply:
             raise ValueError("La respuesta no puede quedar vacia.")

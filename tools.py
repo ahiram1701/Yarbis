@@ -787,7 +787,7 @@ def agent_overview() -> str:
         str: Resumen de objetivo, perfil, plan, tareas y notas.
     """
     state = load_state()
-    return render_state_summary(state)
+    return render_state_summary(state, include_runtime=False)
 
 
 def self_overview(refresh: bool = False) -> str:

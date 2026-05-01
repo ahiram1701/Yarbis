@@ -11,6 +11,7 @@ from session import (
     add_task_text,
     delete_note_text,
     get_notification_settings,
+    get_service_proactive_settings,
     get_status_text,
     get_ui_theme,
     has_pending_user_question,
@@ -23,6 +24,7 @@ from session import (
     update_notification_settings,
     update_goal,
     update_profile_text,
+    update_service_proactive_settings,
     update_ui_theme,
 )
 from service_manager import (
@@ -572,6 +574,179 @@ class TaskDialog(ThemedDialog):
         }
 
 
+class ServicePulseDialog(ThemedDialog):
+    def __init__(self, parent, initial_settings: dict):
+        self.initial_settings = initial_settings
+        super().__init__(parent, "Pulso proactivo")
+
+    def body(self, master):
+        self._prepare_body(master)
+        self.enabled_var = tk.BooleanVar(value=bool(self.initial_settings.get("enabled", True)))
+        interval_seconds = self._safe_int(
+            self.initial_settings.get("interval_seconds", 1800),
+            1800,
+        )
+        interval_minutes = max(1, round(interval_seconds / 60))
+        self.interval_minutes_var = tk.StringVar(value=str(interval_minutes))
+        self.cycles_var = tk.StringVar(value=str(self.initial_settings.get("cycles", 1)))
+        self.start_delay_var = tk.StringVar(value=str(self.initial_settings.get("start_delay_seconds", 60)))
+        self.preview_var = tk.StringVar()
+        self._controlled_widgets = []
+
+        container = ttk.Frame(master)
+        container.grid(row=0, column=0, sticky="nsew", padx=6, pady=6)
+        container.columnconfigure(0, weight=1)
+        master.columnconfigure(0, weight=1)
+
+        header = ttk.Frame(container)
+        header.grid(row=0, column=0, sticky="ew", pady=(0, 10))
+        header.columnconfigure(0, weight=1)
+
+        ttk.Label(
+            header,
+            text="Pulso proactivo",
+            font=("Segoe UI", 12, "bold"),
+        ).grid(row=0, column=0, sticky="w")
+
+        self.enabled_check = ttk.Checkbutton(
+            header,
+            text="Activo",
+            variable=self.enabled_var,
+            command=self._sync_enabled_state,
+        )
+        self.enabled_check.grid(row=0, column=1, sticky="e", padx=(12, 0))
+
+        ttk.Label(
+            header,
+            textvariable=self.preview_var,
+            foreground=self.theme_palette["muted"],
+            wraplength=430,
+        ).grid(row=1, column=0, columnspan=2, sticky="ew", pady=(4, 0))
+
+        rhythm = ttk.LabelFrame(container, text="Ritmo")
+        rhythm.grid(row=1, column=0, sticky="ew", pady=(0, 10))
+        rhythm.columnconfigure(0, weight=1)
+        rhythm.columnconfigure(1, weight=1)
+
+        ttk.Label(rhythm, text="Intervalo").grid(row=0, column=0, sticky="w", padx=10, pady=(10, 2))
+        interval_row = ttk.Frame(rhythm)
+        interval_row.grid(row=1, column=0, sticky="w", padx=10)
+        self.interval_spin = ttk.Spinbox(
+            interval_row,
+            from_=1,
+            to=1440,
+            increment=5,
+            width=8,
+            textvariable=self.interval_minutes_var,
+            style="Yarbis.TSpinbox",
+        )
+        self.interval_spin.pack(side="left")
+        ttk.Label(interval_row, text="min").pack(side="left", padx=(6, 0))
+
+        presets = ttk.Frame(rhythm)
+        presets.grid(row=2, column=0, sticky="w", padx=10, pady=(8, 10))
+        self.preset_buttons = []
+        for label, minutes in (("15 min", 15), ("30 min", 30), ("1 h", 60), ("4 h", 240)):
+            button = ttk.Button(
+                presets,
+                text=label,
+                width=7,
+                command=lambda value=minutes: self._set_interval_minutes(value),
+            )
+            button.pack(side="left", padx=(0, 5))
+            self.preset_buttons.append(button)
+
+        ttk.Label(rhythm, text="Ciclos por pulso").grid(row=0, column=1, sticky="w", padx=10, pady=(10, 2))
+        self.cycles_spin = ttk.Spinbox(
+            rhythm,
+            from_=1,
+            to=5,
+            increment=1,
+            width=8,
+            textvariable=self.cycles_var,
+            style="Yarbis.TSpinbox",
+        )
+        self.cycles_spin.grid(row=1, column=1, sticky="w", padx=10)
+
+        startup = ttk.LabelFrame(container, text="Arranque")
+        startup.grid(row=2, column=0, sticky="ew")
+        startup.columnconfigure(0, weight=1)
+
+        ttk.Label(startup, text="Espera inicial").grid(row=0, column=0, sticky="w", padx=10, pady=(10, 2))
+        delay_row = ttk.Frame(startup)
+        delay_row.grid(row=1, column=0, sticky="w", padx=10, pady=(0, 10))
+        self.start_delay_spin = ttk.Spinbox(
+            delay_row,
+            from_=0,
+            to=86400,
+            increment=30,
+            width=8,
+            textvariable=self.start_delay_var,
+            style="Yarbis.TSpinbox",
+        )
+        self.start_delay_spin.pack(side="left")
+        ttk.Label(delay_row, text="s").pack(side="left", padx=(6, 0))
+
+        self._controlled_widgets = [
+            self.interval_spin,
+            self.cycles_spin,
+            self.start_delay_spin,
+            *self.preset_buttons,
+        ]
+        for variable in (self.interval_minutes_var, self.cycles_var, self.start_delay_var):
+            variable.trace_add("write", lambda *_args: self._refresh_preview())
+
+        self._sync_enabled_state()
+        return self.interval_spin
+
+    @staticmethod
+    def _safe_int(value, default: int) -> int:
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return default
+
+    @staticmethod
+    def _format_duration(seconds: int) -> str:
+        if seconds <= 0:
+            return "sin espera"
+        if seconds % 3600 == 0:
+            return f"{seconds // 3600} h"
+        if seconds % 60 == 0:
+            return f"{seconds // 60} min"
+        return f"{seconds}s"
+
+    def _set_interval_minutes(self, minutes: int):
+        self.interval_minutes_var.set(str(minutes))
+
+    def _refresh_preview(self):
+        interval_minutes = max(1, self._safe_int(self.interval_minutes_var.get(), 30))
+        interval_seconds = interval_minutes * 60
+        cycles = max(1, min(5, self._safe_int(self.cycles_var.get(), 1)))
+        start_delay = max(0, self._safe_int(self.start_delay_var.get(), 60))
+        status = "Activo" if self.enabled_var.get() else "Desactivado"
+        self.preview_var.set(
+            f"{status} | {cycles} ciclo(s) cada "
+            f"{self._format_duration(interval_seconds)} | "
+            f"arranque {self._format_duration(start_delay)}"
+        )
+
+    def _sync_enabled_state(self):
+        widget_state = "normal" if self.enabled_var.get() else "disabled"
+        for widget in getattr(self, "_controlled_widgets", []):
+            widget.configure(state=widget_state)
+        self._refresh_preview()
+
+    def apply(self):
+        interval_minutes = self._safe_int(self.interval_minutes_var.get().strip(), 30)
+        self.result = {
+            "enabled": self.enabled_var.get(),
+            "interval_seconds": str(max(1, interval_minutes) * 60),
+            "cycles": self.cycles_var.get().strip(),
+            "start_delay_seconds": self.start_delay_var.get().strip(),
+        }
+
+
 class NotificationsDialog(ThemedDialog):
     def __init__(self, parent, initial_settings: dict):
         self.initial_settings = initial_settings
@@ -710,6 +885,7 @@ class YarbisDesktop(tk.Tk):
         self.goal_var = tk.StringVar()
         self.cycles_var = tk.StringVar()
         self.pending_var = tk.StringVar()
+        self.thinking_var = tk.StringVar(value="No.")
         self.theme_var = tk.StringVar()
         self.status_var = tk.StringVar(value="Listo.")
         self.theme_button_text = tk.StringVar()
@@ -765,9 +941,18 @@ class YarbisDesktop(tk.Tk):
             pady=4,
         )
 
-        ttk.Label(summary, text="Pendiente").grid(row=4, column=0, sticky="nw", padx=10, pady=(4, 10))
-        ttk.Label(summary, textvariable=self.pending_var, wraplength=780).grid(
+        ttk.Label(summary, text="Pensando").grid(row=4, column=0, sticky="nw", padx=10, pady=4)
+        ttk.Label(summary, textvariable=self.thinking_var, wraplength=780).grid(
             row=4,
+            column=1,
+            sticky="nw",
+            padx=(0, 10),
+            pady=4,
+        )
+
+        ttk.Label(summary, text="Pendiente").grid(row=5, column=0, sticky="nw", padx=10, pady=(4, 10))
+        ttk.Label(summary, textvariable=self.pending_var, wraplength=780).grid(
+            row=5,
             column=1,
             sticky="nw",
             padx=(0, 10),
@@ -945,6 +1130,13 @@ class YarbisDesktop(tk.Tk):
         self.service_autostart_check.pack(fill="x", padx=8, pady=(5, 8))
         self._action_buttons.append(self.service_autostart_check)
 
+        self.service_pulse_button = ttk.Button(
+            group,
+            text="Configurar pulso",
+            command=self._edit_service_pulse,
+        )
+        self._pack_action_button(self.service_pulse_button)
+
         self.remove_service_button = ttk.Button(
             group,
             text="Quitar de SCM",
@@ -1097,6 +1289,44 @@ class YarbisDesktop(tk.Tk):
                 ("disabled", palette["disabled_fg"]),
             ],
         )
+        for spinbox_style in ("TSpinbox", "Yarbis.TSpinbox"):
+            self.style.configure(
+                spinbox_style,
+                fieldbackground=palette["field_bg"],
+                background=palette["button_bg"],
+                foreground=palette["field_fg"],
+                insertcolor=palette["field_fg"],
+                arrowcolor=palette["field_fg"],
+                bordercolor=palette["border"],
+                lightcolor=palette["border"],
+                darkcolor=palette["border"],
+                padding=6,
+            )
+            self.style.map(
+                spinbox_style,
+                fieldbackground=[
+                    ("readonly", palette["field_bg"]),
+                    ("disabled", palette["disabled_bg"]),
+                ],
+                background=[
+                    ("active", palette["button_active"]),
+                    ("disabled", palette["disabled_bg"]),
+                ],
+                foreground=[
+                    ("readonly", palette["field_fg"]),
+                    ("disabled", palette["disabled_fg"]),
+                ],
+                arrowcolor=[
+                    ("active", palette["accent"]),
+                    ("disabled", palette["disabled_fg"]),
+                ],
+                selectbackground=[
+                    ("focus", palette["select_bg"]),
+                ],
+                selectforeground=[
+                    ("focus", palette["select_fg"]),
+                ],
+            )
         self.style.configure(
             "TCombobox",
             fieldbackground=palette["field_bg"],
@@ -1215,23 +1445,80 @@ class YarbisDesktop(tk.Tk):
         self.activity_text.see("end")
         self.activity_text.configure(state="disabled")
 
+    @staticmethod
+    def _thinking_status_text(label: str) -> str:
+        safe_label = str(label).strip() or "Operacion"
+        return f"Yarbis esta pensando: {safe_label}..."
+
+    @staticmethod
+    def _format_thinking_started_at(value: str) -> str:
+        started_at = str(value).strip()
+        if not started_at:
+            return ""
+        try:
+            parsed = datetime.fromisoformat(started_at)
+            return parsed.astimezone().strftime("%H:%M:%S")
+        except ValueError:
+            return started_at
+
+    @staticmethod
+    def _runtime_thinking_from_state(state: dict) -> tuple[bool, str, str]:
+        thinking = state.get("runtime", {}).get("thinking", {})
+        thinking_label = str(thinking.get("label", "")).strip() or "Operacion"
+        thinking_active = bool(thinking.get("active")) and bool(thinking_label)
+        started_at = str(thinking.get("started_at", "")).strip()
+        return thinking_active, thinking_label, started_at
+
+    def _sync_runtime_thinking(self, state: dict | None = None) -> bool:
+        state = state or load_state()
+        thinking_active, thinking_label, started_at = self._runtime_thinking_from_state(state)
+        if thinking_active:
+            started_display = self._format_thinking_started_at(started_at)
+            started_text = f" desde {started_display}" if started_display else ""
+            self.thinking_var.set(f"SI - {thinking_label}{started_text}")
+            self._set_busy(True, self._thinking_status_text(thinking_label), source="runtime")
+            return True
+
+        self.thinking_var.set("No.")
+        if "runtime" in self._busy_sources:
+            self._set_busy(False, source="runtime")
+        return False
+
+    def _show_thinking_blocked_message(self, label: str):
+        messagebox.showinfo(
+            "Yarbis",
+            (
+                f"{self._thinking_status_text(label)}\n\n"
+                "La entrada queda bloqueada hasta que termine para no mezclar dos operaciones."
+            ),
+            parent=self,
+        )
+
     def refresh_state_view(self):
         state = load_state()
         self.goal_var.set(state["goal"])
         self.cycles_var.set(str(state["cycle_count"]))
 
         service_status = get_service_status()
+        proactive_settings = state["service"]["proactive"]
+        pulse_status = "activo" if proactive_settings["enabled"] else "desactivado"
+        pulse_text = (
+            f"Pulso {pulse_status}: {proactive_settings['cycles']} ciclo(s) cada "
+            f"{proactive_settings['interval_seconds']}s."
+        )
         if not service_status["installed"]:
-            self.service_var.set("No instalado en SCM.")
+            self.service_var.set(f"No instalado en SCM. {pulse_text}")
             self.service_button_text.set("Instalar e iniciar")
         elif service_status["running"]:
             self.service_var.set(
-                f"Activo en SCM (PID {service_status['pid']}, arranque={service_status['start_type']})."
+                f"Activo en SCM (PID {service_status['pid']}, arranque={service_status['start_type']}). "
+                f"{pulse_text}"
             )
             self.service_button_text.set("Detener servicio")
         else:
             self.service_var.set(
-                f"Instalado en SCM, detenido (arranque={service_status['start_type']})."
+                f"Instalado en SCM, detenido (arranque={service_status['start_type']}). "
+                f"{pulse_text}"
             )
             self.service_button_text.set("Iniciar servicio")
         autostart_enabled = bool(service_status["autostart_enabled"])
@@ -1246,11 +1533,14 @@ class YarbisDesktop(tk.Tk):
         self._style_service_autostart_toggle()
         self._ensure_telegram_polling_matches_service(service_status["running"])
 
+        self._sync_runtime_thinking(state)
+
         pending_question = state["awaiting_user_input"].get("question", "").strip()
         self._view_has_pending_question = has_pending_user_question(state)
         if self._view_has_pending_question:
             self.pending_var.set(pending_question)
-            self.status_var.set("Esperando respuesta del usuario.")
+            if not self._busy:
+                self.status_var.set("Esperando respuesta del usuario.")
             self.send_button.configure(text="Responder y continuar")
         else:
             self.pending_var.set("Sin preguntas pendientes.")
@@ -1298,11 +1588,18 @@ class YarbisDesktop(tk.Tk):
             self.status_var.set("Listo.")
 
     def _start_background_job(self, label: str, func, *args, **kwargs):
+        state = load_state()
+        thinking_active, thinking_label, _started_at = self._runtime_thinking_from_state(state)
+        if thinking_active:
+            self._sync_runtime_thinking(state)
+            self._show_thinking_blocked_message(thinking_label)
+            return
+
         if self._busy:
             messagebox.showinfo("Yarbis", "Ya hay una accion en curso. Espera a que termine.")
             return
 
-        self._set_busy(True, f"Ejecutando: {label}...")
+        self._set_busy(True, self._thinking_status_text(label))
 
         def worker():
             try:
@@ -1422,6 +1719,20 @@ class YarbisDesktop(tk.Tk):
     def _send_test_notification(self):
         self._start_background_job("Prueba de notificacion", send_test_notification)
 
+    def _edit_service_pulse(self):
+        dialog = ServicePulseDialog(self, initial_settings=get_service_proactive_settings())
+        if dialog.result is None:
+            return
+
+        try:
+            result = update_service_proactive_settings(**dialog.result)
+        except ValueError as exc:
+            messagebox.showwarning("Yarbis", str(exc), parent=self)
+            return
+
+        self._append_activity("Pulso proactivo", result)
+        self.refresh_state_view()
+
     def _toggle_service(self):
         service_status = get_service_status()
         if service_status["running"]:
@@ -1533,13 +1844,24 @@ class YarbisDesktop(tk.Tk):
         self.refresh_state_view()
 
     def _send_reply(self):
+        state = load_state()
+        thinking_active, thinking_label, _started_at = self._runtime_thinking_from_state(state)
+        if thinking_active:
+            self._sync_runtime_thinking(state)
+            self._show_thinking_blocked_message(thinking_label)
+            return
+
+        if self._busy:
+            messagebox.showinfo("Yarbis", "Ya hay una accion en curso. Espera a que termine.", parent=self)
+            return
+
         reply_text = self.reply_text.get("1.0", "end-1c").strip()
         if not reply_text:
             messagebox.showinfo("Yarbis", "Escribe una respuesta o contexto antes de enviarlo.")
             return
 
         displayed_pending = self._view_has_pending_question
-        actual_pending = has_pending_user_question(load_state())
+        actual_pending = has_pending_user_question(state)
         if actual_pending != displayed_pending:
             self.refresh_state_view()
             if displayed_pending and not actual_pending:

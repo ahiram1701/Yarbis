@@ -180,6 +180,129 @@ class NotificationsTestCase(unittest.TestCase):
             },
         )
 
+    def test_send_telegram_message_labels_long_chunks(self):
+        long_text = "a" * (notifications.MAX_TELEGRAM_MESSAGE_CHARS + 120)
+
+        with patch.dict(
+            os.environ,
+            {
+                "YARBIS_NOTIFICATIONS": "1",
+                "YARBIS_NOTIFICATION_CHANNELS": "telegram",
+                "YARBIS_TELEGRAM_BOT_TOKEN": "bot-123",
+                "YARBIS_TELEGRAM_CHAT_ID": "456",
+            },
+            clear=False,
+        ):
+            with patch.object(
+                notifications,
+                "telegram_api_request",
+                return_value={"ok": True, "result": {}},
+            ) as telegram_mock:
+                result = notifications.send_telegram_message(long_text)
+
+        self.assertTrue(result)
+        self.assertEqual(telegram_mock.call_count, 2)
+        sent_texts = [
+            call.args[1]["text"]
+            for call in telegram_mock.call_args_list
+        ]
+        self.assertTrue(sent_texts[0].startswith("Yarbis (parte 1/2)"))
+        self.assertTrue(sent_texts[1].startswith("Yarbis (parte 2/2)"))
+        self.assertLessEqual(len(sent_texts[0]), notifications.TELEGRAM_API_MESSAGE_LIMIT)
+        self.assertLessEqual(len(sent_texts[1]), notifications.TELEGRAM_API_MESSAGE_LIMIT)
+
+    def test_send_telegram_chat_action_posts_typing_indicator(self):
+        with patch.dict(
+            os.environ,
+            {
+                "YARBIS_NOTIFICATIONS": "1",
+                "YARBIS_NOTIFICATION_CHANNELS": "telegram",
+                "YARBIS_TELEGRAM_BOT_TOKEN": "123456:abc",
+                "YARBIS_TELEGRAM_CHAT_ID": "456",
+            },
+            clear=False,
+        ):
+            with patch.object(
+                notifications,
+                "telegram_api_request",
+                return_value={"ok": True, "result": {}},
+            ) as telegram_mock:
+                result = notifications.send_telegram_chat_action()
+
+        self.assertTrue(result)
+        telegram_mock.assert_called_once_with(
+            "sendChatAction",
+            {
+                "chat_id": "456",
+                "action": "typing",
+            },
+            settings=None,
+        )
+
+    def test_user_input_required_telegram_message_mentions_continuity(self):
+        with patch.dict(
+            os.environ,
+            {
+                "YARBIS_NOTIFICATIONS": "1",
+                "YARBIS_NOTIFICATION_CHANNELS": "telegram",
+                "YARBIS_TELEGRAM_BOT_TOKEN": "bot-123",
+                "YARBIS_TELEGRAM_CHAT_ID": "456",
+            },
+            clear=False,
+        ):
+            with patch.object(
+                notifications,
+                "telegram_api_request",
+                return_value={"ok": True, "result": {}},
+            ) as telegram_mock:
+                result = notifications.notify_user_input_required(
+                    "Que prioridad quieres darme?",
+                    "Necesito decidir el siguiente paso.",
+                )
+
+        self.assertTrue(result)
+        sent_text = telegram_mock.call_args.args[1]["text"]
+        self.assertIn("Que prioridad quieres darme?", sent_text)
+        self.assertIn("app de escritorio", sent_text)
+        self.assertIn("retomara los ciclos", sent_text)
+
+    def test_user_input_required_telegram_falls_back_to_pending_state(self):
+        state_path = TEST_RUNTIME_DIR / "notifications_telegram_pending_fallback_state.json"
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+
+        seeded_state = memory.normalize_state({
+            "awaiting_user_input": {
+                "pending": True,
+                "question": "Que tono quieres usar?",
+                "reason": "Necesito ese criterio para continuar.",
+            },
+            "notifications": {
+                "enabled": True,
+                "channels": ["telegram"],
+                "telegram": {
+                    "bot_token": "bot-123",
+                    "chat_id": "456",
+                },
+            },
+        })
+
+        with patch.object(memory, "STATE_FILE", state_path):
+            memory.save_state(seeded_state)
+            with patch.dict(os.environ, {}, clear=True):
+                with patch.object(
+                    notifications,
+                    "telegram_api_request",
+                    return_value={"ok": True, "result": {}},
+                ) as telegram_mock:
+                    result = notifications.notify_user_input_required("", "")
+
+        self.assertTrue(result)
+        sent_text = telegram_mock.call_args.args[1]["text"]
+        self.assertIn("Yarbis necesita tu respuesta", sent_text)
+        self.assertIn("Que tono quieres usar?", sent_text)
+        self.assertIn("Necesito ese criterio para continuar.", sent_text)
+        self.assertIn("app de escritorio", sent_text)
+
     def test_try_link_telegram_chat_persists_latest_private_chat(self):
         state_path = TEST_RUNTIME_DIR / "notifications_telegram_link_state.json"
         state_path.parent.mkdir(parents=True, exist_ok=True)

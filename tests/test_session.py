@@ -194,6 +194,91 @@ class SessionTestCase(unittest.TestCase):
             "Falta contexto",
         )
 
+    def test_run_cycle_marks_runtime_thinking_while_running(self):
+        state_path = TEST_RUNTIME_DIR / "session_thinking_state.json"
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+
+        def fake_capture(_func):
+            state = memory.load_state()
+            thinking = state["runtime"]["thinking"]
+            self.assertTrue(thinking["active"])
+            self.assertEqual(thinking["label"], "Ciclo")
+            self.assertTrue(thinking["started_at"])
+            return "Ciclo ejecutado.", {"status": "final"}
+
+        with patch.object(memory, "STATE_FILE", state_path):
+            memory.save_state(memory.default_state())
+            with patch.object(session, "_capture_operation_output", side_effect=fake_capture):
+                result = session.run_cycle_with_output(emit_notifications=False)
+            state = memory.load_state()
+
+        self.assertEqual(result, "Ciclo ejecutado.")
+        self.assertFalse(state["runtime"]["thinking"]["active"])
+
+    def test_run_cycle_clears_runtime_thinking_after_error(self):
+        state_path = TEST_RUNTIME_DIR / "session_thinking_error_state.json"
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+
+        with patch.object(memory, "STATE_FILE", state_path):
+            memory.save_state(memory.default_state())
+            with patch.object(
+                session,
+                "_capture_operation_output",
+                side_effect=RuntimeError("fallo controlado"),
+            ):
+                with self.assertRaises(RuntimeError):
+                    session.run_cycle_with_output(emit_notifications=False)
+            state = memory.load_state()
+
+        self.assertFalse(state["runtime"]["thinking"]["active"])
+
+    def test_recover_unanswered_user_message_runs_one_cycle(self):
+        state_path = TEST_RUNTIME_DIR / "session_recover_user_state.json"
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+
+        seeded_state = memory.normalize_state({
+            "messages": [
+                {"role": "assistant", "content": "Avance anterior."},
+                {"role": "user", "content": "Mejora tu rendimiento"},
+            ],
+            "last_result": "Avance anterior.",
+        })
+
+        with patch.object(memory, "STATE_FILE", state_path):
+            memory.save_state(seeded_state)
+            with patch.object(
+                session,
+                "_capture_operation_output",
+                return_value=("Ciclo recuperado.", {"status": "final"}),
+            ) as capture_mock:
+                result = session.recover_unanswered_user_message_with_output()
+
+        self.assertEqual(result, "Ciclo recuperado.")
+        capture_mock.assert_called_once_with(session.run_one_cycle)
+
+    def test_recover_unanswered_user_message_ignores_answered_state(self):
+        state_path = TEST_RUNTIME_DIR / "session_recover_answered_state.json"
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+
+        seeded_state = memory.normalize_state({
+            "messages": [
+                {"role": "user", "content": "Mejora tu rendimiento"},
+                {"role": "assistant", "content": "Listo."},
+            ],
+            "last_result": "Listo.",
+        })
+
+        with patch.object(memory, "STATE_FILE", state_path):
+            memory.save_state(seeded_state)
+            with patch.object(
+                session,
+                "_capture_operation_output",
+                side_effect=RuntimeError("no debe ejecutarse"),
+            ):
+                result = session.recover_unanswered_user_message_with_output()
+
+        self.assertEqual(result, "")
+
     def test_update_ui_theme_persists_theme(self):
         state_path = TEST_RUNTIME_DIR / "session_theme_state.json"
         state_path.parent.mkdir(parents=True, exist_ok=True)
@@ -205,6 +290,40 @@ class SessionTestCase(unittest.TestCase):
 
         self.assertIn("Tema actualizado", result)
         self.assertEqual(state["ui"]["theme"], "light")
+
+    def test_update_service_proactive_settings_persists_pulse(self):
+        state_path = TEST_RUNTIME_DIR / "session_service_pulse_state.json"
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+
+        with patch.object(memory, "STATE_FILE", state_path):
+            memory.save_state(memory.default_state())
+            result = session.update_service_proactive_settings(
+                enabled=False,
+                interval_seconds=900,
+                cycles=2,
+                start_delay_seconds=30,
+            )
+            settings = session.get_service_proactive_settings()
+
+        self.assertIn("Pulso proactivo actualizado", result)
+        self.assertFalse(settings["enabled"])
+        self.assertEqual(settings["interval_seconds"], 900)
+        self.assertEqual(settings["cycles"], 2)
+        self.assertEqual(settings["start_delay_seconds"], 30)
+
+    def test_update_service_proactive_settings_rejects_invalid_values(self):
+        state_path = TEST_RUNTIME_DIR / "session_service_pulse_invalid_state.json"
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+
+        with patch.object(memory, "STATE_FILE", state_path):
+            memory.save_state(memory.default_state())
+            with self.assertRaises(ValueError):
+                session.update_service_proactive_settings(
+                    enabled=True,
+                    interval_seconds=10,
+                    cycles=1,
+                    start_delay_seconds=60,
+                )
 
     def test_update_notification_settings_persists_ntfy_channel(self):
         state_path = TEST_RUNTIME_DIR / "session_notifications_state.json"

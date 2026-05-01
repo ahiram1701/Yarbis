@@ -76,6 +76,7 @@ La interfaz de escritorio permite:
 - configurar y probar notificaciones
 - activar o desactivar el servicio de fondo
 - configurar si el servicio se abre al iniciar Windows
+- configurar el pulso proactivo del servicio
 - quitar el servicio de SCM
 
 ## Servicio de fondo
@@ -89,6 +90,8 @@ Cuando esta activo:
 - escribe su PID en `.yarbis_runtime/service.pid`
 - registra actividad y errores en `.yarbis_runtime/service.log`
 - mantiene activo el inbox de Telegram si Telegram esta configurado
+- ejecuta un pulso proactivo periodico para avanzar el objetivo actual sin que tengas que abrir la app
+- recupera al arrancar respuestas del usuario que hayan quedado guardadas pero sin ciclo completado
 - evita que la app de escritorio o la terminal inicien un segundo lector de Telegram
 
 El boton `Instalar e iniciar` compila el host con `dotnet publish` si hace falta, crea el servicio en SCM y despues lo inicia. `Detener servicio` manda la parada a SCM. `Quitar de SCM` detiene el servicio si hace falta y elimina su registro.
@@ -96,6 +99,12 @@ El boton `Instalar e iniciar` compila el host con `dotnet publish` si hace falta
 La casilla `Iniciar con Windows` cambia el tipo de arranque del servicio entre `auto` y `demand` usando SCM. Si el servicio aun no esta instalado, la casilla aparece deshabilitada; primero usa `Instalar e iniciar`.
 
 Estas acciones suelen requerir ejecutar Yarbis como administrador. Por defecto, un servicio creado con `sc.exe create` corre bajo la cuenta `LocalSystem`; si necesitas otro usuario, ajusta la pestana `Iniciar sesion` desde `services.msc`.
+
+La proactividad 24/7 del servicio esta activa por defecto. Tras una espera inicial, el servicio agrega un pulso de contexto al historial y ejecuta un ciclo autonomo breve. Si Yarbis necesita una decision, permiso o dato privado, registra una pregunta pendiente y notifica por los canales configurados.
+
+Si el servicio se detiene mientras procesa una respuesta del usuario, esa respuesta queda en el historial. En el siguiente arranque o pulso, Yarbis detecta si el ultimo mensaje del usuario no tiene respuesta del asistente y ejecuta primero ese ciclo pendiente antes de agregar trabajo proactivo nuevo.
+
+Puedes ajustar el pulso desde la app con `Servicio` -> `Configurar pulso`. Los cambios se guardan en `state.json`; el servicio los lee en caliente para el intervalo y los ciclos. La espera inicial aplica al siguiente arranque del servicio.
 
 ## Uso por terminal
 
@@ -233,6 +242,19 @@ $env:YARBIS_OLLAMA_TIMEOUT_SECONDS="900"
 $env:YARBIS_EMPTY_RESPONSE_RETRIES="1"
 ```
 
+Si aparece `No pude consultar Ollama en este ciclo: timed out`, primero confirma que Ollama este vivo con `ollama list` u `ollama ps`. Si el modelo tarda en cargar, calientalo una vez con `ollama run qwen3.5:2b`, aumenta `YARBIS_OLLAMA_TIMEOUT_SECONDS`, reinicia la app o el servicio para que tome la variable, o cambia temporalmente a un modelo mas ligero con `YARBIS_MODEL="qwen3.5:0.8b"`.
+
+Servicio proactivo, como override avanzado de la configuracion guardada:
+
+```powershell
+$env:YARBIS_SERVICE_PROACTIVE="1"
+$env:YARBIS_SERVICE_PROACTIVE_INTERVAL_SECONDS="1800"
+$env:YARBIS_SERVICE_PROACTIVE_CYCLES="1"
+$env:YARBIS_SERVICE_PROACTIVE_START_DELAY_SECONDS="60"
+```
+
+Usa `YARBIS_SERVICE_PROACTIVE="0"` para dejar el servicio solo como inbox remoto y desactivar los ciclos autonomos periodicos.
+
 Notificaciones:
 
 ```powershell
@@ -253,6 +275,10 @@ $env:YARBIS_TELEGRAM_POLL_TIMEOUT_SECONDS="25"
 
 Los ajustes guardados en `state.json` se usan cuando no hay una variable de entorno que los sobrescriba.
 
+## Copias de trabajo
+
+El proyecto original vive en la carpeta donde esta este README. Si usas una copia para pruebas o como instancia activa, sincroniza los cambios de codigo desde el original antes de arrancar el servicio o la app. Cada copia mantiene su propio `state.json`, `.yarbis_runtime/`, configuracion de Telegram y log del servicio.
+
 ## Memoria y configuracion
 
 El archivo `state.json` guarda:
@@ -267,6 +293,7 @@ El archivo `state.json` guarda:
 - plan actual
 - pregunta pendiente
 - limites de autonomia
+- configuracion del pulso proactivo del servicio
 - tema de la interfaz
 - politica de internet
 - resumen de autoconocimiento

@@ -24,7 +24,21 @@ DEFAULT_NTFY_TIMEOUT_SECONDS = 10
 DEFAULT_TELEGRAM_API_BASE = "https://api.telegram.org"
 DEFAULT_TELEGRAM_TIMEOUT_SECONDS = 10
 DEFAULT_TELEGRAM_POLL_TIMEOUT_SECONDS = 25
-MAX_TELEGRAM_MESSAGE_CHARS = 4000
+MAX_TELEGRAM_MESSAGE_CHARS = 3800
+TELEGRAM_API_MESSAGE_LIMIT = 4096
+VALID_TELEGRAM_CHAT_ACTIONS = {
+    "typing",
+    "upload_photo",
+    "record_video",
+    "upload_video",
+    "record_voice",
+    "upload_voice",
+    "upload_document",
+    "choose_sticker",
+    "find_location",
+    "record_video_note",
+    "upload_video_note",
+}
 
 _win11toast_notify = None
 
@@ -357,8 +371,49 @@ def _compose_notification_text(title: str, body: str) -> str:
     return f"{safe_title}\n\n{safe_body}"
 
 
+def _pending_user_input_body_from_state() -> str:
+    try:
+        from memory import load_state
+    except Exception:  # pragma: no cover - respaldo si memoria no esta disponible
+        return ""
+
+    try:
+        awaiting_user_input = load_state().get("awaiting_user_input", {})
+    except Exception:
+        return ""
+
+    if not isinstance(awaiting_user_input, dict):
+        return ""
+
+    question = str(awaiting_user_input.get("question", "")).strip()
+    reason = str(awaiting_user_input.get("reason", "")).strip()
+    if not question:
+        return ""
+
+    return "\n".join(part for part in (question, reason) if part)
+
+
+def _compose_telegram_notification_text(title: str, body: str) -> str:
+    safe_title = str(title).strip() or "Yarbis"
+    safe_body = str(body).strip()
+    if safe_title == "Yarbis necesita tu respuesta" and not safe_body:
+        safe_body = _pending_user_input_body_from_state()
+
+    rendered = _compose_notification_text(safe_title, safe_body)
+
+    if safe_title == "Yarbis necesita tu respuesta":
+        if not safe_body:
+            rendered += "\n\nNo encontre la pregunta pendiente completa en memoria."
+        rendered += (
+            "\n\nPuedes responder en la app de escritorio o por este chat. "
+            "Yarbis guardara la respuesta y retomara los ciclos sin perder continuidad."
+        )
+
+    return rendered
+
+
 def _split_telegram_text(text: str) -> list[str]:
-    safe_text = str(text).strip()
+    safe_text = str(text).replace("\r\n", "\n").replace("\r", "\n").strip()
     if not safe_text:
         return []
 
@@ -384,13 +439,29 @@ def _split_telegram_text(text: str) -> list[str]:
     return [chunk for chunk in chunks if chunk]
 
 
+def _add_telegram_chunk_headers(chunks: list[str]) -> list[str]:
+    if len(chunks) <= 1:
+        return chunks
+
+    total = len(chunks)
+    rendered_chunks = []
+    for index, chunk in enumerate(chunks, start=1):
+        header = f"Yarbis (parte {index}/{total})\n\n"
+        if len(header) + len(chunk) <= TELEGRAM_API_MESSAGE_LIMIT:
+            rendered_chunks.append(header + chunk)
+        else:
+            rendered_chunks.append(chunk)
+
+    return rendered_chunks
+
+
 def send_telegram_message(text: str, settings: dict | None = None, chat_id: str = "") -> bool:
     config = get_telegram_settings(settings)
     target_chat_id = str(chat_id).strip() or config["chat_id"]
     if not target_chat_id and not chat_id and try_link_telegram_chat(settings=settings):
         config = get_telegram_settings(settings)
         target_chat_id = config["chat_id"]
-    message_chunks = _split_telegram_text(text)
+    message_chunks = _add_telegram_chunk_headers(_split_telegram_text(text))
     if not config["bot_token"] or not target_chat_id or not message_chunks:
         return False
 
@@ -408,9 +479,44 @@ def send_telegram_message(text: str, settings: dict | None = None, chat_id: str 
     return True
 
 
+def send_telegram_chat_action(
+    action: str = "typing",
+    settings: dict | None = None,
+    chat_id: str = "",
+) -> bool:
+    config = get_telegram_settings(settings)
+    target_chat_id = str(chat_id).strip() or config["chat_id"]
+    safe_action = str(action).strip() or "typing"
+    if safe_action not in VALID_TELEGRAM_CHAT_ACTIONS:
+        safe_action = "typing"
+
+    if not config["bot_token"] or not target_chat_id:
+        return False
+
+    # Telegram bot tokens always contain a numeric bot id and a ':' separator.
+    # This avoids slow network attempts from local tests or placeholder config.
+    token_prefix = config["bot_token"].split(":", 1)[0]
+    if ":" not in config["bot_token"] or not token_prefix.isdigit():
+        return False
+
+    try:
+        telegram_api_request(
+            "sendChatAction",
+            {
+                "chat_id": target_chat_id,
+                "action": safe_action,
+            },
+            settings=settings,
+        )
+    except Exception:
+        return False
+
+    return True
+
+
 def _send_telegram_notification(title: str, body: str, settings: dict | None = None) -> bool:
     try:
-        return send_telegram_message(_compose_notification_text(title, body), settings=settings)
+        return send_telegram_message(_compose_telegram_notification_text(title, body), settings=settings)
     except Exception:
         return False
 
@@ -444,5 +550,7 @@ def notify_user_input_required(question: str, reason: str = "") -> bool:
 
     body_parts = [part for part in (question_text, reason_text) if part]
     body = "\n".join(body_parts)
+    if not body:
+        body = _pending_user_input_body_from_state()
 
     return send_notification("Yarbis necesita tu respuesta", body)
