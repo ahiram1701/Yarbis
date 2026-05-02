@@ -64,6 +64,29 @@ class AgentTestCase(unittest.TestCase):
         self.assertIn("YARBIS_OLLAMA_TIMEOUT_SECONDS", result["content"])
         self.assertIn(agent.MODEL, state["last_result"])
 
+    def test_run_one_cycle_uses_persisted_ollama_model(self):
+        state_path = TEST_RUNTIME_DIR / "agent_ollama_model_state.json"
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+        final_response = SimpleNamespace(
+            message=SimpleNamespace(content="Resultado final", tool_calls=[])
+        )
+
+        seeded_state = memory.normalize_state({
+            "ollama": {
+                "model": "llama3.2:3b",
+                "timeout_seconds": agent._client_timeout_seconds,
+            },
+        })
+
+        with patch.object(memory, "STATE_FILE", state_path):
+            memory.save_state(seeded_state)
+            with patch.dict(agent.os.environ, {}, clear=True):
+                with patch.object(agent.client, "chat", return_value=final_response) as chat_mock:
+                    result = agent.run_one_cycle(max_steps=1)
+
+        self.assertEqual(result["status"], "final")
+        self.assertEqual(chat_mock.call_args.kwargs["model"], "llama3.2:3b")
+
     def test_build_messages_includes_personal_context(self):
         state = memory.normalize_state({
             "goal": "Organizar la semana",
@@ -82,6 +105,8 @@ class AgentTestCase(unittest.TestCase):
         self.assertIn("Internet: modo=auto", messages[1]["content"])
         self.assertIn("Autoconocimiento de Yarbis", messages[1]["content"])
         self.assertIn("Codigo fuente", messages[1]["content"])
+        self.assertIn("AMD64", messages[0]["content"])
+        self.assertIn("no procesador AMD", messages[0]["content"])
 
     def test_web_tools_are_registered(self):
         self.assertIn("web_search", agent.available_functions)
@@ -187,6 +212,154 @@ class AgentTestCase(unittest.TestCase):
             state["awaiting_user_input"]["question"],
             "Que nicho quieres trabajar?",
         )
+
+    def test_run_one_cycle_retries_menu_after_confirmed_action(self):
+        state_path = TEST_RUNTIME_DIR / "agent_confirmed_action_retry_state.json"
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+
+        seeded_state = memory.normalize_state({
+            "messages": [
+                {
+                    "role": "assistant",
+                    "content": "Puedo optimizar la velocidad. Te gustaria que implemente esto ahora?",
+                },
+                {
+                    "role": "user",
+                    "content": (
+                        "Si, hazlo\n\n"
+                        "Contexto para Yarbis: respuesta afirmativa a la pregunta pendiente.\n"
+                        "Interpretacion operativa: el usuario autorizo avanzar con la propuesta anterior."
+                    ),
+                },
+            ],
+        })
+        menu_response = SimpleNamespace(
+            message=SimpleNamespace(
+                content=(
+                    "Entendido. Puedo hacer varias cosas:\n\n"
+                    "1. Analizar el codigo.\n"
+                    "2. Correr tests.\n\n"
+                    "Que prefieres que yo haga ahora?"
+                ),
+                tool_calls=[],
+            )
+        )
+        tool_call = SimpleNamespace(
+            function=SimpleNamespace(
+                name="set_plan",
+                arguments={"plan_text": "Analizar velocidad\nCorrer tests seguros"},
+            )
+        )
+        tool_response = SimpleNamespace(
+            message=SimpleNamespace(content="", tool_calls=[tool_call])
+        )
+        final_response = SimpleNamespace(
+            message=SimpleNamespace(content="Plan de optimizacion iniciado.", tool_calls=[])
+        )
+
+        with patch.object(memory, "STATE_FILE", state_path):
+            memory.save_state(seeded_state)
+            with patch.object(
+                agent.client,
+                "chat",
+                side_effect=[menu_response, tool_response, final_response],
+            ) as chat_mock:
+                result = agent.run_one_cycle(max_steps=3)
+                state = memory.load_state()
+
+        self.assertEqual(result["status"], "final")
+        self.assertEqual(chat_mock.call_count, 3)
+        self.assertFalse(state["awaiting_user_input"]["pending"])
+        self.assertEqual(
+            state["current_plan"],
+            ["Analizar velocidad", "Correr tests seguros"],
+        )
+        self.assertTrue(any(
+            agent.NON_ACTIONABLE_RETRY_MESSAGE in message.get("content", "")
+            for message in state["messages"]
+        ))
+
+    def test_run_one_cycle_retries_unsolicited_intro_and_hardware_without_printing_it(self):
+        state_path = TEST_RUNTIME_DIR / "agent_unsolicited_intro_retry_state.json"
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+
+        seeded_state = memory.normalize_state({
+            "messages": [
+                {"role": "user", "content": "Hola"},
+            ],
+        })
+        intro_response = SimpleNamespace(
+            message=SimpleNamespace(
+                content=(
+                    "Hola. Soy Yarbis, tu agente local optimizado.\n\n"
+                    "Veo que el sistema operativo Windows 11 y la arquitectura "
+                    "AMD Ryzen 7 con GPU estan listos.\n\n"
+                    "Puedo:\n"
+                    "1. Planificar tareas.\n"
+                    "2. Ejecutar codigo.\n\n"
+                    "Cuentame que necesitas hacer."
+                ),
+                tool_calls=[],
+            )
+        )
+        final_response = SimpleNamespace(
+            message=SimpleNamespace(content="Hola. Dime que quieres que haga.", tool_calls=[])
+        )
+
+        with patch.object(memory, "STATE_FILE", state_path):
+            memory.save_state(seeded_state)
+            with patch.object(
+                agent.client,
+                "chat",
+                side_effect=[intro_response, final_response],
+            ) as chat_mock:
+                with patch.object(agent, "_print_output") as print_mock:
+                    result = agent.run_one_cycle(max_steps=2)
+                    state = memory.load_state()
+
+        printed_text = "\n".join(call.args[0] for call in print_mock.call_args_list)
+
+        self.assertEqual(result["status"], "final")
+        self.assertEqual(chat_mock.call_count, 2)
+        self.assertEqual(result["content"], "Hola. Dime que quieres que haga.")
+        self.assertNotIn("Ryzen", printed_text)
+        self.assertTrue(any(
+            agent.NON_ACTIONABLE_RETRY_MESSAGE in message.get("content", "")
+            for message in state["messages"]
+        ))
+
+    def test_run_one_cycle_replaces_unsolicited_hardware_when_retry_is_unavailable(self):
+        state_path = TEST_RUNTIME_DIR / "agent_unsolicited_hardware_fallback_state.json"
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+
+        seeded_state = memory.normalize_state({
+            "messages": [
+                {"role": "user", "content": "Hola"},
+            ],
+        })
+        intro_response = SimpleNamespace(
+            message=SimpleNamespace(
+                content=(
+                    "Soy Yarbis. Tu Windows 11 con CPU AMD Ryzen 7 y GPU esta listo. "
+                    "Como puedo ayudarte hoy?"
+                ),
+                tool_calls=[],
+            )
+        )
+
+        with patch.object(memory, "STATE_FILE", state_path):
+            memory.save_state(seeded_state)
+            with patch.object(agent.client, "chat", return_value=intro_response):
+                with patch.object(agent, "_print_output") as print_mock:
+                    result = agent.run_one_cycle(max_steps=1)
+                    state = memory.load_state()
+
+        printed_text = "\n".join(call.args[0] for call in print_mock.call_args_list)
+
+        self.assertEqual(result["status"], "final")
+        self.assertNotIn("Ryzen", result["content"])
+        self.assertNotIn("Ryzen", printed_text)
+        self.assertIn("sin inventar datos del equipo", state["last_result"])
 
     def test_run_one_cycle_marks_pending_input_when_questions_appear_in_list(self):
         state_path = TEST_RUNTIME_DIR / "agent_embedded_questions_state.json"

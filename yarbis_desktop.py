@@ -1,4 +1,5 @@
 import ctypes
+import os
 import sys
 import queue
 import threading
@@ -6,11 +7,19 @@ import tkinter as tk
 from datetime import datetime
 from tkinter import messagebox, simpledialog, ttk
 
-from memory import load_state, render_state_summary
+from memory import (
+    DEFAULT_OLLAMA_MODEL,
+    DEFAULT_OLLAMA_TIMEOUT_SECONDS,
+    MAX_OLLAMA_TIMEOUT_SECONDS,
+    MIN_OLLAMA_TIMEOUT_SECONDS,
+    load_state,
+    render_state_summary,
+)
 from session import (
     add_task_text,
     delete_note_text,
     get_notification_settings,
+    get_ollama_settings,
     get_service_proactive_settings,
     get_status_text,
     get_ui_theme,
@@ -23,6 +32,7 @@ from session import (
     submit_user_reply,
     update_notification_settings,
     update_goal,
+    update_ollama_settings,
     update_profile_text,
     update_service_proactive_settings,
     update_ui_theme,
@@ -747,6 +757,60 @@ class ServicePulseDialog(ThemedDialog):
         }
 
 
+class OllamaSettingsDialog(ThemedDialog):
+    def __init__(self, parent, initial_settings: dict):
+        self.initial_settings = initial_settings
+        super().__init__(parent, "Modelo y timeout")
+
+    def body(self, master):
+        self._prepare_body(master)
+        model = str(self.initial_settings.get("model", DEFAULT_OLLAMA_MODEL)).strip()
+        timeout_seconds = str(
+            self.initial_settings.get(
+                "timeout_seconds",
+                DEFAULT_OLLAMA_TIMEOUT_SECONDS,
+            )
+        )
+
+        ttk.Label(master, text="Modelo").grid(row=0, column=0, sticky="w", padx=6, pady=(6, 2))
+        self.model_entry = ttk.Entry(master, width=44)
+        self.model_entry.grid(row=1, column=0, columnspan=2, sticky="ew", padx=6)
+        self.model_entry.insert(0, model or DEFAULT_OLLAMA_MODEL)
+
+        ttk.Label(master, text="Timeout").grid(row=2, column=0, sticky="w", padx=6, pady=(10, 2))
+        timeout_row = ttk.Frame(master)
+        timeout_row.grid(row=3, column=0, sticky="w", padx=6, pady=(0, 6))
+        self.timeout_spin = ttk.Spinbox(
+            timeout_row,
+            from_=MIN_OLLAMA_TIMEOUT_SECONDS,
+            to=MAX_OLLAMA_TIMEOUT_SECONDS,
+            increment=30,
+            width=10,
+            style="Yarbis.TSpinbox",
+        )
+        self.timeout_spin.pack(side="left")
+        self.timeout_spin.delete(0, "end")
+        self.timeout_spin.insert(0, timeout_seconds)
+        ttk.Label(timeout_row, text="s").pack(side="left", padx=(6, 0))
+
+        if os.getenv("YARBIS_MODEL") or os.getenv("YARBIS_OLLAMA_TIMEOUT_SECONDS"):
+            ttk.Label(
+                master,
+                text="Hay variables de entorno YARBIS_* activas; esas pueden tener prioridad.",
+                foreground=self.theme_palette["muted"],
+                wraplength=360,
+            ).grid(row=4, column=0, columnspan=2, sticky="w", padx=6, pady=(4, 6))
+
+        master.columnconfigure(0, weight=1)
+        return self.model_entry
+
+    def apply(self):
+        self.result = {
+            "model": self.model_entry.get().strip(),
+            "timeout_seconds": self.timeout_spin.get().strip(),
+        }
+
+
 class NotificationsDialog(ThemedDialog):
     def __init__(self, parent, initial_settings: dict):
         self.initial_settings = initial_settings
@@ -887,6 +951,7 @@ class YarbisDesktop(tk.Tk):
         self.pending_var = tk.StringVar()
         self.thinking_var = tk.StringVar(value="No.")
         self.theme_var = tk.StringVar()
+        self.ollama_var = tk.StringVar()
         self.status_var = tk.StringVar(value="Listo.")
         self.theme_button_text = tk.StringVar()
         self.service_var = tk.StringVar()
@@ -932,17 +997,17 @@ class YarbisDesktop(tk.Tk):
         ttk.Label(summary, text="Tema").grid(row=2, column=0, sticky="w", padx=10, pady=4)
         ttk.Label(summary, textvariable=self.theme_var).grid(row=2, column=1, sticky="w", pady=4)
 
-        ttk.Label(summary, text="Servicio").grid(row=3, column=0, sticky="nw", padx=10, pady=4)
-        ttk.Label(summary, textvariable=self.service_var, wraplength=780).grid(
+        ttk.Label(summary, text="Ollama").grid(row=3, column=0, sticky="w", padx=10, pady=4)
+        ttk.Label(summary, textvariable=self.ollama_var, wraplength=780).grid(
             row=3,
             column=1,
-            sticky="nw",
+            sticky="w",
             padx=(0, 10),
             pady=4,
         )
 
-        ttk.Label(summary, text="Pensando").grid(row=4, column=0, sticky="nw", padx=10, pady=4)
-        ttk.Label(summary, textvariable=self.thinking_var, wraplength=780).grid(
+        ttk.Label(summary, text="Servicio").grid(row=4, column=0, sticky="nw", padx=10, pady=4)
+        ttk.Label(summary, textvariable=self.service_var, wraplength=780).grid(
             row=4,
             column=1,
             sticky="nw",
@@ -950,9 +1015,18 @@ class YarbisDesktop(tk.Tk):
             pady=4,
         )
 
-        ttk.Label(summary, text="Pendiente").grid(row=5, column=0, sticky="nw", padx=10, pady=(4, 10))
-        ttk.Label(summary, textvariable=self.pending_var, wraplength=780).grid(
+        ttk.Label(summary, text="Pensando").grid(row=5, column=0, sticky="nw", padx=10, pady=4)
+        ttk.Label(summary, textvariable=self.thinking_var, wraplength=780).grid(
             row=5,
+            column=1,
+            sticky="nw",
+            padx=(0, 10),
+            pady=4,
+        )
+
+        ttk.Label(summary, text="Pendiente").grid(row=6, column=0, sticky="nw", padx=10, pady=(4, 10))
+        ttk.Label(summary, textvariable=self.pending_var, wraplength=780).grid(
+            row=6,
             column=1,
             sticky="nw",
             padx=(0, 10),
@@ -994,6 +1068,13 @@ class YarbisDesktop(tk.Tk):
             (
                 {"text": "Ejecutar ciclo", "command": self._run_cycle, "style": "Accent.TButton"},
                 {"text": "Modo autonomo", "command": self._run_auto, "style": "Secondary.TButton"},
+            ),
+        )
+        self._build_action_group(
+            actions,
+            "Modelo",
+            (
+                {"text": "Modelo y timeout", "command": self._edit_ollama_settings},
             ),
         )
         self._build_action_group(
@@ -1498,6 +1579,11 @@ class YarbisDesktop(tk.Tk):
         state = load_state()
         self.goal_var.set(state["goal"])
         self.cycles_var.set(str(state["cycle_count"]))
+        ollama_settings = state.get("ollama", {})
+        self.ollama_var.set(
+            f"{ollama_settings.get('model', DEFAULT_OLLAMA_MODEL)} "
+            f"({ollama_settings.get('timeout_seconds', DEFAULT_OLLAMA_TIMEOUT_SECONDS)}s)"
+        )
 
         service_status = get_service_status()
         proactive_settings = state["service"]["proactive"]
@@ -1687,6 +1773,20 @@ class YarbisDesktop(tk.Tk):
         self._apply_theme(next_theme)
         self._append_activity("Tema", result)
         self.status_var.set("Listo.")
+
+    def _edit_ollama_settings(self):
+        dialog = OllamaSettingsDialog(self, initial_settings=get_ollama_settings())
+        if dialog.result is None:
+            return
+
+        try:
+            result = update_ollama_settings(**dialog.result)
+        except ValueError as exc:
+            messagebox.showwarning("Yarbis", str(exc), parent=self)
+            return
+
+        self._append_activity("Ollama", result)
+        self.refresh_state_view()
 
     def _edit_notifications(self):
         dialog = NotificationsDialog(self, initial_settings=get_notification_settings())

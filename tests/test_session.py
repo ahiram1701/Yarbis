@@ -58,6 +58,26 @@ class SessionTestCase(unittest.TestCase):
         self.assertIn("Nombre: Yarbis", state["self_knowledge"]["summary"])
         self.assertTrue(state["self_knowledge"]["last_analyzed_at"])
 
+    def test_update_ollama_settings_persists_model_and_timeout(self):
+        state_path = TEST_RUNTIME_DIR / "session_ollama_state.json"
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+
+        with patch.object(memory, "STATE_FILE", state_path):
+            memory.save_state(memory.default_state())
+            result = session.update_ollama_settings("llama3.2:3b", 900)
+            state = memory.load_state()
+
+        self.assertIn("Configuracion de Ollama actualizada", result)
+        self.assertEqual(state["ollama"]["model"], "llama3.2:3b")
+        self.assertEqual(state["ollama"]["timeout_seconds"], 900)
+
+    def test_update_ollama_settings_rejects_invalid_values(self):
+        with self.assertRaises(ValueError):
+            session.update_ollama_settings("", 900)
+
+        with self.assertRaises(ValueError):
+            session.update_ollama_settings("llama3.2:3b", "lento")
+
     def test_submit_user_reply_routes_self_analysis_request_without_model_cycle(self):
         state_path = TEST_RUNTIME_DIR / "session_self_analysis_reply_state.json"
         state_path.parent.mkdir(parents=True, exist_ok=True)
@@ -144,6 +164,30 @@ class SessionTestCase(unittest.TestCase):
         self.assertFalse(state["awaiting_user_input"]["pending"])
         self.assertEqual(state["messages"][-1]["role"], "user")
         self.assertEqual(state["messages"][-1]["content"], "Trabajemos el nicho fitness")
+
+    def test_submit_user_reply_expands_affirmative_pending_reply_for_autonomy(self):
+        state_path = TEST_RUNTIME_DIR / "session_affirmative_reply_state.json"
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+
+        seeded_state = memory.normalize_state({
+            "awaiting_user_input": {
+                "pending": True,
+                "question": "Te gustaria que implemente esto ahora?",
+                "reason": "Necesitaba confirmacion para editar.",
+            },
+        })
+
+        with patch.object(memory, "STATE_FILE", state_path):
+            memory.save_state(seeded_state)
+            with patch.object(session, "run_auto_with_output", return_value="Modo autonomo ejecutado."):
+                result = session.submit_user_reply("Si, hazlo")
+                state = memory.load_state()
+
+        self.assertIn("Retomando el modo autonomo", result)
+        self.assertFalse(state["awaiting_user_input"]["pending"])
+        self.assertIn("Si, hazlo", state["messages"][-1]["content"])
+        self.assertIn("usuario autorizo avanzar", state["messages"][-1]["content"])
+        self.assertIn("Te gustaria que implemente esto ahora?", state["messages"][-1]["content"])
 
     def test_submit_user_reply_without_pending_question_runs_single_cycle(self):
         state_path = TEST_RUNTIME_DIR / "session_reply_freeform_state.json"

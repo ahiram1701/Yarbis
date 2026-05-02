@@ -64,6 +64,7 @@ Tambien puedes iniciarlo desde PowerShell:
 La interfaz de escritorio permite:
 
 - cambiar el objetivo
+- cambiar el modelo de Ollama y el timeout
 - ejecutar un ciclo
 - ejecutar modo autonomo indicando de 1 a 20 ciclos
 - responder preguntas pendientes
@@ -105,6 +106,8 @@ La proactividad 24/7 del servicio esta activa por defecto. Tras una espera inici
 Si el servicio se detiene mientras procesa una respuesta del usuario, esa respuesta queda en el historial. En el siguiente arranque o pulso, Yarbis detecta si el ultimo mensaje del usuario no tiene respuesta del asistente y ejecuta primero ese ciclo pendiente antes de agregar trabajo proactivo nuevo.
 
 Puedes ajustar el pulso desde la app con `Servicio` -> `Configurar pulso`. Los cambios se guardan en `state.json`; el servicio los lee en caliente para el intervalo y los ciclos. La espera inicial aplica al siguiente arranque del servicio.
+
+El modelo de Ollama y su timeout tambien se pueden cambiar desde la app con `Modelo` -> `Modelo y timeout`. Esos cambios se guardan en `state.json` y se aplican al siguiente ciclo, tanto en la app como en el servicio.
 
 ## Uso por terminal
 
@@ -243,6 +246,8 @@ $env:YARBIS_EMPTY_RESPONSE_RETRIES="1"
 ```
 
 Si aparece `No pude consultar Ollama en este ciclo: timed out`, primero confirma que Ollama este vivo con `ollama list` u `ollama ps`. Si el modelo tarda en cargar, calientalo una vez con `ollama run qwen3.5:2b`, aumenta `YARBIS_OLLAMA_TIMEOUT_SECONDS`, reinicia la app o el servicio para que tome la variable, o cambia temporalmente a un modelo mas ligero con `YARBIS_MODEL="qwen3.5:0.8b"`.
+
+Para uso diario, prefiere el boton `Modelo y timeout` de la app. Las variables `YARBIS_MODEL` y `YARBIS_OLLAMA_TIMEOUT_SECONDS` quedan como override avanzado y, si estan definidas, pueden tener prioridad sobre lo guardado en la interfaz.
 
 Servicio proactivo, como override avanzado de la configuracion guardada:
 

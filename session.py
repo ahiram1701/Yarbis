@@ -19,7 +19,15 @@ except ImportError:  # pragma: no cover - POSIX fallback only.
     fcntl = None
 
 from agent import run_autonomous_session, run_one_cycle
-from memory import load_state, render_state_summary, save_state
+from memory import (
+    DEFAULT_OLLAMA_MODEL,
+    DEFAULT_OLLAMA_TIMEOUT_SECONDS,
+    MAX_OLLAMA_TIMEOUT_SECONDS,
+    MIN_OLLAMA_TIMEOUT_SECONDS,
+    load_state,
+    render_state_summary,
+    save_state,
+)
 from notifications import (
     get_telegram_settings,
     notify_user_input_required,
@@ -221,7 +229,72 @@ def _normalize_intent_text(text: str) -> str:
         char for char in normalized
         if not unicodedata.combining(char)
     )
-    return " ".join(without_accents.replace("_", " ").split())
+    without_punctuation = re.sub(r"[^\w\s]", " ", without_accents)
+    return " ".join(without_punctuation.replace("_", " ").split())
+
+
+def _looks_like_affirmative_action_reply(text: str) -> bool:
+    normalized = _normalize_intent_text(text)
+    if not normalized:
+        return False
+
+    exact_replies = {
+        "si",
+        "si hazlo",
+        "si adelante",
+        "si por favor",
+        "hazlo",
+        "adelante",
+        "dale",
+        "ok",
+        "okay",
+        "de acuerdo",
+        "correcto",
+        "confirmo",
+        "procede",
+        "avanza",
+        "ejecutalo",
+        "implementalo",
+    }
+    if normalized in exact_replies:
+        return True
+
+    return normalized.startswith("si ") and any(
+        phrase in normalized
+        for phrase in (
+            "hazlo",
+            "adelante",
+            "procede",
+            "avanza",
+            "ejecuta",
+            "implementa",
+        )
+    )
+
+
+def _message_content_for_user_reply(cleaned_reply: str, state: dict, had_pending_question: bool) -> str:
+    if not had_pending_question or not _looks_like_affirmative_action_reply(cleaned_reply):
+        return cleaned_reply
+
+    awaiting_user_input = state.get("awaiting_user_input", {})
+    question = str(awaiting_user_input.get("question", "")).strip()
+    reason = str(awaiting_user_input.get("reason", "")).strip()
+
+    context_lines = [
+        cleaned_reply,
+        "",
+        "Contexto para Yarbis: respuesta afirmativa a la pregunta pendiente.",
+    ]
+    if question:
+        context_lines.append(f"Pregunta pendiente: {question}")
+    if reason:
+        context_lines.append(f"Motivo original: {reason}")
+    context_lines.append(
+        "Interpretacion operativa: el usuario autorizo avanzar con la propuesta "
+        "anterior. Ejecuta el siguiente paso util con herramientas cuando aplique "
+        "y no vuelvas a pedir confirmacion general."
+    )
+    return "\n".join(context_lines)
 
 
 def is_self_analysis_request(text: str) -> bool:
@@ -329,6 +402,46 @@ def update_ui_theme(theme: str) -> str:
         state["ui"]["theme"] = cleaned_theme
         save_state(state)
         return f"Tema actualizado a {cleaned_theme}."
+
+
+def get_ollama_settings() -> dict:
+    with SESSION_LOCK:
+        return load_state().get("ollama", {
+            "model": DEFAULT_OLLAMA_MODEL,
+            "timeout_seconds": DEFAULT_OLLAMA_TIMEOUT_SECONDS,
+        })
+
+
+def update_ollama_settings(model: str, timeout_seconds: int) -> str:
+    with SESSION_LOCK:
+        cleaned_model = str(model).strip()
+        if not cleaned_model:
+            raise ValueError("El modelo no puede quedar vacio.")
+
+        try:
+            cleaned_timeout = int(timeout_seconds)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("El timeout debe ser un numero de segundos.") from exc
+
+        if not MIN_OLLAMA_TIMEOUT_SECONDS <= cleaned_timeout <= MAX_OLLAMA_TIMEOUT_SECONDS:
+            raise ValueError(
+                "El timeout debe estar entre "
+                f"{MIN_OLLAMA_TIMEOUT_SECONDS} y {MAX_OLLAMA_TIMEOUT_SECONDS} segundos."
+            )
+
+        state = load_state()
+        state["ollama"] = {
+            "model": cleaned_model,
+            "timeout_seconds": cleaned_timeout,
+        }
+        save_state(state)
+        settings = load_state()["ollama"]
+
+        return (
+            "Configuracion de Ollama actualizada.\n"
+            f"Modelo: {settings['model']}\n"
+            f"Timeout: {settings['timeout_seconds']} segundos"
+        )
 
 
 def get_service_proactive_settings() -> dict:
@@ -885,9 +998,14 @@ def submit_user_reply(
         state = load_state()
         had_pending_question = has_pending_user_question(state)
         auto_cycles_default = state["autonomy"]["auto_cycles_default"]
+        message_content = _message_content_for_user_reply(
+            cleaned_reply,
+            state,
+            had_pending_question,
+        )
         state["messages"].append({
             "role": "user",
-            "content": cleaned_reply,
+            "content": message_content,
         })
         clear_pending_user_question(state)
         save_state(state)

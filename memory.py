@@ -29,6 +29,11 @@ DEFAULT_SERVICE_PROACTIVE_ENABLED = True
 DEFAULT_SERVICE_PROACTIVE_INTERVAL_SECONDS = 30 * 60
 DEFAULT_SERVICE_PROACTIVE_CYCLES = 1
 DEFAULT_SERVICE_PROACTIVE_START_DELAY_SECONDS = 60
+DEFAULT_OLLAMA_MODEL = "qwen3.5:2b"
+DEFAULT_OLLAMA_TIMEOUT_SECONDS = 900
+MIN_OLLAMA_TIMEOUT_SECONDS = 1
+MAX_OLLAMA_TIMEOUT_SECONDS = 24 * 60 * 60
+MAX_OLLAMA_MODEL_CHARS = 120
 VALID_TASK_STATUS = {"pending", "in_progress", "blocked", "done"}
 VALID_TASK_PRIORITY = {"alta", "media", "baja"}
 VALID_UI_THEME = {"light", "dark"}
@@ -79,6 +84,10 @@ def default_state():
         "autonomy": {
             "max_steps_per_cycle": DEFAULT_MAX_STEPS_PER_CYCLE,
             "auto_cycles_default": DEFAULT_AUTO_CYCLES,
+        },
+        "ollama": {
+            "model": DEFAULT_OLLAMA_MODEL,
+            "timeout_seconds": DEFAULT_OLLAMA_TIMEOUT_SECONDS,
         },
         "service": {
             "proactive": {
@@ -301,6 +310,35 @@ def _normalize_autonomy(autonomy):
         normalized["auto_cycles_default"] = defaults["auto_cycles_default"]
 
     return normalized
+
+
+def _normalize_ollama(ollama):
+    defaults = default_state()["ollama"]
+    if not isinstance(ollama, dict):
+        ollama = {}
+
+    model = _truncate_text(
+        ollama.get("model", defaults["model"]),
+        MAX_OLLAMA_MODEL_CHARS,
+    ).strip()
+    if not model:
+        model = defaults["model"]
+
+    try:
+        timeout_seconds = max(
+            MIN_OLLAMA_TIMEOUT_SECONDS,
+            min(
+                MAX_OLLAMA_TIMEOUT_SECONDS,
+                int(ollama.get("timeout_seconds", defaults["timeout_seconds"])),
+            ),
+        )
+    except (TypeError, ValueError):
+        timeout_seconds = defaults["timeout_seconds"]
+
+    return {
+        "model": model,
+        "timeout_seconds": timeout_seconds,
+    }
 
 
 def _normalize_bool(value, default: bool) -> bool:
@@ -680,6 +718,7 @@ def normalize_state(state):
         state.get("awaiting_user_input", {}),
     )
     normalized["autonomy"] = _normalize_autonomy(state.get("autonomy", {}))
+    normalized["ollama"] = _normalize_ollama(state.get("ollama", {}))
     normalized["service"] = _normalize_service(state.get("service", {}))
     normalized["ui"] = _normalize_ui(state.get("ui", {}))
     normalized["runtime"] = _normalize_runtime(state.get("runtime", {}))
@@ -732,6 +771,11 @@ def render_state_summary(
             "Autonomia: "
             f"{normalized['autonomy']['max_steps_per_cycle']} pasos/ciclo, "
             f"{normalized['autonomy']['auto_cycles_default']} ciclos por defecto"
+        ),
+        (
+            "Ollama: "
+            f"modelo={normalized['ollama']['model']}, "
+            f"timeout={normalized['ollama']['timeout_seconds']}s"
         ),
         (
             "Pulso proactivo: "

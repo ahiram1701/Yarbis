@@ -5,7 +5,15 @@ import unicodedata
 
 from ollama import Client
 
-from memory import load_state, render_state_summary, save_state
+from memory import (
+    DEFAULT_OLLAMA_MODEL,
+    DEFAULT_OLLAMA_TIMEOUT_SECONDS,
+    MAX_OLLAMA_TIMEOUT_SECONDS,
+    MIN_OLLAMA_TIMEOUT_SECONDS,
+    load_state,
+    render_state_summary,
+    save_state,
+)
 from self_knowledge import render_self_knowledge_summary
 from tools import (
     add_task,
@@ -31,10 +39,21 @@ from tools import (
     write_text_file,
 )
 
-DEFAULT_MODEL = "qwen3.5:2b"
-DEFAULT_OLLAMA_TIMEOUT_SECONDS = 600
+DEFAULT_MODEL = DEFAULT_OLLAMA_MODEL
 DEFAULT_EMPTY_RESPONSE_RETRIES = 1
 WAITING_FOR_INSTRUCTIONS_QUESTION = "Que instruccion quieres que siga ahora?"
+NON_ACTIONABLE_RETRY_MESSAGE = (
+    "El ultimo mensaje del usuario ya autoriza avanzar con la propuesta anterior. "
+    "Si tu respuesta anterior fue una presentacion generica, un menu de capacidades "
+    "o menciono hardware/sistema sin que el usuario lo pidiera, descartala. Ejecuta "
+    "el siguiente paso util usando herramientas cuando aplique: revisa el estado, "
+    "crea plan o tareas, lee archivos o corre pruebas seguras. No vuelvas a pedir "
+    "que elija entre opciones generales salvo que falte un dato privado, una decision "
+    "real o un archivo concreto. No afirmes CPU, GPU, arquitectura, RAM o sistema "
+    "operativo salvo que el usuario lo pida; AMD64 es una arquitectura, no una marca "
+    "de procesador."
+)
+MAX_NON_ACTIONABLE_RETRIES = 1
 
 
 def _get_env_int(name: str, default: int) -> int:
@@ -53,12 +72,17 @@ OLLAMA_TIMEOUT_SECONDS = _get_env_int(
     "YARBIS_OLLAMA_TIMEOUT_SECONDS",
     DEFAULT_OLLAMA_TIMEOUT_SECONDS,
 )
+OLLAMA_TIMEOUT_SECONDS = max(
+    MIN_OLLAMA_TIMEOUT_SECONDS,
+    min(MAX_OLLAMA_TIMEOUT_SECONDS, OLLAMA_TIMEOUT_SECONDS),
+)
 EMPTY_RESPONSE_RETRIES = max(
     0,
     _get_env_int("YARBIS_EMPTY_RESPONSE_RETRIES", DEFAULT_EMPTY_RESPONSE_RETRIES),
 )
 
 client = Client(timeout=OLLAMA_TIMEOUT_SECONDS)
+_client_timeout_seconds = OLLAMA_TIMEOUT_SECONDS
 tool_definitions = [
     agent_overview,
     update_profile,
@@ -107,6 +131,57 @@ available_functions = {
     "self_overview": self_overview,
 }
 
+
+def _normalize_timeout_seconds(value, default: int = DEFAULT_OLLAMA_TIMEOUT_SECONDS) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        parsed = default
+
+    return max(MIN_OLLAMA_TIMEOUT_SECONDS, min(MAX_OLLAMA_TIMEOUT_SECONDS, parsed))
+
+
+def _resolve_ollama_runtime_settings(state=None) -> dict:
+    if state is None:
+        state = load_state()
+
+    ollama = state.get("ollama", {}) if isinstance(state, dict) else {}
+    if not isinstance(ollama, dict):
+        ollama = {}
+
+    model = str(ollama.get("model", DEFAULT_MODEL)).strip() or DEFAULT_MODEL
+    timeout_seconds = _normalize_timeout_seconds(
+        ollama.get("timeout_seconds", DEFAULT_OLLAMA_TIMEOUT_SECONDS),
+    )
+
+    env_model = os.getenv("YARBIS_MODEL", "").strip()
+    if env_model:
+        model = env_model
+
+    env_timeout = os.getenv("YARBIS_OLLAMA_TIMEOUT_SECONDS", "").strip()
+    if env_timeout:
+        timeout_seconds = _normalize_timeout_seconds(env_timeout, timeout_seconds)
+
+    return {
+        "model": model,
+        "timeout_seconds": timeout_seconds,
+    }
+
+
+def _apply_ollama_runtime_settings(state=None):
+    global MODEL, OLLAMA_TIMEOUT_SECONDS, client, _client_timeout_seconds
+
+    settings = _resolve_ollama_runtime_settings(state)
+    MODEL = settings["model"]
+    OLLAMA_TIMEOUT_SECONDS = settings["timeout_seconds"]
+
+    if _client_timeout_seconds != OLLAMA_TIMEOUT_SECONDS:
+        client = Client(timeout=OLLAMA_TIMEOUT_SECONDS)
+        _client_timeout_seconds = OLLAMA_TIMEOUT_SECONDS
+
+    return MODEL, OLLAMA_TIMEOUT_SECONDS, client
+
+
 SYSTEM_PROMPT = """
 Eres Yarbis, el agente inteligente personal, autonomo, local, proactivo y todologo practico del usuario.
 Tu trabajo es avanzar paso a paso hacia el objetivo del usuario, organizar el trabajo para que siga progresando entre ciclos y cuidar continuidad 24/7 cuando el servicio de fondo este activo.
@@ -122,12 +197,16 @@ Reglas:
 - No prometas capacidades que no tienes. Tu autonomia depende de Ollama, del servicio activo, permisos, herramientas disponibles, politica de internet y contexto del usuario.
 - Si la mejor salida del ciclo es texto util para el usuario, entregalo directamente en este ciclo.
 - No respondas con metacomentarios como "voy a empezar", "ahora me enfoco", "mi objetivo es" o "trabajare paso a paso" si todavia no has dado un resultado util.
+- Si el usuario pide una accion directa o responde afirmativamente a una pregunta tuya ("si", "hazlo", "adelante", "procede"), interpreta eso como permiso para avanzar. No respondas con menus de opciones ni pidas otra confirmacion general.
 - Si el objetivo aun no esta aterrizado, crea un plan corto con `set_plan` y tareas concretas con `add_task`.
+- Si el usuario pide mejorar tu rendimiento o velocidad, empieza con acciones verificables: revisa estado/autoconocimiento, crea plan/tareas, inspecciona codigo o configuracion relevante y corre tests seguros cuando aplique.
 - Si falta un dato clave para avanzar bien (por ejemplo nicho, audiencia, tono, archivo exacto, formato o criterio de exito), no lo inventes.
 - Si falta informacion publica, verificable o reciente, prioriza `web_search` y luego `fetch_web_page` antes de preguntarle al usuario.
 - Usa `request_user_input` solo cuando falte contexto privado, preferencias, decisiones, archivos concretos o criterios que el usuario debe definir.
 - Respeta la politica de internet visible en el estado. Si el usuario pide cambiarla, usa `update_internet_settings`.
 - Cuando necesites una respuesta del usuario, usa `request_user_input` con una sola pregunta clara y concreta, explica brevemente por que falta ese dato y detente. No sigas produciendo contenido que dependa de esa respuesta.
+- No uses el autoconocimiento como saludo ni como relleno. No te presentes con listas de capacidades salvo que el usuario pregunte que puedes hacer.
+- No menciones sistema operativo, CPU, GPU, RAM, arquitectura o hardware salvo que el usuario lo pida o la tarea lo requiera. Si lo mencionas, copia valores verificados literalmente desde herramientas/autoconocimiento; nunca infieras marca o modelo. `AMD64` significa arquitectura x86_64, no procesador AMD.
 - Manten las tareas sincronizadas: usa `update_task_status` para moverlas a `in_progress`, `blocked` o `done`.
 - Si una tarea queda frenada por falta de informacion del usuario, marcalo con `update_task_status(..., status="blocked", result="...")`.
 - Para consultar o eliminar notas persistentes, usa `list_notes`, `get_note` y `delete_note`.
@@ -214,8 +293,9 @@ def _format_chat_error(exc: Exception) -> str:
         "Diagnostico: Ollama no respondio dentro del tiempo configurado "
         f"({OLLAMA_TIMEOUT_SECONDS}s) usando el modelo {MODEL}.\n"
         "Para resolverlo, verifica que Ollama este activo, calienta el modelo con "
-        f"`ollama run {MODEL}`, aumenta `YARBIS_OLLAMA_TIMEOUT_SECONDS`, o usa un "
-        "modelo mas ligero con `YARBIS_MODEL`."
+        f"`ollama run {MODEL}`, aumenta el timeout en la interfaz grafica o con "
+        "`YARBIS_OLLAMA_TIMEOUT_SECONDS`, o usa un modelo mas ligero desde la interfaz "
+        "o con `YARBIS_MODEL`."
     )
 
 
@@ -284,6 +364,294 @@ def _normalize_intent_text(text: str) -> str:
     )
     without_punctuation = re.sub(r"[^\w\s]", " ", without_accents)
     return " ".join(without_punctuation.replace("_", " ").split())
+
+
+def _last_message_content(state, role: str) -> str:
+    for message in reversed(state.get("messages", [])):
+        if isinstance(message, dict) and message.get("role") == role:
+            return str(message.get("content", "")).strip()
+    return ""
+
+
+def _looks_like_affirmative_action_reply(text: str) -> bool:
+    normalized = _normalize_intent_text(text)
+    if not normalized:
+        return False
+
+    exact_replies = {
+        "si",
+        "si hazlo",
+        "si adelante",
+        "si por favor",
+        "hazlo",
+        "adelante",
+        "dale",
+        "ok",
+        "okay",
+        "de acuerdo",
+        "correcto",
+        "confirmo",
+        "procede",
+        "avanza",
+        "ejecutalo",
+        "implementalo",
+    }
+    if normalized in exact_replies:
+        return True
+
+    return normalized.startswith("si ") and any(
+        phrase in normalized
+        for phrase in (
+            "hazlo",
+            "adelante",
+            "procede",
+            "avanza",
+            "ejecuta",
+            "implementa",
+        )
+    )
+
+
+def _last_user_authorized_action(state) -> bool:
+    last_user_message = _last_message_content(state, "user")
+    normalized = _normalize_intent_text(last_user_message)
+    return (
+        "usuario autorizo avanzar" in normalized
+        or _looks_like_affirmative_action_reply(last_user_message)
+    )
+
+
+def _last_user_requested_action(state) -> bool:
+    normalized = _normalize_intent_text(_last_message_content(state, "user"))
+    if not normalized:
+        return False
+
+    action_phrases = (
+        "mejora",
+        "optimiza",
+        "arregla",
+        "corrige",
+        "implementa",
+        "ejecuta",
+        "haz ",
+        "crea",
+        "actualiza",
+        "analiza",
+        "revisa",
+    )
+    return any(phrase in normalized for phrase in action_phrases)
+
+
+def _numbered_option_count(text: str) -> int:
+    return len(re.findall(r"(?m)^\s*\d+[\.\)]\s+", str(text)))
+
+
+def _looks_like_choice_menu(text: str) -> bool:
+    normalized = _normalize_intent_text(text)
+    if not normalized:
+        return False
+
+    asks_for_choice = any(
+        phrase in normalized
+        for phrase in (
+            "que prefieres",
+            "cual prefieres",
+            "elige una",
+            "elige opcion",
+            "elige una opcion",
+            "opciones",
+        )
+    )
+    return asks_for_choice and _numbered_option_count(text) >= 2
+
+
+def _looks_like_generic_help_prompt(text: str) -> bool:
+    normalized = _normalize_intent_text(text)
+    return any(
+        phrase in normalized
+        for phrase in (
+            "en que puedo ayudarte hoy",
+            "como puedo ayudarte hoy",
+            "que puedo hacer por ti",
+            "cuentame que necesitas hacer",
+            "que necesitas mejorar o resolver hoy",
+            "cual es lo que necesitas mejorar o resolver hoy",
+        )
+    )
+
+
+def _looks_like_deferred_action_confirmation(text: str) -> bool:
+    normalized = _normalize_intent_text(text)
+    return any(
+        phrase in normalized
+        for phrase in (
+            "te gustaria que implemente",
+            "quieres que implemente",
+            "deseas que implemente",
+            "confirmas que avance",
+            "lo implemento ahora",
+            "lo hago ahora",
+        )
+    )
+
+
+def _looks_like_unverified_action_claim(text: str) -> bool:
+    normalized = _normalize_intent_text(text)
+    return any(
+        phrase in normalized
+        for phrase in (
+            "he realizado",
+            "he implementado",
+            "implemente",
+            "actualice",
+            "modifique",
+            "reduje",
+            "ejecute",
+            "he creado",
+        )
+    )
+
+
+def _last_user_asked_for_identity_or_capabilities(state) -> bool:
+    normalized = _normalize_intent_text(_last_message_content(state, "user"))
+    if not normalized:
+        return False
+
+    return any(
+        phrase in normalized
+        for phrase in (
+            "quien eres",
+            "que eres",
+            "presentate",
+            "que puedes hacer",
+            "como me puedes ayudar",
+            "cuales son tus capacidades",
+            "lista tus capacidades",
+        )
+    )
+
+
+def _has_normalized_phrase(normalized: str, phrase: str) -> bool:
+    return re.search(rf"(?<!\w){re.escape(phrase)}(?!\w)", normalized) is not None
+
+
+def _last_user_asked_about_environment(state) -> bool:
+    normalized = _normalize_intent_text(_last_message_content(state, "user"))
+    if not normalized:
+        return False
+
+    environment_terms = (
+        "sistema operativo",
+        "hardware",
+        "equipo",
+        "maquina",
+        "procesador",
+        "cpu",
+        "gpu",
+        "ram",
+        "arquitectura",
+        "windows",
+        "amd",
+        "ryzen",
+        "intel",
+        "autoconocimiento",
+        "self overview",
+        "entorno local",
+    )
+    return any(_has_normalized_phrase(normalized, term) for term in environment_terms)
+
+
+def _looks_like_unsolicited_self_intro_or_capabilities(text: str) -> bool:
+    normalized = _normalize_intent_text(text)
+    if not normalized:
+        return False
+
+    intro_phrases = (
+        "soy yarbis",
+        "tu agente local",
+        "agente local optimizado",
+        "como tu agente local",
+    )
+    if any(phrase in normalized for phrase in intro_phrases):
+        return True
+
+    has_capability_menu = (
+        "puedo" in normalized
+        and (
+            _numbered_option_count(text) >= 2
+            or re.search(r"(?mi)^\s*puedo\s*:", str(text)) is not None
+        )
+    )
+    return bool(has_capability_menu)
+
+
+def _looks_like_environment_claim(text: str) -> bool:
+    normalized = _normalize_intent_text(text)
+    if not normalized:
+        return False
+
+    environment_terms = (
+        "sistema operativo",
+        "windows 11",
+        "windows 10",
+        "arquitectura",
+        "amd64",
+        "x86 64",
+        "cpu",
+        "gpu",
+        "ram",
+        "procesador",
+        "ryzen",
+        "genuineintel",
+        "intel64",
+    )
+    return any(_has_normalized_phrase(normalized, term) for term in environment_terms)
+
+
+def _looks_like_non_actionable_prompt(text: str) -> bool:
+    return (
+        _looks_like_choice_menu(text)
+        or _looks_like_generic_help_prompt(text)
+        or _looks_like_deferred_action_confirmation(text)
+    )
+
+
+def _should_reject_non_actionable_final(state, text: str, used_tools: bool) -> bool:
+    if used_tools:
+        return False
+
+    if (
+        _looks_like_unsolicited_self_intro_or_capabilities(text)
+        and not _last_user_asked_for_identity_or_capabilities(state)
+    ):
+        return True
+
+    if _looks_like_environment_claim(text) and not _last_user_asked_about_environment(state):
+        return True
+
+    if not (_last_user_authorized_action(state) or _last_user_requested_action(state)):
+        return False
+
+    return (
+        _looks_like_non_actionable_prompt(text)
+        or _looks_like_unverified_action_claim(text)
+    )
+
+
+def _safe_rejected_final_message(state, text: str) -> str:
+    if _looks_like_environment_claim(text) and not _last_user_asked_about_environment(state):
+        return (
+            "No tengo una tarea concreta registrada. Dime que quieres que haga y "
+            "avanzare sin inventar datos del equipo."
+        )
+
+    if _last_user_authorized_action(state) or _last_user_requested_action(state):
+        return (
+            "No complete una accion verificable en este ciclo. Necesito una "
+            "instruccion mas concreta o un dato faltante para avanzar bien."
+        )
+
+    return "Dime que quieres que haga y avanzare sin presentarme ni listar capacidades."
 
 
 def _looks_like_waiting_for_instructions(text: str) -> bool:
@@ -395,16 +763,19 @@ def run_one_cycle(max_steps=None):
     if max_steps is None:
         max_steps = state["autonomy"]["max_steps_per_cycle"]
 
+    model, _timeout_seconds, ollama_client = _apply_ollama_runtime_settings(state)
+
     print(f"\n=== CICLO {state['cycle_count']} ===")
     used_tools = False
     empty_response_retries = 0
+    non_actionable_retries = 0
 
     for step in range(1, max_steps + 1):
         print(f"\n--- Paso {step} ---")
 
         try:
-            response = client.chat(
-                model=MODEL,
+            response = ollama_client.chat(
+                model=model,
                 messages=build_messages(state),
                 tools=tool_definitions,
                 think=False,
@@ -488,8 +859,36 @@ def run_one_cycle(max_steps=None):
                 "looks_meta": False,
             }
 
+        non_actionable_final = _should_reject_non_actionable_final(
+            state,
+            final_text,
+            used_tools=used_tools,
+        )
+        if (
+            non_actionable_final
+            and non_actionable_retries < MAX_NON_ACTIONABLE_RETRIES
+            and step < max_steps
+        ):
+            non_actionable_retries += 1
+            state["messages"].append({
+                "role": "assistant",
+                "content": final_text,
+            })
+            state["messages"].append({
+                "role": "user",
+                "content": NON_ACTIONABLE_RETRY_MESSAGE,
+            })
+            save_state(state)
+            continue
+
+        if non_actionable_final:
+            final_text = _safe_rejected_final_message(state, final_text)
+
         _print_output(f"\nYarbis:\n{final_text}")
-        pending_question = _extract_user_input_request(final_text)
+
+        pending_question = ""
+        if not (non_actionable_final and _looks_like_non_actionable_prompt(final_text)):
+            pending_question = _extract_user_input_request(final_text)
         if pending_question and not _is_waiting_for_user_input(state):
             state["awaiting_user_input"] = {
                 "pending": True,

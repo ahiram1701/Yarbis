@@ -27,6 +27,7 @@ class MemoryTestCase(unittest.TestCase):
             state["autonomy"]["max_steps_per_cycle"],
             memory.DEFAULT_MAX_STEPS_PER_CYCLE,
         )
+        self.assertEqual(state["ollama"]["timeout_seconds"], 900)
 
     def test_save_state_trims_messages(self):
         state_path = TEST_RUNTIME_DIR / "memory_trim_state.json"
@@ -102,6 +103,28 @@ class MemoryTestCase(unittest.TestCase):
 
         self.assertEqual(normalized["ui"]["theme"], "light")
         self.assertEqual(fallback["ui"]["theme"], "dark")
+
+    def test_normalize_state_sanitizes_ollama_settings(self):
+        normalized = memory.normalize_state({
+            "ollama": {
+                "model": "",
+                "timeout_seconds": 999_999,
+            },
+        })
+        custom = memory.normalize_state({
+            "ollama": {
+                "model": "llama3.2:3b",
+                "timeout_seconds": 900,
+            },
+        })
+
+        self.assertEqual(normalized["ollama"]["model"], memory.DEFAULT_OLLAMA_MODEL)
+        self.assertEqual(
+            normalized["ollama"]["timeout_seconds"],
+            memory.MAX_OLLAMA_TIMEOUT_SECONDS,
+        )
+        self.assertEqual(custom["ollama"]["model"], "llama3.2:3b")
+        self.assertEqual(custom["ollama"]["timeout_seconds"], 900)
 
     def test_normalize_state_sanitizes_runtime_thinking_state(self):
         normalized = memory.normalize_state({

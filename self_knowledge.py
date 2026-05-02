@@ -9,6 +9,8 @@ import sys
 import time
 from pathlib import Path
 
+from memory import DEFAULT_OLLAMA_MODEL, DEFAULT_OLLAMA_TIMEOUT_SECONDS, load_state
+
 WORKSPACE_ROOT = Path(__file__).resolve().parent
 MAX_SOURCE_FILES = 36
 SELF_KNOWLEDGE_CACHE_SECONDS = 300
@@ -383,6 +385,22 @@ def _render_runtime_environment() -> list[str]:
         for item in (str(hardware.get("manufacturer", "")).strip(), str(hardware.get("model", "")).strip())
         if item
     ) or "desconocido"
+    try:
+        ollama = load_state().get("ollama", {})
+    except Exception:
+        ollama = {}
+    if not isinstance(ollama, dict):
+        ollama = {}
+    ollama_model = (
+        os.getenv("YARBIS_MODEL", "").strip()
+        or str(ollama.get("model", DEFAULT_OLLAMA_MODEL)).strip()
+        or DEFAULT_OLLAMA_MODEL
+    )
+    ollama_timeout = (
+        os.getenv("YARBIS_OLLAMA_TIMEOUT_SECONDS", "").strip()
+        or str(ollama.get("timeout_seconds", DEFAULT_OLLAMA_TIMEOUT_SECONDS)).strip()
+        or str(DEFAULT_OLLAMA_TIMEOUT_SECONDS)
+    )
 
     lines = [
         f"Sistema operativo: {platform.platform()}",
@@ -395,7 +413,7 @@ def _render_runtime_environment() -> list[str]:
         f"Disco del workspace: {disk_text}",
         f"Python: {sys.version.split()[0]} ({sys.executable})",
         f"Proceso actual: pid={os.getpid()}, cwd={Path.cwd()}",
-        f"Modelo Ollama configurado: {os.getenv('YARBIS_MODEL', 'qwen3.5:2b')}",
+        f"Modelo Ollama configurado: {ollama_model} (timeout {ollama_timeout}s)",
     ]
 
     gpus = hardware.get("gpus")
