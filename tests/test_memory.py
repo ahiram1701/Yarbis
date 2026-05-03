@@ -29,12 +29,20 @@ class MemoryTestCase(unittest.TestCase):
         )
         self.assertEqual(state["ollama"]["timeout_seconds"], 900)
 
-    def test_save_state_trims_messages(self):
-        state_path = TEST_RUNTIME_DIR / "memory_trim_state.json"
+    def test_legacy_default_goal_normalizes_to_empty(self):
+        normalized = memory.normalize_state({
+            "goal": "Ayudar al usuario de forma autonoma con tareas locales.",
+        })
+
+        self.assertEqual(normalized["goal"], "")
+
+    def test_save_state_keeps_messages_complete(self):
+        state_path = TEST_RUNTIME_DIR / "memory_complete_messages_state.json"
+        long_message = "x" * (memory.MAX_MESSAGE_CHARS + 10)
         oversized_state = {
             "goal": "demo",
             "messages": [
-                {"role": "assistant", "content": "x" * (memory.MAX_MESSAGE_CHARS + 10)}
+                {"role": "assistant", "content": long_message}
                 for _ in range(memory.MAX_MESSAGES + 5)
             ],
             "last_result": "ok",
@@ -45,8 +53,33 @@ class MemoryTestCase(unittest.TestCase):
             memory.save_state(oversized_state)
             stored_state = json.loads(state_path.read_text(encoding="utf-8"))
 
-        self.assertEqual(len(stored_state["messages"]), memory.MAX_MESSAGES)
-        self.assertIn("[truncado", stored_state["messages"][-1]["content"])
+        self.assertEqual(len(stored_state["messages"]), memory.MAX_MESSAGES + 5)
+        self.assertEqual(stored_state["messages"][-1]["content"], long_message)
+        self.assertNotIn("[truncado", stored_state["messages"][-1]["content"])
+
+    def test_save_state_keeps_last_result_complete(self):
+        state_path = TEST_RUNTIME_DIR / "memory_last_result_state.json"
+        long_result = "respuesta larga " * 500
+
+        with patch.object(memory, "STATE_FILE", state_path):
+            memory.save_state({
+                "goal": "demo",
+                "last_result": long_result,
+            })
+            stored_state = json.loads(state_path.read_text(encoding="utf-8"))
+
+        self.assertEqual(stored_state["last_result"], long_result)
+        self.assertNotIn("[truncado", stored_state["last_result"])
+
+    def test_render_state_summary_can_omit_last_result_for_internal_context(self):
+        summary = memory.render_state_summary(
+            {
+                "last_result": "respuesta larga " * 500,
+            },
+            include_last_result=False,
+        )
+
+        self.assertNotIn("Ultimo resultado:", summary)
 
     def test_normalize_state_sanitizes_profile_notes_and_tasks(self):
         normalized = memory.normalize_state({
@@ -68,7 +101,7 @@ class MemoryTestCase(unittest.TestCase):
         self.assertEqual(normalized["profile"]["preferences"], ["rapido", "local"])
         self.assertEqual(normalized["profile"]["constraints"], ["sin nube", "sin destruir archivos"])
         self.assertEqual(len(normalized["notes"]), 1)
-        self.assertIn("[truncado", normalized["notes"][0]["content"])
+        self.assertEqual(normalized["notes"][0]["content"], "x" * (memory.MAX_NOTE_CONTENT_CHARS + 50))
         self.assertEqual(normalized["tasks"][0]["status"], "pending")
         self.assertEqual(normalized["tasks"][0]["priority"], "media")
         self.assertEqual(len(normalized["current_plan"]), 3)
@@ -86,11 +119,7 @@ class MemoryTestCase(unittest.TestCase):
         pending = normalized["awaiting_user_input"]
 
         self.assertTrue(pending["pending"])
-        self.assertIn("x", pending["question"])
-        self.assertLessEqual(
-            len(pending["question"]),
-            memory.MAX_AWAITING_INPUT_QUESTION_CHARS + len("\n\n...[truncado 99 caracteres]"),
-        )
+        self.assertEqual(pending["question"], "x" * (memory.MAX_AWAITING_INPUT_QUESTION_CHARS + 20))
         self.assertEqual(pending["fields"], ["nicho", "audiencia"])
 
     def test_normalize_state_uses_supported_ui_theme(self):
@@ -148,8 +177,7 @@ class MemoryTestCase(unittest.TestCase):
 
         thinking = normalized["runtime"]["thinking"]
         self.assertTrue(thinking["active"])
-        self.assertIn("Ciclo", thinking["label"])
-        self.assertIn("[truncado", thinking["label"])
+        self.assertEqual(thinking["label"], "Ciclo" * 40)
         self.assertEqual(thinking["source"], "pid:1234")
         self.assertFalse(inactive["runtime"]["thinking"]["active"])
 
@@ -262,3 +290,12 @@ class MemoryTestCase(unittest.TestCase):
         })
 
         self.assertIn("Autoconocimiento: actualizado en 2026-04-29T12:00:00+00:00.", summary)
+
+    def test_render_state_summary_separates_assistant_and_user_identity(self):
+        summary = memory.render_state_summary({
+            "profile": {
+                "name": "Ahiram",
+            },
+        })
+
+        self.assertIn("Identidad: asistente=Yarbis; usuario=Ahiram", summary)

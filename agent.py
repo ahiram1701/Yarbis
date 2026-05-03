@@ -1,7 +1,9 @@
+import json
 import os
 import re
 import sys
 import unicodedata
+from collections.abc import Mapping
 
 from ollama import Client
 
@@ -32,6 +34,7 @@ from tools import (
     save_note,
     set_plan,
     self_overview,
+    update_goal,
     update_internet_settings,
     update_profile,
     update_task_status,
@@ -95,6 +98,7 @@ tool_definitions = [
     add_task,
     list_tasks,
     update_task_status,
+    update_goal,
     set_plan,
     list_files,
     read_text_file,
@@ -119,6 +123,7 @@ available_functions = {
     "add_task": add_task,
     "list_tasks": list_tasks,
     "update_task_status": update_task_status,
+    "update_goal": update_goal,
     "set_plan": set_plan,
     "list_files": list_files,
     "read_text_file": read_text_file,
@@ -131,6 +136,39 @@ available_functions = {
     "self_overview": self_overview,
 }
 
+ACTION_PROOF_TOOL_NAMES = {
+    "update_profile",
+    "update_internet_settings",
+    "request_user_input",
+    "save_note",
+    "delete_note",
+    "add_task",
+    "update_task_status",
+    "update_goal",
+    "set_plan",
+    "write_text_file",
+    "restore_checkpoint",
+    "run_project_tests",
+}
+
+TOOL_FAILURE_PREFIXES = (
+    "acceso denegado",
+    "argumentos de tool",
+    "contenido demasiado grande",
+    "debes indicar",
+    "error ",
+    "error:",
+    "la ruta no existe",
+    "modo de internet invalido",
+    "no encontre",
+    "no existe",
+    "no es ",
+    "no pude",
+    "proveedor de busqueda invalido",
+    "solo puedo",
+    "tool no encontrada",
+)
+
 
 def _normalize_timeout_seconds(value, default: int = DEFAULT_OLLAMA_TIMEOUT_SECONDS) -> int:
     try:
@@ -139,6 +177,56 @@ def _normalize_timeout_seconds(value, default: int = DEFAULT_OLLAMA_TIMEOUT_SECO
         parsed = default
 
     return max(MIN_OLLAMA_TIMEOUT_SECONDS, min(MAX_OLLAMA_TIMEOUT_SECONDS, parsed))
+
+
+def _normalize_tool_arguments(raw_arguments) -> tuple[dict | None, str | None]:
+    if raw_arguments is None:
+        return {}, None
+
+    if isinstance(raw_arguments, Mapping):
+        return dict(raw_arguments), None
+
+    if hasattr(raw_arguments, "model_dump"):
+        dumped = raw_arguments.model_dump()
+        if isinstance(dumped, Mapping):
+            return dict(dumped), None
+
+    if isinstance(raw_arguments, str):
+        cleaned = raw_arguments.strip()
+        if not cleaned:
+            return {}, None
+        try:
+            parsed = json.loads(cleaned)
+        except json.JSONDecodeError as exc:
+            return None, f"Argumentos de tool no son JSON valido: {exc}"
+        if parsed is None:
+            return {}, None
+        if isinstance(parsed, Mapping):
+            return dict(parsed), None
+        return None, "Argumentos de tool deben ser un objeto JSON."
+
+    return None, (
+        "Argumentos de tool invalidos: "
+        f"se esperaba un objeto, no {type(raw_arguments).__name__}."
+    )
+
+
+def _tool_output_looks_successful(output) -> bool:
+    normalized = _normalize_intent_text(str(output))
+    if not normalized:
+        return False
+
+    return not any(
+        normalized.startswith(prefix)
+        for prefix in TOOL_FAILURE_PREFIXES
+    )
+
+
+def _tool_call_proves_action(tool_name: str, output) -> bool:
+    return (
+        str(tool_name).strip() in ACTION_PROOF_TOOL_NAMES
+        and _tool_output_looks_successful(output)
+    )
 
 
 def _resolve_ollama_runtime_settings(state=None) -> dict:
@@ -190,15 +278,21 @@ Reglas:
 - Se util, preciso y orientado a acciones.
 - Usa herramientas cuando sea necesario.
 - No inventes resultados de herramientas.
+- No afirmes que creaste, modificaste, ejecutaste, apagaste, instalaste, borraste o probaste algo salvo que una herramienta haya devuelto evidencia de esa accion en este ciclo. Si no hay evidencia, dilo como pendiente o como limitacion.
 - Trabaja en pasos pequenos y claros.
 - Aprende y adaptate al usuario: guarda contexto personal estable con `update_profile` y hallazgos utiles con `save_note`.
 - Si detectas un siguiente paso util, conviertelo en plan, tarea o accion concreta. No crees tareas duplicadas.
 - Persigue mejora continua: revisa tu autoconocimiento, identifica limitaciones reales y propone o ejecuta mejoras pequenas cuando ayuden al objetivo.
 - No prometas capacidades que no tienes. Tu autonomia depende de Ollama, del servicio activo, permisos, herramientas disponibles, politica de internet y contexto del usuario.
 - Si la mejor salida del ciclo es texto util para el usuario, entregalo directamente en este ciclo.
+- No cortes respuestas con marcadores como "truncado". Si hay demasiado material para responder bien, resume con criterio: conserva conclusiones, decisiones, pasos accionables y detalles que el usuario necesita; indica que estas resumiendo por volumen y donde queda el detalle completo cuando exista.
+- Una respuesta resumida debe seguir siendo completa para su proposito: no dejes ideas partidas, datos clave fuera ni preguntas pendientes escondidas.
 - No respondas con metacomentarios como "voy a empezar", "ahora me enfoco", "mi objetivo es" o "trabajare paso a paso" si todavia no has dado un resultado util.
+- Yarbis eres tu, el asistente. No llames "Yarbis" al usuario salvo que el perfil indique explicitamente que ese es su nombre; si no conoces su nombre, hablale directamente en segunda persona.
+- Si el usuario solo saluda, responde al usuario sin renombrarlo: nunca empieces con "Hola, Yarbis" salvo que el perfil diga explicitamente que el usuario se llama Yarbis.
 - Si el usuario pide una accion directa o responde afirmativamente a una pregunta tuya ("si", "hazlo", "adelante", "procede"), interpreta eso como permiso para avanzar. No respondas con menus de opciones ni pidas otra confirmacion general.
 - Si el objetivo aun no esta aterrizado, crea un plan corto con `set_plan` y tareas concretas con `add_task`.
+- Si el usuario pide cambiar o reemplazar el objetivo principal de forma explicita, usa `update_goal`. No cambies el objetivo por iniciativa propia durante un pulso proactivo; si no es claro, pide confirmacion.
 - Si el usuario pide mejorar tu rendimiento o velocidad, empieza con acciones verificables: revisa estado/autoconocimiento, crea plan/tareas, inspecciona codigo o configuracion relevante y corre tests seguros cuando aplique.
 - Si falta un dato clave para avanzar bien (por ejemplo nicho, audiencia, tono, archivo exacto, formato o criterio de exito), no lo inventes.
 - Si falta informacion publica, verificable o reciente, prioriza `web_search` y luego `fetch_web_page` antes de preguntarle al usuario.
@@ -211,6 +305,7 @@ Reglas:
 - Si una tarea queda frenada por falta de informacion del usuario, marcalo con `update_task_status(..., status="blocked", result="...")`.
 - Para consultar o eliminar notas persistentes, usa `list_notes`, `get_note` y `delete_note`.
 - Tienes autoconocimiento local: identidad, mapa de codigo fuente, sistema operativo y hardware actual. Si necesitas refrescarlo o verlo completo, usa `self_overview`.
+- El servicio administrado por SCM solo inicia, detiene o registra el proceso de fondo. No digas que SCM impide usar herramientas, ver notas, actualizar tareas o ejecutar ciclos; esas acciones dependen del servicio activo, permisos del proceso y herramientas disponibles. Instalar, quitar o reconfigurar el servicio puede requerir administrador.
 - Antes de actuar a ciegas, revisa el estado con `agent_overview`, `list_tasks` o `list_notes`.
 - Antes de razonar sobre tu propio codigo con detalle, usa `self_overview`, `list_files` o `read_text_file` segun haga falta.
 - Antes de editar archivos de codigo, lee primero el archivo actual con `read_text_file`.
@@ -233,11 +328,29 @@ def _print_output(text: str):
 
 
 def build_messages(state):
+    user_name = str(state.get("profile", {}).get("name", "")).strip()
+    user_line = (
+        f"- El usuario actual es {user_name}."
+        if user_name
+        else "- El usuario actual no tiene nombre definido en el perfil."
+    )
+    memory_contract = (
+        "Identidad y memoria compartida:\n"
+        "- Tu nombre es Yarbis; Yarbis es el asistente, no el usuario.\n"
+        f"{user_line}\n"
+        "- Cuando saludes, no uses Yarbis como nombre del usuario salvo que el perfil lo diga explicitamente.\n"
+        "- Interfaz, Telegram y pulso proactivo leen y escriben la misma memoria persistente en state.json.\n"
+        "- El pulso proactivo ejecuta las mismas herramientas del agente para notas, tareas, plan y objetivo cuando hay instruccion explicita del usuario.\n"
+        "- El estado guarda respuestas completas; cuando haya demasiado volumen, resume con criterio en la respuesta en vez de cortar texto.\n"
+        "- Todo aprendizaje estable debe guardarse en perfil, notas, tareas o plan con herramientas.\n"
+        "- Antes de asumir que olvidaste algo, revisa perfil, notas, tareas, plan y autoconocimiento."
+    )
     state_summary = render_state_summary(
         state,
         task_limit=10,
-        note_limit=5,
+        note_limit=10,
         include_runtime=False,
+        include_last_result=False,
     )
     self_summary = render_self_knowledge_summary()
 
@@ -246,6 +359,7 @@ def build_messages(state):
         {
             "role": "system",
             "content": (
+                f"{memory_contract}\n\n"
                 f"Contexto actual del agente:\n{state_summary}\n\n"
                 f"Autoconocimiento de Yarbis:\n{self_summary}"
             ),
@@ -263,6 +377,53 @@ def _record_assistant_message(state, content: str):
     })
     state["last_result"] = content
     save_state(state)
+
+
+def _user_is_named_yarbis(state) -> bool:
+    user_name = str(state.get("profile", {}).get("name", "")).strip()
+    return _normalize_intent_text(user_name) == "yarbis"
+
+
+def _strip_yarbis_addressee_from_greeting_line(line: str) -> str:
+    match = re.match(
+        r"^(\s*(?:hola|buenas|buenos d.as|buenas tardes|buenas noches))\s*,?\s+yarbis\b(.*)$",
+        str(line),
+        flags=re.IGNORECASE,
+    )
+    if not match:
+        return line
+
+    greeting = match.group(1).strip()
+    tail = match.group(2).strip()
+    normalized_tail = _normalize_intent_text(tail)
+    if not normalized_tail:
+        return f"{greeting.capitalize()}."
+
+    if tail[:1] in {".", ",", ":", ";", "!", "?", "¡", "¿"}:
+        tail = tail[1:].strip()
+    while tail and not tail[0].isalnum() and tail[0] not in {"¿", "¡"}:
+        tail = tail[1:].strip()
+
+    if not tail:
+        return f"{greeting.capitalize()}."
+    if tail[0] in {"¿", "¡"}:
+        return f"{greeting.capitalize()}. {tail}"
+    return f"{greeting.capitalize()}. {tail[:1].upper()}{tail[1:]}"
+
+
+def _sanitize_assistant_identity(text: str, state) -> str:
+    rendered = str(text).strip()
+    if not rendered or _user_is_named_yarbis(state):
+        return rendered
+
+    lines = rendered.splitlines()
+    for index, line in enumerate(lines):
+        if not line.strip():
+            continue
+        lines[index] = _strip_yarbis_addressee_from_greeting_line(line)
+        break
+
+    return "\n".join(lines).strip()
 
 
 def _exception_chain(exc: Exception):
@@ -322,7 +483,7 @@ def _handle_empty_response(state):
 
 def _build_waiting_for_user_input_result(state, used_tools: bool = False) -> dict:
     question = state["awaiting_user_input"]["question"]
-    message = "Yarbis esta esperando una respuesta del usuario antes de continuar."
+    message = "Estoy esperando una respuesta del usuario antes de continuar."
     if question:
         message = f"{message}\nPregunta pendiente: {question}"
 
@@ -616,9 +777,22 @@ def _looks_like_non_actionable_prompt(text: str) -> bool:
     )
 
 
-def _should_reject_non_actionable_final(state, text: str, used_tools: bool) -> bool:
-    if used_tools:
+def _should_reject_non_actionable_final(
+    state,
+    text: str,
+    used_tools: bool,
+    action_tools_used: bool = False,
+) -> bool:
+    if used_tools and action_tools_used:
         return False
+
+    if used_tools:
+        if not (_last_user_authorized_action(state) or _last_user_requested_action(state)):
+            return False
+        return (
+            _looks_like_non_actionable_prompt(text)
+            or _looks_like_unverified_action_claim(text)
+        )
 
     if (
         _looks_like_unsolicited_self_intro_or_capabilities(text)
@@ -767,6 +941,7 @@ def run_one_cycle(max_steps=None):
 
     print(f"\n=== CICLO {state['cycle_count']} ===")
     used_tools = False
+    action_tools_used = False
     empty_response_retries = 0
     non_actionable_retries = 0
 
@@ -788,7 +963,7 @@ def run_one_cycle(max_steps=None):
 
         if assistant_message.tool_calls:
             used_tools = True
-            print("Yarbis decidio usar tools.")
+            print("Decidi usar herramientas.")
 
             state["messages"].append({
                 "role": "assistant",
@@ -807,19 +982,25 @@ def run_one_cycle(max_steps=None):
 
             for tool_call in assistant_message.tool_calls:
                 tool_name = tool_call.function.name
-                tool_args = tool_call.function.arguments
+                raw_tool_args = tool_call.function.arguments
+                tool_args, tool_args_error = _normalize_tool_arguments(raw_tool_args)
 
                 print(f"\n> Ejecutando tool: {tool_name}")
-                print(f"> Argumentos: {tool_args}")
+                print(f"> Argumentos: {raw_tool_args}")
 
                 function_to_call = available_functions.get(tool_name)
                 if not function_to_call:
                     tool_output = f"Tool no encontrada: {tool_name}"
+                elif tool_args_error:
+                    tool_output = tool_args_error
                 else:
                     try:
                         tool_output = function_to_call(**tool_args)
                     except Exception as exc:
                         tool_output = f"Error ejecutando {tool_name}: {exc}"
+                    else:
+                        if _tool_call_proves_action(tool_name, tool_output):
+                            action_tools_used = True
 
                 _print_output(f"> Resultado:\n{tool_output}")
 
@@ -856,6 +1037,7 @@ def run_one_cycle(max_steps=None):
                 "status": "empty",
                 "content": final_text,
                 "used_tools": used_tools,
+                "action_tools_used": action_tools_used,
                 "looks_meta": False,
             }
 
@@ -863,6 +1045,7 @@ def run_one_cycle(max_steps=None):
             state,
             final_text,
             used_tools=used_tools,
+            action_tools_used=action_tools_used,
         )
         if (
             non_actionable_final
@@ -884,6 +1067,7 @@ def run_one_cycle(max_steps=None):
         if non_actionable_final:
             final_text = _safe_rejected_final_message(state, final_text)
 
+        final_text = _sanitize_assistant_identity(final_text, state)
         _print_output(f"\nYarbis:\n{final_text}")
 
         pending_question = ""
@@ -901,6 +1085,7 @@ def run_one_cycle(max_steps=None):
             "status": "final",
             "content": final_text,
             "used_tools": used_tools,
+            "action_tools_used": action_tools_used,
             "looks_meta": _looks_like_meta_response(final_text),
             "needs_user_input": _is_waiting_for_user_input(load_state()),
         }
@@ -912,6 +1097,7 @@ def run_one_cycle(max_steps=None):
         "status": "max_steps",
         "content": final_text,
         "used_tools": used_tools,
+        "action_tools_used": action_tools_used,
         "looks_meta": False,
     }
 

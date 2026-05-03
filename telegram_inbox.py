@@ -71,7 +71,7 @@ def _emit_job_started(label: str):
     _emit_event({
         "type": "remote_job_started",
         "label": job_label,
-        "status_text": f"Yarbis esta pensando: {job_label}...",
+        "status_text": f"Estoy pensando: {job_label}...",
     })
 
 
@@ -207,7 +207,7 @@ def _enqueue_deferred_telegram_reply(text: str, chat_id: str) -> str:
 
     return (
         "Recibi tu respuesta por Telegram.\n\n"
-        "Continuidad: Yarbis esta terminando otra operacion. "
+        "Continuidad: estoy terminando otra operacion. "
         "Dejo tu mensaje en cola y lo procesare automaticamente en cuanto quede libre."
     )
 
@@ -373,14 +373,12 @@ def _is_allowed_chat(message: dict) -> bool:
 
 def _trim_for_activity(text: str, limit: int = 180) -> str:
     compact = " ".join(str(text).strip().split())
-    if len(compact) <= limit:
-        return compact
-    return f"{compact[:limit].rstrip()}..."
+    return compact
 
 
 def _incoming_activity_text(text: str) -> str:
     trimmed_text = _trim_for_activity(text)
-    return f"Telegram: recibido '{trimmed_text}'. Yarbis esta pensando..."
+    return f"Telegram: recibido '{trimmed_text}'. Estoy pensando..."
 
 
 def _open_task_count(state: dict) -> int:
@@ -429,7 +427,7 @@ def _extract_final_cycle_output(text: str) -> str:
     lines = []
     for line in cleaned.splitlines():
         stripped = line.strip()
-        if stripped in {"Yarbis decidio usar tools."}:
+        if stripped in {"Yarbis decidio usar tools.", "Decidi usar herramientas."}:
             continue
         if stripped.startswith("> Ejecutando tool:") or stripped.startswith("> Argumentos:"):
             continue

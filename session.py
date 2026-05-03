@@ -31,11 +31,20 @@ from memory import (
 from notifications import (
     get_telegram_settings,
     notify_user_input_required,
+    send_telegram_operation_reply,
     send_notification,
     try_link_telegram_chat,
 )
 from self_knowledge import render_self_knowledge_summary
-from tools import add_task, delete_note, get_note, list_notes, save_note, update_profile
+from tools import (
+    add_task,
+    delete_note,
+    get_note,
+    list_notes,
+    save_note,
+    update_goal as update_goal_tool,
+    update_profile,
+)
 
 SESSION_LOCK = threading.RLock()
 OPERATION_LOCK_FILE = Path(__file__).resolve().parent / ".yarbis_runtime" / "session.lock"
@@ -341,15 +350,32 @@ def run_startup_self_analysis() -> str:
         )
 
 
-def run_self_analysis_with_output() -> str:
+def run_self_analysis_with_output(emit_notifications: bool = True) -> str:
     with SESSION_LOCK:
         message = run_startup_self_analysis()
         state = load_state()
         summary = state.get("self_knowledge", {}).get("summary", "").strip()
         if not summary:
-            return message
+            result = message
+        else:
+            result = f"{message}\n\n{summary}"
 
-        return f"{message}\n\n{summary}"
+    _mirror_telegram_response("Autoanalisis", result, enabled=emit_notifications)
+    return result
+
+
+def _mirror_telegram_response(label: str, content: str, enabled: bool = True) -> bool:
+    if not enabled:
+        return False
+
+    rendered = str(content).strip()
+    if not rendered:
+        return False
+
+    try:
+        return send_telegram_operation_reply(label, rendered)
+    except Exception:
+        return False
 
 
 def _has_open_tasks(state) -> bool:
@@ -361,23 +387,10 @@ def _has_open_tasks(state) -> bool:
 
 def update_goal(new_goal: str) -> str:
     with SESSION_LOCK:
-        cleaned_goal = str(new_goal).strip()
-        if not cleaned_goal:
+        result = update_goal_tool(new_goal)
+        if result.startswith("El objetivo no puede quedar vacio"):
             raise ValueError("El objetivo no puede quedar vacio.")
-
-        state = load_state()
-        state["goal"] = cleaned_goal
-        state["messages"] = []
-        state["tasks"] = []
-        state["current_plan"] = []
-        state["last_result"] = ""
-        clear_pending_user_question(state)
-        state["messages"].append({
-            "role": "user",
-            "content": f"Tu objetivo actual es: {cleaned_goal}",
-        })
-        save_state(state)
-        return "Objetivo actualizado. Contexto operativo reiniciado para el nuevo objetivo."
+        return result
 
 
 def get_status_text() -> str:
@@ -913,23 +926,31 @@ def _capture_operation_output(func, *args, **kwargs) -> tuple[str, object]:
     return str(result).strip(), result
 
 
-def run_cycle_with_output(emit_notifications: bool = True) -> str:
+def run_cycle_with_output(
+    emit_notifications: bool = True,
+    mirror_telegram: bool = True,
+) -> str:
     with session_operation_lock("Ciclo"):
         output, _ = _capture_operation_output(run_one_cycle)
         state = load_state()
+        result = output or "Ciclo ejecutado sin salida visible."
 
-        if emit_notifications and has_pending_user_question(state):
-            notify_user_input_required(
-                state["awaiting_user_input"].get("question", ""),
-                state["awaiting_user_input"].get("reason", ""),
-            )
+    if emit_notifications and mirror_telegram:
+        _mirror_telegram_response("Ciclo", result)
 
-        return output or "Ciclo ejecutado sin salida visible."
+    if emit_notifications and has_pending_user_question(state):
+        notify_user_input_required(
+            state["awaiting_user_input"].get("question", ""),
+            state["awaiting_user_input"].get("reason", ""),
+        )
+
+    return result
 
 
 def recover_unanswered_user_message_with_output(
     emit_notifications: bool = True,
     blocking: bool = True,
+    mirror_telegram: bool = True,
 ) -> str:
     with session_operation_lock("Respuesta recuperada", blocking=blocking):
         state = load_state()
@@ -938,17 +959,25 @@ def recover_unanswered_user_message_with_output(
 
         output, _ = _capture_operation_output(run_one_cycle)
         state = load_state()
+        result = output or "Respuesta pendiente recuperada sin salida visible."
 
-        if emit_notifications and has_pending_user_question(state):
-            notify_user_input_required(
-                state["awaiting_user_input"].get("question", ""),
-                state["awaiting_user_input"].get("reason", ""),
-            )
+    if emit_notifications and mirror_telegram:
+        _mirror_telegram_response("Respuesta recuperada", result)
 
-        return output or "Respuesta pendiente recuperada sin salida visible."
+    if emit_notifications and has_pending_user_question(state):
+        notify_user_input_required(
+            state["awaiting_user_input"].get("question", ""),
+            state["awaiting_user_input"].get("reason", ""),
+        )
+
+    return result
 
 
-def run_auto_with_output(cycles=None, emit_notifications: bool = True) -> str:
+def run_auto_with_output(
+    cycles=None,
+    emit_notifications: bool = True,
+    mirror_telegram: bool = True,
+) -> str:
     with session_operation_lock("Modo autonomo"):
         output, executed_cycles = _capture_operation_output(
             run_autonomous_session,
@@ -956,26 +985,32 @@ def run_auto_with_output(cycles=None, emit_notifications: bool = True) -> str:
         )
         state = load_state()
 
-        if emit_notifications and has_pending_user_question(state):
-            notify_user_input_required(
-                state["awaiting_user_input"].get("question", ""),
-                state["awaiting_user_input"].get("reason", ""),
-            )
-        elif emit_notifications and executed_cycles > 0 and not _has_open_tasks(state):
-            send_notification(
-                "Yarbis termino el trabajo actual",
-                state.get("last_result", "").strip() or "No quedan tareas abiertas.",
-            )
-        elif emit_notifications and executed_cycles > 0:
-            send_notification(
-                "Yarbis termino el modo autonomo",
-                f"Se ejecutaron {executed_cycles} ciclo(s).",
-            )
-
         summary = f"Modo autonomo ejecutado por {executed_cycles} ciclo(s)."
         if not output:
-            return summary
-        return f"{output}\n\n{summary}"
+            result = summary
+        else:
+            result = f"{output}\n\n{summary}"
+
+    if emit_notifications and mirror_telegram:
+        _mirror_telegram_response("Modo autonomo", result)
+
+    if emit_notifications and has_pending_user_question(state):
+        notify_user_input_required(
+            state["awaiting_user_input"].get("question", ""),
+            state["awaiting_user_input"].get("reason", ""),
+        )
+    elif emit_notifications and executed_cycles > 0 and not _has_open_tasks(state):
+        send_notification(
+            "Yarbis termino el trabajo actual",
+            state.get("last_result", "").strip() or "No quedan tareas abiertas.",
+        )
+    elif emit_notifications and executed_cycles > 0:
+        send_notification(
+            "Yarbis termino el modo autonomo",
+            f"Se ejecutaron {executed_cycles} ciclo(s).",
+        )
+
+    return result
 
 
 def submit_user_reply(
@@ -989,10 +1024,17 @@ def submit_user_reply(
             raise ValueError("La respuesta no puede quedar vacia.")
 
         if is_self_analysis_request(cleaned_reply):
-            return run_self_analysis_with_output()
+            result = run_self_analysis_with_output(emit_notifications=False)
+            _mirror_telegram_response("Autoanalisis", result, enabled=emit_notifications)
+            return result
 
         note_result = handle_note_text_request(cleaned_reply)
         if note_result is not None:
+            _mirror_telegram_response(
+                note_request_label(cleaned_reply) or "Notas",
+                note_result,
+                enabled=emit_notifications,
+            )
             return note_result
 
         state = load_state()
@@ -1014,11 +1056,19 @@ def submit_user_reply(
             auto_output = run_auto_with_output(
                 cycles=auto_cycles_default,
                 emit_notifications=emit_notifications,
+                mirror_telegram=False,
             )
-            return (
+            result = (
                 "Respuesta guardada. Retomando el modo autonomo con esta informacion.\n\n"
                 f"{auto_output}"
             )
+            _mirror_telegram_response("Respuesta", result, enabled=emit_notifications)
+            return result
 
-        cycle_output = run_cycle_with_output(emit_notifications=emit_notifications)
-        return f"Respuesta guardada. Ejecutando un ciclo con esta informacion.\n\n{cycle_output}"
+        cycle_output = run_cycle_with_output(
+            emit_notifications=emit_notifications,
+            mirror_telegram=False,
+        )
+        result = f"Respuesta guardada. Ejecutando un ciclo con esta informacion.\n\n{cycle_output}"
+        _mirror_telegram_response("Respuesta", result, enabled=emit_notifications)
+        return result

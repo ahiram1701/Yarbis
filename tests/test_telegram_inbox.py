@@ -92,6 +92,16 @@ class TelegramInboxTestCase(unittest.TestCase):
         self.assertIn("Respuesta procesada.", sent_text)
         self.assertEqual(send_mock.call_args.kwargs["chat_id"], "123")
 
+    def test_activity_text_keeps_full_telegram_message(self):
+        long_text = "mensaje largo " * 80
+
+        activity_text = telegram_inbox._incoming_activity_text(long_text)
+        processed_text = telegram_inbox._trim_for_activity(long_text)
+
+        self.assertIn("mensaje largo", activity_text)
+        self.assertIn(long_text.strip(), processed_text)
+        self.assertNotIn("...", processed_text)
+
     def test_process_telegram_update_defers_free_text_when_session_is_busy(self):
         state_path = TEST_RUNTIME_DIR / "telegram_busy_reply_state.json"
         queue_path = TEST_RUNTIME_DIR / f"telegram_busy_reply_queue_{id(self)}.json"
@@ -187,7 +197,7 @@ class TelegramInboxTestCase(unittest.TestCase):
         raw_output = (
             "=== CICLO 7 ===\n"
             "--- Paso 1 ---\n"
-            "Yarbis decidio usar tools.\n"
+            "Decidi usar herramientas.\n"
             "> Ejecutando tool: list_tasks\n"
             "> Argumentos: {}\n"
             "\nYarbis:\n"

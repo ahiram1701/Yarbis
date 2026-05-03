@@ -5,7 +5,10 @@ from pathlib import Path
 
 STATE_FILE = Path("state.json")
 STATE_LOCK = threading.RLock()
-DEFAULT_GOAL = "Ayudar al usuario de forma autonoma con tareas locales."
+DEFAULT_GOAL = ""
+LEGACY_DEFAULT_GOALS = {
+    "Ayudar al usuario de forma autonoma con tareas locales.",
+}
 MAX_MESSAGES = 40
 MAX_MESSAGE_CHARS = 4_000
 MAX_LAST_RESULT_CHARS = 4_000
@@ -145,12 +148,7 @@ def default_state():
 
 
 def _truncate_text(value, limit: int) -> str:
-    text = str(value)
-    if len(text) <= limit:
-        return text
-
-    omitted = len(text) - limit
-    return f"{text[:limit]}\n\n...[truncado {omitted} caracteres]"
+    return str(value)
 
 
 def _normalize_message(message):
@@ -188,16 +186,13 @@ def _normalize_string_list(value, item_limit: int, char_limit: int) -> list[str]
         if not item:
             continue
 
-        truncated = _truncate_text(item, char_limit)
-        lowered = truncated.casefold()
+        normalized_item = _truncate_text(item, char_limit)
+        lowered = normalized_item.casefold()
         if lowered in seen:
             continue
 
-        normalized.append(truncated)
+        normalized.append(normalized_item)
         seen.add(lowered)
-
-        if len(normalized) >= item_limit:
-            break
 
     return normalized
 
@@ -703,15 +698,17 @@ def normalize_state(state):
     if not isinstance(state, dict):
         return normalized
 
-    goal = state.get("goal", normalized["goal"])
-    normalized["goal"] = str(goal).strip() or DEFAULT_GOAL
+    goal = str(state.get("goal", normalized["goal"])).strip()
+    if goal in LEGACY_DEFAULT_GOALS:
+        goal = DEFAULT_GOAL
+    normalized["goal"] = goal
 
     try:
         normalized["cycle_count"] = max(0, int(state.get("cycle_count", 0)))
     except (TypeError, ValueError):
         normalized["cycle_count"] = 0
 
-    normalized["last_result"] = _truncate_text(state.get("last_result", ""), MAX_LAST_RESULT_CHARS)
+    normalized["last_result"] = str(state.get("last_result", ""))
     normalized["profile"] = _normalize_profile(state.get("profile", {}))
     normalized["current_plan"] = _normalize_plan(state.get("current_plan", []))
     normalized["awaiting_user_input"] = _normalize_awaiting_user_input(
@@ -728,21 +725,21 @@ def normalize_state(state):
 
     raw_messages = state.get("messages", [])
     if isinstance(raw_messages, list):
-        for message in raw_messages[-MAX_MESSAGES:]:
+        for message in raw_messages:
             normalized_message = _normalize_message(message)
             if normalized_message:
                 normalized["messages"].append(normalized_message)
 
     raw_notes = state.get("notes", [])
     if isinstance(raw_notes, list):
-        for note in raw_notes[-MAX_NOTES:]:
+        for note in raw_notes:
             normalized_note = _normalize_note(note)
             if normalized_note:
                 normalized["notes"].append(normalized_note)
 
     raw_tasks = state.get("tasks", [])
     if isinstance(raw_tasks, list):
-        for task in raw_tasks[-MAX_TASKS:]:
+        for task in raw_tasks:
             normalized_task = _normalize_task(task)
             if normalized_task:
                 normalized["tasks"].append(normalized_task)
@@ -755,6 +752,7 @@ def render_state_summary(
     task_limit: int = 8,
     note_limit: int = 3,
     include_runtime: bool = True,
+    include_last_result: bool = True,
 ) -> str:
     normalized = normalize_state(state)
     profile = normalized["profile"]
@@ -766,6 +764,11 @@ def render_state_summary(
 
     lines = [
         f"Objetivo: {normalized['goal']}",
+        (
+            "Identidad: "
+            "asistente=Yarbis; "
+            f"usuario={profile['name'] or 'sin nombre definido'}"
+        ),
         f"Ciclos ejecutados: {normalized['cycle_count']}",
         (
             "Autonomia: "
@@ -784,15 +787,19 @@ def render_state_summary(
             f"{normalized['service']['proactive']['interval_seconds']}s, "
             f"espera inicial {normalized['service']['proactive']['start_delay_seconds']}s"
         ),
-        f"Ultimo resultado: {normalized['last_result'] or 'Sin resultados previos.'}",
     ]
+
+    if include_last_result:
+        lines.append(
+            f"Ultimo resultado: {normalized['last_result'] or 'Sin resultados previos.'}"
+        )
 
     if include_runtime:
         thinking = normalized["runtime"]["thinking"]
         if thinking["active"]:
             started_at = f" desde {thinking['started_at']}" if thinking["started_at"] else ""
             lines.append(
-                f"Estado operativo: Yarbis esta pensando en {thinking['label']}{started_at}."
+                f"Estado operativo: estoy pensando en {thinking['label']}{started_at}."
             )
         else:
             lines.append("Estado operativo: listo.")

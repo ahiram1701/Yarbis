@@ -100,6 +100,16 @@ class AgentTestCase(unittest.TestCase):
 
         self.assertEqual(messages[0]["role"], "system")
         self.assertIn("agente inteligente personal", messages[0]["content"])
+        self.assertIn("Yarbis eres tu, el asistente", messages[0]["content"])
+        self.assertIn("resume con criterio", messages[0]["content"])
+        self.assertIn("Tu nombre es Yarbis", messages[1]["content"])
+        self.assertIn("Yarbis es el asistente, no el usuario", messages[1]["content"])
+        self.assertIn("no uses Yarbis como nombre del usuario", messages[1]["content"])
+        self.assertIn("Interfaz, Telegram y pulso proactivo", messages[1]["content"])
+        self.assertIn("mismas herramientas del agente", messages[1]["content"])
+        self.assertIn("state.json", messages[1]["content"])
+        self.assertIn("respuestas completas", messages[1]["content"])
+        self.assertIn("Todo aprendizaje estable", messages[1]["content"])
         self.assertIn("Ahiram", messages[1]["content"])
         self.assertIn("Definir prioridades", messages[1]["content"])
         self.assertIn("Internet: modo=auto", messages[1]["content"])
@@ -108,6 +118,47 @@ class AgentTestCase(unittest.TestCase):
         self.assertIn("AMD64", messages[0]["content"])
         self.assertIn("no procesador AMD", messages[0]["content"])
 
+    def test_run_one_cycle_does_not_address_unknown_user_as_yarbis(self):
+        state_path = TEST_RUNTIME_DIR / "agent_identity_guard_state.json"
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+
+        final_response = SimpleNamespace(
+            message=SimpleNamespace(
+                content="Hola, Yarbis. En que puedo ayudarte hoy?",
+                tool_calls=[],
+            )
+        )
+
+        with patch.object(memory, "STATE_FILE", state_path):
+            memory.save_state(memory.default_state())
+            with patch.object(agent.client, "chat", return_value=final_response):
+                result = agent.run_one_cycle(max_steps=1)
+                state = memory.load_state()
+
+        self.assertEqual(result["status"], "final")
+        self.assertEqual(result["content"], "Hola. En que puedo ayudarte hoy?")
+        self.assertNotIn("Hola, Yarbis", state["last_result"])
+
+    def test_identity_guard_preserves_explicit_yarbis_user_name(self):
+        state = memory.normalize_state({
+            "profile": {"name": "Yarbis"},
+        })
+
+        result = agent._sanitize_assistant_identity(
+            "Hola, Yarbis. En que puedo ayudarte hoy?",
+            state,
+        )
+
+        self.assertEqual(result, "Hola, Yarbis. En que puedo ayudarte hoy?")
+
+    def test_identity_guard_handles_other_greetings(self):
+        result = agent._sanitize_assistant_identity(
+            "Buenos dias, Yarbis! Listo para ayudarte.",
+            memory.default_state(),
+        )
+
+        self.assertEqual(result, "Buenos dias. Listo para ayudarte.")
+
     def test_web_tools_are_registered(self):
         self.assertIn("web_search", agent.available_functions)
         self.assertIn("fetch_web_page", agent.available_functions)
@@ -115,6 +166,7 @@ class AgentTestCase(unittest.TestCase):
         self.assertIn("self_overview", agent.available_functions)
         self.assertIn("get_note", agent.available_functions)
         self.assertIn("delete_note", agent.available_functions)
+        self.assertIn("update_goal", agent.available_functions)
 
     def test_run_one_cycle_persists_cycle_before_tools(self):
         state_path = TEST_RUNTIME_DIR / "agent_tool_cycle_state.json"
@@ -174,6 +226,69 @@ class AgentTestCase(unittest.TestCase):
         self.assertEqual(len(state["tasks"]), 1)
         self.assertEqual(state["tasks"][0]["title"], "Pedir briefing")
         self.assertEqual(state["tasks"][0]["priority"], "alta")
+
+    def test_run_one_cycle_accepts_json_string_tool_arguments(self):
+        state_path = TEST_RUNTIME_DIR / "agent_json_tool_args_state.json"
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+
+        tool_call = SimpleNamespace(
+            function=SimpleNamespace(
+                name="add_task",
+                arguments=(
+                    '{"title":"Pedir briefing","details":"Definir objetivo",'
+                    '"priority":"alta"}'
+                ),
+            )
+        )
+        tool_response = SimpleNamespace(
+            message=SimpleNamespace(content="", tool_calls=[tool_call])
+        )
+        final_response = SimpleNamespace(
+            message=SimpleNamespace(content="Tarea registrada", tool_calls=[])
+        )
+
+        with patch.object(memory, "STATE_FILE", state_path):
+            memory.save_state(memory.default_state())
+            with patch.object(agent.client, "chat", side_effect=[tool_response, final_response]):
+                result = agent.run_one_cycle(max_steps=2)
+                state = memory.load_state()
+
+        self.assertEqual(result["status"], "final")
+        self.assertTrue(result["action_tools_used"])
+        self.assertEqual(len(state["tasks"]), 1)
+        self.assertEqual(state["tasks"][0]["title"], "Pedir briefing")
+
+    def test_run_one_cycle_rejects_action_claim_after_read_only_tool(self):
+        state_path = TEST_RUNTIME_DIR / "agent_read_only_action_claim_state.json"
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+
+        seeded_state = memory.normalize_state({
+            "messages": [
+                {"role": "user", "content": "Implementa una mejora pequena."},
+            ],
+        })
+        tool_call = SimpleNamespace(
+            function=SimpleNamespace(name="agent_overview", arguments={})
+        )
+        tool_response = SimpleNamespace(
+            message=SimpleNamespace(content="", tool_calls=[tool_call])
+        )
+        final_response = SimpleNamespace(
+            message=SimpleNamespace(
+                content="Implemente una mejora pequena en el codigo.",
+                tool_calls=[],
+            )
+        )
+
+        with patch.object(memory, "STATE_FILE", state_path):
+            memory.save_state(seeded_state)
+            with patch.object(agent.client, "chat", side_effect=[tool_response, final_response]):
+                result = agent.run_one_cycle(max_steps=2)
+
+        self.assertEqual(result["status"], "final")
+        self.assertFalse(result["action_tools_used"])
+        self.assertIn("No complete una accion verificable", result["content"])
+        self.assertNotIn("Implemente", result["content"])
 
     def test_run_one_cycle_stops_after_requesting_user_input(self):
         state_path = TEST_RUNTIME_DIR / "agent_request_input_state.json"

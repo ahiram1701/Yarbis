@@ -7,6 +7,7 @@ from pathlib import Path
 WORKSPACE_ROOT = Path(__file__).resolve().parent
 os.chdir(WORKSPACE_ROOT)
 
+import activity
 from service_manager import LOG_FILE, PID_FILE, RUNTIME_DIR, STOP_FILE
 from memory import (
     DEFAULT_SERVICE_PROACTIVE_CYCLES,
@@ -46,9 +47,11 @@ SERVICE_LOOP_SLEEP_SECONDS = 1.0
 
 PROACTIVE_TICK_MESSAGE = (
     "Pulso proactivo 24/7 del servicio: revisa objetivo, perfil, notas, tareas "
-    "y autoconocimiento. Avanza un paso util y verificable si existe. Si algo "
-    "impide avanzar, pide ayuda con request_user_input. Si no hay nada accionable, "
-    "deja una salida breve sin inventar trabajo."
+    "y autoconocimiento usando las herramientas disponibles del agente. Avanza "
+    "un paso util y verificable si existe. Si el usuario pidio explicitamente "
+    "cambiar el objetivo principal, usa update_goal. Si algo impide avanzar, pide "
+    "ayuda con request_user_input. Si no hay nada accionable, deja una salida breve "
+    "sin inventar trabajo."
 )
 
 
@@ -62,8 +65,14 @@ def _log(message: object):
     if not rendered:
         return
 
+    timestamp = _timestamp()
     with open(LOG_FILE, "a", encoding="utf-8") as log_file:
-        log_file.write(f"[{_timestamp()}] {rendered}\n")
+        log_file.write(f"[{timestamp}] {rendered}\n")
+
+    try:
+        activity.append_activity("Servicio", rendered, timestamp=timestamp)
+    except Exception:
+        pass
 
 
 def _write_pid():
@@ -206,7 +215,7 @@ def _proactive_waiting_for_user_message(state: dict) -> str:
     awaiting_user_input = state.get("awaiting_user_input", {})
     question = str(awaiting_user_input.get("question", "")).strip()
     return (
-        "Pulso proactivo omitido: Yarbis espera respuesta del usuario."
+        "Pulso proactivo omitido: esperando respuesta del usuario."
         + (f"\nPregunta pendiente: {question}" if question else "")
     )
 

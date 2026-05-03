@@ -7,6 +7,7 @@ import tkinter as tk
 from datetime import datetime
 from tkinter import messagebox, simpledialog, ttk
 
+import activity
 from memory import (
     DEFAULT_OLLAMA_MODEL,
     DEFAULT_OLLAMA_TIMEOUT_SECONDS,
@@ -966,6 +967,7 @@ class YarbisDesktop(tk.Tk):
         self._action_buttons = []
         self._view_has_pending_question = False
         self._last_summary_text = ""
+        self._last_activity_text = ""
         self._local_telegram_polling = False
 
         self._build_ui()
@@ -1518,18 +1520,53 @@ class YarbisDesktop(tk.Tk):
         widget.insert("1.0", content)
         widget.configure(state="disabled")
 
-    def _append_activity(self, title: str, content: str):
-        timestamp = datetime.now().strftime("%H:%M:%S")
+    def _activity_should_follow_end(self) -> bool:
+        try:
+            return self.activity_text.yview()[1] >= 0.98
+        except tk.TclError:
+            return True
+
+    def _refresh_activity_view(self, force_scroll: bool = False):
+        content = activity.read_activity_log()
+        if content == self._last_activity_text:
+            return
+
+        should_scroll = force_scroll or self._activity_should_follow_end()
+        try:
+            previous_view = self.activity_text.yview()[0]
+        except tk.TclError:
+            previous_view = 1.0
+
+        self.activity_text.configure(state="normal")
+        self.activity_text.delete("1.0", "end")
+        self.activity_text.insert("1.0", content)
+        if should_scroll:
+            self.activity_text.see("end")
+        else:
+            self.activity_text.yview_moveto(previous_view)
+        self.activity_text.configure(state="disabled")
+        self._last_activity_text = content
+
+    def _append_activity_fallback(self, title: str, content: str):
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         rendered = f"[{timestamp}] {title}\n{content.strip() or 'Sin salida adicional.'}\n\n"
         self.activity_text.configure(state="normal")
         self.activity_text.insert("end", rendered)
         self.activity_text.see("end")
         self.activity_text.configure(state="disabled")
+        self._last_activity_text += rendered
+
+    def _append_activity(self, title: str, content: str):
+        try:
+            activity.append_activity(title, content)
+            self._refresh_activity_view(force_scroll=True)
+        except Exception:  # pragma: no cover - respaldo visual si falla el disco
+            self._append_activity_fallback(title, str(content))
 
     @staticmethod
     def _thinking_status_text(label: str) -> str:
         safe_label = str(label).strip() or "Operacion"
-        return f"Yarbis esta pensando: {safe_label}..."
+        return f"Estoy pensando: {safe_label}..."
 
     @staticmethod
     def _format_thinking_started_at(value: str) -> str:
@@ -1638,6 +1675,7 @@ class YarbisDesktop(tk.Tk):
         if summary_text != self._last_summary_text:
             self._set_text(self.summary_text, summary_text)
             self._last_summary_text = summary_text
+        self._refresh_activity_view()
 
     def _sync_state_view(self):
         self.refresh_state_view()
@@ -1686,6 +1724,7 @@ class YarbisDesktop(tk.Tk):
             return
 
         self._set_busy(True, self._thinking_status_text(label))
+        self._append_activity(f"{label} iniciado", "Operacion en curso.")
 
         def worker():
             try:
@@ -1707,6 +1746,7 @@ class YarbisDesktop(tk.Tk):
                     self.refresh_state_view()
                 elif kind == "remote_start":
                     self._set_busy(True, str(payload), source="remote")
+                    self._append_activity(f"{label} iniciado", str(payload))
                 elif kind == "remote_success":
                     self._set_busy(False, source="remote")
                     self._append_activity(label, str(payload))
@@ -1980,6 +2020,8 @@ class YarbisDesktop(tk.Tk):
         self._start_background_job("Respuesta", submit_user_reply, reply_text)
 
     def _clear_activity(self):
+        activity.clear_activity_log()
+        self._last_activity_text = ""
         self._set_text(self.activity_text, "")
 
     def _handle_telegram_event(self, message):

@@ -17,14 +17,14 @@ class ToolsTestCase(unittest.TestCase):
         self.runtime_dir.mkdir(parents=True, exist_ok=True)
         self.checkpoints_dir = self.runtime_dir / ".yarbis_checkpoints"
 
-    def test_read_text_file_truncates_large_content(self):
+    def test_read_text_file_returns_large_content_complete(self):
         file_path = self.runtime_dir / "large.txt"
-        file_path.write_text("a" * (tools.MAX_READ_BYTES + 25), encoding="utf-8")
+        content = "a" * (tools.MAX_READ_BYTES + 25)
+        file_path.write_text(content, encoding="utf-8")
 
         result = tools.read_text_file(file_path.relative_to(tools.WORKSPACE_ROOT).as_posix())
 
-        self.assertIn("Contenido truncado", result)
-        self.assertIn("large.txt", result)
+        self.assertEqual(result, content)
 
     def test_write_text_file_blocks_paths_outside_workspace(self):
         result = tools.write_text_file("../outside.txt", "hola")
@@ -132,19 +132,26 @@ class ToolsTestCase(unittest.TestCase):
                 status="done",
                 result="Plan semanal definido",
             )
+            goal_result = tools.update_goal("Lanzar asistente local")
             overview = tools.agent_overview()
             done_tasks = tools.list_tasks(status="done")
             personal_notes = tools.list_notes(category="personal")
             delete_note_result = tools.delete_note(note_id)
             notes_after_delete = tools.list_notes(category="personal")
+            state = memory.load_state()
 
         self.assertIn("Perfil actualizado", profile_result)
         self.assertIn("Tarea creada", task_result)
         self.assertIn("Nota guardada", note_result)
         self.assertIn("Revisar pendientes cada manana", full_note)
         self.assertIn("Nuevo estado: done", status_result)
-        self.assertIn("Ahiram", overview)
-        self.assertIn("Plan semanal definido", done_tasks)
+        self.assertIn("Objetivo actualizado", goal_result)
+        self.assertIn("Lanzar asistente local", overview)
+        self.assertEqual(state["goal"], "Lanzar asistente local")
+        self.assertEqual(state["tasks"], [])
+        self.assertEqual(state["current_plan"], [])
+        self.assertFalse(state["awaiting_user_input"]["pending"])
+        self.assertIn("No hay tareas", done_tasks)
         self.assertIn("Rutina", personal_notes)
         self.assertIn("Nota eliminada", delete_note_result)
         self.assertIn("No hay notas", notes_after_delete)

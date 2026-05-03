@@ -238,6 +238,82 @@ class SessionTestCase(unittest.TestCase):
             "Falta contexto",
         )
 
+    def test_run_cycle_with_output_mirrors_local_response_to_telegram(self):
+        state_path = TEST_RUNTIME_DIR / "session_telegram_mirror_state.json"
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+
+        seeded_state = memory.normalize_state({
+            "notifications": {
+                "enabled": True,
+                "channels": ["telegram"],
+                "telegram": {
+                    "bot_token": "bot-123",
+                    "chat_id": "123",
+                },
+            },
+        })
+
+        with patch.object(memory, "STATE_FILE", state_path):
+            memory.save_state(seeded_state)
+            with patch.object(
+                session,
+                "_capture_operation_output",
+                return_value=("Yarbis:\nAvance listo.", {"status": "final"}),
+            ):
+                with patch.object(session, "send_telegram_operation_reply", return_value=True) as send_mock:
+                    result = session.run_cycle_with_output()
+
+        self.assertEqual(result, "Yarbis:\nAvance listo.")
+        send_mock.assert_called_once_with("Ciclo", "Yarbis:\nAvance listo.")
+
+    def test_run_cycle_with_output_skips_telegram_mirror_when_notifications_are_disabled(self):
+        state_path = TEST_RUNTIME_DIR / "session_telegram_mirror_disabled_state.json"
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+
+        with patch.object(memory, "STATE_FILE", state_path):
+            memory.save_state(memory.default_state())
+            with patch.object(
+                session,
+                "_capture_operation_output",
+                return_value=("Yarbis:\nAvance listo.", {"status": "final"}),
+            ):
+                with patch.object(session, "send_telegram_operation_reply", return_value=True) as send_mock:
+                    result = session.run_cycle_with_output(emit_notifications=False)
+
+        self.assertEqual(result, "Yarbis:\nAvance listo.")
+        send_mock.assert_not_called()
+
+    def test_submit_user_reply_mirrors_combined_local_response_once(self):
+        state_path = TEST_RUNTIME_DIR / "session_reply_telegram_mirror_state.json"
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+
+        seeded_state = memory.normalize_state({
+            "notifications": {
+                "enabled": True,
+                "channels": ["telegram"],
+                "telegram": {
+                    "bot_token": "bot-123",
+                    "chat_id": "123",
+                },
+            },
+        })
+
+        with patch.object(memory, "STATE_FILE", state_path):
+            memory.save_state(seeded_state)
+            with patch.object(session, "run_cycle_with_output", return_value="Ciclo ejecutado.") as cycle_mock:
+                with patch.object(session, "send_telegram_operation_reply", return_value=True) as send_mock:
+                    result = session.submit_user_reply("Te comparto mas contexto")
+
+        cycle_mock.assert_called_once_with(
+            emit_notifications=True,
+            mirror_telegram=False,
+        )
+        send_mock.assert_called_once()
+        self.assertEqual(send_mock.call_args.args[0], "Respuesta")
+        self.assertIn("Respuesta guardada", send_mock.call_args.args[1])
+        self.assertIn("Ciclo ejecutado.", send_mock.call_args.args[1])
+        self.assertEqual(result, send_mock.call_args.args[1])
+
     def test_run_cycle_marks_runtime_thinking_while_running(self):
         state_path = TEST_RUNTIME_DIR / "session_thinking_state.json"
         state_path.parent.mkdir(parents=True, exist_ok=True)

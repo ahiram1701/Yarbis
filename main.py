@@ -68,7 +68,7 @@ def main():
             if cmd == "run":
                 state = load_state()
                 if has_pending_user_question(state):
-                    print("Yarbis esta esperando tu respuesta antes de continuar.")
+                    print("Estoy esperando tu respuesta antes de continuar.")
                     print(f"Pregunta pendiente: {state['awaiting_user_input']['question']}")
                     print("Usa `reply` o escribe la respuesta directamente en la consola.")
                     continue
@@ -197,7 +197,7 @@ def main():
             if cmd == "auto":
                 state = load_state()
                 if has_pending_user_question(state):
-                    print("Yarbis esta esperando tu respuesta antes de continuar.")
+                    print("Estoy esperando tu respuesta antes de continuar.")
                     print(f"Pregunta pendiente: {state['awaiting_user_input']['question']}")
                     print("Usa `reply` o escribe la respuesta directamente en la consola.")
                     continue

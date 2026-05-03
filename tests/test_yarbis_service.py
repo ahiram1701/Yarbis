@@ -270,7 +270,7 @@ class YarbisServiceTestCase(unittest.TestCase):
                 "fields": ["prioridad"],
             }
             memory.save_state(state)
-            return "Yarbis esta esperando una respuesta del usuario."
+            return "Estoy esperando una respuesta del usuario."
 
         with patch.object(memory, "STATE_FILE", state_path):
             memory.save_state(memory.default_state())

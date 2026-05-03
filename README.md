@@ -90,6 +90,7 @@ Cuando esta activo:
 - el host nativo inicia `.venv\Scripts\python.exe yarbis_service.py` como proceso hijo
 - escribe su PID en `.yarbis_runtime/service.pid`
 - registra actividad y errores en `.yarbis_runtime/service.log`
+- publica actividad visible para la interfaz en `.yarbis_runtime/activity.log`
 - mantiene activo el inbox de Telegram si Telegram esta configurado
 - ejecuta un pulso proactivo periodico para avanzar el objetivo actual sin que tengas que abrir la app
 - recupera al arrancar respuestas del usuario que hayan quedado guardadas pero sin ciclo completado
@@ -133,7 +134,7 @@ Si escribes texto libre mientras hay una pregunta pendiente, Yarbis lo toma como
 
 ## Flujo recomendado
 
-1. Define un objetivo claro con `goal` o desde la interfaz.
+1. Define un objetivo claro con `goal` o desde la interfaz. El objetivo inicial viene vacio por defecto.
 2. Carga contexto personal con `profile`.
 3. Guarda notas o tareas cuando haya informacion estable.
 4. Ejecuta `run` para un paso controlado o `auto` para dejar avanzar varios ciclos.
@@ -150,6 +151,8 @@ Al cambiar `goal`, Yarbis reinicia el contexto operativo del objetivo:
 ## Telegram
 
 Telegram funciona como canal de notificaciones y tambien como inbox remoto.
+Cuando Telegram esta activado y vinculado, las respuestas generadas desde la app o la terminal
+tambien se copian al chat para que puedas seguir el hilo remoto sin abrir Yarbis.
 
 Para configurarlo desde la interfaz:
 

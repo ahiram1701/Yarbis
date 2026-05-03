@@ -83,12 +83,7 @@ def _validate_write_path(path: Path) -> str | None:
 
 
 def _truncate_output(text: str, limit: int) -> str:
-    rendered = str(text)
-    if len(rendered) <= limit:
-        return rendered
-
-    omitted = len(rendered) - limit
-    return f"{rendered[:limit]}\n\n...[truncado {omitted} caracteres]"
+    return str(text)
 
 
 def _new_id(prefix: str) -> str:
@@ -194,13 +189,7 @@ def _render_diff_preview(path: Path, previous_content: str, new_content: str) ->
     if not diff_lines:
         return "Sin cambios detectados."
 
-    preview_lines = diff_lines[:MAX_DIFF_LINES]
-    if len(diff_lines) > MAX_DIFF_LINES:
-        preview_lines.append(
-            f"... diff truncado, {len(diff_lines) - MAX_DIFF_LINES} lineas mas."
-        )
-
-    return "\n".join(preview_lines)
+    return "\n".join(diff_lines)
 
 
 def list_files(path: str = ".") -> str:
@@ -234,12 +223,9 @@ def list_files(path: str = ".") -> str:
         return "La carpeta esta vacia."
 
     rendered = []
-    for item in items[:MAX_LIST_ITEMS]:
+    for item in items:
         kind = "DIR " if item.is_dir() else "FILE"
         rendered.append(f"[{kind}] {item.relative_to(WORKSPACE_ROOT).as_posix()}")
-
-    if len(items) > MAX_LIST_ITEMS:
-        rendered.append(f"... y {len(items) - MAX_LIST_ITEMS} elementos mas.")
 
     return "\n".join(rendered)
 
@@ -267,14 +253,7 @@ def read_text_file(path: str) -> str:
     except OSError as exc:
         return f"Error leyendo archivo: {exc}"
 
-    truncated = raw_content[:MAX_READ_BYTES].decode("utf-8", errors="replace")
-    if len(raw_content) > MAX_READ_BYTES:
-        return (
-            f"Contenido truncado de {file_path.relative_to(WORKSPACE_ROOT).as_posix()} "
-            f"a {MAX_READ_BYTES} bytes de {len(raw_content)}.\n{truncated}"
-        )
-
-    return truncated
+    return raw_content.decode("utf-8", errors="replace")
 
 
 def write_text_file(path: str, content: str) -> str:
@@ -338,10 +317,6 @@ def write_text_file(path: str, content: str) -> str:
             "Puedes restaurar el checkpoint si hace falta."
         )
 
-    preview = content[:MAX_WRITE_PREVIEW_CHARS]
-    if len(content) > MAX_WRITE_PREVIEW_CHARS:
-        preview += "\n... (vista previa truncada)"
-
     diff_preview = _render_diff_preview(file_path, previous_content, content)
     operation = "Archivo actualizado" if existed_before else "Archivo creado"
 
@@ -350,7 +325,7 @@ def write_text_file(path: str, content: str) -> str:
         f"Checkpoint previo: {checkpoint_id}\n"
         f"Caracteres escritos: {len(content)}\n"
         "Vista previa:\n"
-        f"{preview}\n"
+        f"{content}\n"
         "Diff:\n"
         f"{diff_preview}\n"
         "Siguiente paso recomendado: ejecuta `run_project_tests` si tocaste codigo o tests."
@@ -746,7 +721,7 @@ def fetch_web_page(url: str, max_chars: int = 0) -> str:
         "Pagina web obtenida.",
         f"URL final: {page['url']}",
         f"Tipo: {page.get('content_type', '-')}",
-        f"Contenido truncado: {'si' if page.get('truncated') else 'no'}",
+        f"Contenido completo: {'no' if page.get('truncated') else 'si'}",
     ]
     if page.get("title"):
         lines.append(f"Titulo: {page['title']}")
@@ -788,6 +763,40 @@ def agent_overview() -> str:
     """
     state = load_state()
     return render_state_summary(state, include_runtime=False)
+
+
+def update_goal(new_goal: str) -> str:
+    """
+    Cambia el objetivo principal cuando el usuario lo pide explicitamente.
+
+    Args:
+        new_goal (str): Nuevo objetivo operativo del usuario.
+
+    Returns:
+        str: Confirmacion del objetivo actualizado.
+    """
+    cleaned_goal = str(new_goal).strip()
+    if not cleaned_goal:
+        return "El objetivo no puede quedar vacio."
+
+    state = load_state()
+    state["goal"] = cleaned_goal
+    state["messages"] = []
+    state["tasks"] = []
+    state["current_plan"] = []
+    state["last_result"] = ""
+    state["awaiting_user_input"] = {
+        "pending": False,
+        "question": "",
+        "reason": "",
+        "fields": [],
+    }
+    state["messages"].append({
+        "role": "user",
+        "content": f"Tu objetivo actual es: {cleaned_goal}",
+    })
+    save_state(state)
+    return "Objetivo actualizado. Contexto operativo reiniciado para el nuevo objetivo."
 
 
 def self_overview(refresh: bool = False) -> str:

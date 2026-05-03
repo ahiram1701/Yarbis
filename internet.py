@@ -223,7 +223,7 @@ def _http_get(
 
     try:
         with request.urlopen(req, timeout=timeout_seconds) as response:
-            raw_body = response.read(max_bytes + 1)
+            raw_body = response.read(max_bytes + 1) if max_bytes > 0 else response.read()
             content_type = response.headers.get("Content-Type", "")
             final_url = response.geturl()
     except HTTPError as exc:
@@ -233,7 +233,7 @@ def _http_get(
     except OSError as exc:
         raise RuntimeError(f"Error de red consultando {url}: {exc}") from exc
 
-    was_truncated = len(raw_body) > max_bytes
+    was_truncated = max_bytes > 0 and len(raw_body) > max_bytes
     if was_truncated:
         raw_body = raw_body[:max_bytes]
 
@@ -363,7 +363,7 @@ def fetch_web_page(
     raw_body, final_url, content_type, was_truncated = _http_get(
         safe_url,
         timeout_seconds=timeout_seconds,
-        max_bytes=MAX_PAGE_BYTES,
+        max_bytes=0,
     )
 
     final_safe_url, final_error = validate_public_url(
@@ -396,15 +396,10 @@ def fetch_web_page(
     if not cleaned_content:
         raise ValueError("La pagina no devolvio texto legible.")
 
-    normalized_max_chars = max(1_000, min(30_000, int(max_page_chars)))
-    content_was_trimmed = len(cleaned_content) > normalized_max_chars
-    if content_was_trimmed:
-        cleaned_content = cleaned_content[:normalized_max_chars].rstrip() + "\n\n...[contenido truncado]"
-
     return {
         "url": final_safe_url,
         "title": title,
         "content": cleaned_content,
         "content_type": normalized_content_type or content_type,
-        "truncated": bool(was_truncated or content_was_trimmed),
+        "truncated": bool(was_truncated),
     }
