@@ -16,7 +16,7 @@ from memory import (
     VALID_TASK_STATUS,
     load_state,
     render_state_summary,
-    save_state,
+    state_transaction,
 )
 from self_knowledge import render_self_knowledge_summary
 
@@ -82,8 +82,39 @@ def _validate_write_path(path: Path) -> str | None:
     return None
 
 
-def _truncate_output(text: str, limit: int) -> str:
-    return str(text)
+def _preview_text(text: str, limit: int) -> str:
+    rendered = str(text)
+    if limit <= 0 or len(rendered) <= limit:
+        return rendered
+
+    omitted = len(rendered) - limit
+    return rendered[:limit].rstrip() + f"\n...[truncado {omitted} caracteres]"
+
+
+def _bounded_text(text: str, limit: int) -> str:
+    rendered = str(text)
+    if limit <= 0 or len(rendered) <= limit:
+        return rendered
+
+    marker = f"\n...[truncado {len(rendered) - limit} caracteres]...\n"
+    if len(marker) >= limit:
+        return rendered[:limit]
+
+    available = limit - len(marker)
+    head_chars = available // 2
+    tail_chars = available - head_chars
+    return rendered[:head_chars].rstrip() + marker + rendered[-tail_chars:].lstrip()
+
+
+def _bounded_diff_lines(diff_lines: list[str]) -> list[str]:
+    if len(diff_lines) <= MAX_DIFF_LINES:
+        return diff_lines
+
+    marker = f"... diff truncado, {len(diff_lines) - MAX_DIFF_LINES} lineas mas."
+    available = max(1, MAX_DIFF_LINES - 1)
+    head_count = available // 2
+    tail_count = available - head_count
+    return diff_lines[:head_count] + [marker] + diff_lines[-tail_count:]
 
 
 def _new_id(prefix: str) -> str:
@@ -189,7 +220,7 @@ def _render_diff_preview(path: Path, previous_content: str, new_content: str) ->
     if not diff_lines:
         return "Sin cambios detectados."
 
-    return "\n".join(diff_lines)
+    return "\n".join(_bounded_diff_lines(diff_lines))
 
 
 def list_files(path: str = ".") -> str:
@@ -230,12 +261,13 @@ def list_files(path: str = ".") -> str:
     return "\n".join(rendered)
 
 
-def read_text_file(path: str) -> str:
+def read_text_file(path: str, max_bytes: int = 0) -> str:
     """
     Lee un archivo de texto.
 
     Args:
         path (str): Ruta del archivo.
+        max_bytes (int): Limite opcional de bytes a leer. Por defecto devuelve el archivo completo.
 
     Returns:
         str: Contenido del archivo.
@@ -249,11 +281,26 @@ def read_text_file(path: str) -> str:
         return f"No es un archivo valido: {path}"
 
     try:
-        raw_content = file_path.read_bytes()
+        requested_limit = int(max_bytes)
+    except (TypeError, ValueError):
+        return "max_bytes debe ser un entero."
+
+    try:
+        if requested_limit > 0:
+            effective_limit = max(1, min(MAX_READ_BYTES, requested_limit))
+            raw_content = file_path.read_bytes()[: effective_limit + 1]
+            was_truncated = len(raw_content) > effective_limit
+            raw_content = raw_content[:effective_limit]
+        else:
+            raw_content = file_path.read_bytes()
+            was_truncated = False
     except OSError as exc:
         return f"Error leyendo archivo: {exc}"
 
-    return raw_content.decode("utf-8", errors="replace")
+    content = raw_content.decode("utf-8", errors="replace")
+    if was_truncated:
+        content += f"\n...[truncado por max_bytes={effective_limit}]"
+    return content
 
 
 def write_text_file(path: str, content: str) -> str:
@@ -325,7 +372,7 @@ def write_text_file(path: str, content: str) -> str:
         f"Checkpoint previo: {checkpoint_id}\n"
         f"Caracteres escritos: {len(content)}\n"
         "Vista previa:\n"
-        f"{content}\n"
+        f"{_preview_text(content, MAX_WRITE_PREVIEW_CHARS)}\n"
         "Diff:\n"
         f"{diff_preview}\n"
         "Siguiente paso recomendado: ejecuta `run_project_tests` si tocaste codigo o tests."
@@ -503,7 +550,7 @@ def run_project_tests(
     if not combined_output:
         combined_output = "La corrida no produjo salida visible."
 
-    combined_output = _truncate_output(combined_output, MAX_TEST_OUTPUT_CHARS)
+    combined_output = _bounded_text(combined_output, MAX_TEST_OUTPUT_CHARS)
     status_line = "Tests OK." if completed.returncode == 0 else f"Tests con fallos (exit={completed.returncode})."
 
     return (
@@ -542,8 +589,7 @@ def update_internet_settings(
     Returns:
         str: Resumen de la configuracion persistida.
     """
-    state = load_state()
-    internet = state.setdefault("internet", {})
+    updates = {}
 
     if str(mode).strip():
         cleaned_mode = str(mode).strip().lower()
@@ -552,7 +598,7 @@ def update_internet_settings(
                 "Modo de internet invalido. "
                 f"Valores soportados: {', '.join(sorted(VALID_INTERNET_MODES))}."
             )
-        internet["mode"] = cleaned_mode
+        updates["mode"] = cleaned_mode
 
     if str(provider).strip():
         cleaned_provider = str(provider).strip().lower()
@@ -561,39 +607,43 @@ def update_internet_settings(
                 "Proveedor de busqueda invalido. "
                 f"Valores soportados: {', '.join(sorted(VALID_SEARCH_PROVIDERS))}."
             )
-        internet["provider"] = cleaned_provider
+        updates["provider"] = cleaned_provider
 
     if max_search_results:
         try:
-            internet["max_search_results"] = int(max_search_results)
+            updates["max_search_results"] = int(max_search_results)
         except (TypeError, ValueError):
             return "max_search_results debe ser un entero."
 
     if max_page_chars:
         try:
-            internet["max_page_chars"] = int(max_page_chars)
+            updates["max_page_chars"] = int(max_page_chars)
         except (TypeError, ValueError):
             return "max_page_chars debe ser un entero."
 
     if request_timeout_seconds:
         try:
-            internet["request_timeout_seconds"] = int(request_timeout_seconds)
+            updates["request_timeout_seconds"] = int(request_timeout_seconds)
         except (TypeError, ValueError):
             return "request_timeout_seconds debe ser un entero."
 
     if str(allowed_domains).strip():
         if str(allowed_domains).strip() == CLEAR_VALUE:
-            internet["allowed_domains"] = []
+            updates["allowed_domains"] = []
         else:
-            internet["allowed_domains"] = _split_text_items(str(allowed_domains))
+            updates["allowed_domains"] = _split_text_items(str(allowed_domains))
 
     if str(blocked_domains).strip():
         if str(blocked_domains).strip() == CLEAR_VALUE:
-            internet["blocked_domains"] = []
+            updates["blocked_domains"] = []
         else:
-            internet["blocked_domains"] = _split_text_items(str(blocked_domains))
+            updates["blocked_domains"] = _split_text_items(str(blocked_domains))
 
-    save_state(state)
+    def mutate(state):
+        internet = state.setdefault("internet", {})
+        internet.update(updates)
+
+    state_transaction("update_internet_settings", mutate)
     refreshed = _get_internet_settings()
 
     lines = [
@@ -779,23 +829,24 @@ def update_goal(new_goal: str) -> str:
     if not cleaned_goal:
         return "El objetivo no puede quedar vacio."
 
-    state = load_state()
-    state["goal"] = cleaned_goal
-    state["messages"] = []
-    state["tasks"] = []
-    state["current_plan"] = []
-    state["last_result"] = ""
-    state["awaiting_user_input"] = {
-        "pending": False,
-        "question": "",
-        "reason": "",
-        "fields": [],
-    }
-    state["messages"].append({
-        "role": "user",
-        "content": f"Tu objetivo actual es: {cleaned_goal}",
-    })
-    save_state(state)
+    def mutate(state):
+        state["goal"] = cleaned_goal
+        state["messages"] = []
+        state["tasks"] = []
+        state["current_plan"] = []
+        state["last_result"] = ""
+        state["awaiting_user_input"] = {
+            "pending": False,
+            "question": "",
+            "reason": "",
+            "fields": [],
+        }
+        state["messages"].append({
+            "role": "user",
+            "content": f"Tu objetivo actual es: {cleaned_goal}",
+        })
+
+    state_transaction("update_goal", mutate)
     return "Objetivo actualizado. Contexto operativo reiniciado para el nuevo objetivo."
 
 
@@ -812,12 +863,16 @@ def self_overview(refresh: bool = False) -> str:
     should_refresh = bool(refresh)
     summary = render_self_knowledge_summary(refresh=should_refresh)
     if should_refresh:
-        state = load_state()
-        state["self_knowledge"] = {
-            "last_analyzed_at": datetime.now(timezone.utc).isoformat(),
-            "summary": summary,
-        }
-        save_state(state)
+        state_transaction(
+            "self_overview",
+            lambda state: state.__setitem__(
+                "self_knowledge",
+                {
+                    "last_analyzed_at": datetime.now(timezone.utc).isoformat(),
+                    "summary": summary,
+                },
+            ),
+        )
     return summary
 
 
@@ -839,28 +894,28 @@ def update_profile(
     Returns:
         str: Resumen del perfil actualizado.
     """
-    state = load_state()
-    profile = state["profile"]
+    def mutate(state):
+        profile = state["profile"]
 
-    if str(name).strip():
-        profile["name"] = "" if str(name).strip() == CLEAR_VALUE else str(name).strip()
+        if str(name).strip():
+            profile["name"] = "" if str(name).strip() == CLEAR_VALUE else str(name).strip()
 
-    if str(role).strip():
-        profile["role"] = "" if str(role).strip() == CLEAR_VALUE else str(role).strip()
+        if str(role).strip():
+            profile["role"] = "" if str(role).strip() == CLEAR_VALUE else str(role).strip()
 
-    if str(preferences).strip():
-        if str(preferences).strip() == CLEAR_VALUE:
-            profile["preferences"] = []
-        else:
-            profile["preferences"] = _split_text_items(str(preferences))
+        if str(preferences).strip():
+            if str(preferences).strip() == CLEAR_VALUE:
+                profile["preferences"] = []
+            else:
+                profile["preferences"] = _split_text_items(str(preferences))
 
-    if str(constraints).strip():
-        if str(constraints).strip() == CLEAR_VALUE:
-            profile["constraints"] = []
-        else:
-            profile["constraints"] = _split_text_items(str(constraints))
+        if str(constraints).strip():
+            if str(constraints).strip() == CLEAR_VALUE:
+                profile["constraints"] = []
+            else:
+                profile["constraints"] = _split_text_items(str(constraints))
 
-    save_state(state)
+    state_transaction("update_profile", mutate)
     refreshed = load_state()
     profile = refreshed["profile"]
 
@@ -889,14 +944,15 @@ def request_user_input(question: str, reason: str = "", missing_fields: str = ""
     if not cleaned_question:
         return "Debes indicar una pregunta concreta para el usuario."
 
-    state = load_state()
-    state["awaiting_user_input"] = {
-        "pending": True,
-        "question": cleaned_question,
-        "reason": str(reason).strip(),
-        "fields": _split_text_items(str(missing_fields)),
-    }
-    save_state(state)
+    def mutate(state):
+        state["awaiting_user_input"] = {
+            "pending": True,
+            "question": cleaned_question,
+            "reason": str(reason).strip(),
+            "fields": _split_text_items(str(missing_fields)),
+        }
+
+    state_transaction("request_user_input", mutate)
 
     refreshed = load_state()["awaiting_user_input"]
     lines = [
@@ -928,15 +984,14 @@ def save_note(title: str, content: str, category: str = "general") -> str:
     if not str(title).strip() and not str(content).strip():
         return "Debes indicar al menos un titulo o contenido para la nota."
 
-    state = load_state()
     note = {
         "id": _new_id("note"),
         "title": str(title).strip() or "Nota sin titulo",
         "content": str(content).strip(),
         "category": str(category).strip() or "general",
     }
-    state["notes"].append(note)
-    save_state(state)
+
+    state_transaction("save_note", lambda state: state["notes"].append(note))
 
     return f"Nota guardada con id {note['id']}: {note['title']} ({note['category']})"
 
@@ -1051,21 +1106,21 @@ def delete_note(identifier: str) -> str:
     if not cleaned_identifier:
         return "Indica el id o titulo de la nota que quieres eliminar."
 
-    state = load_state()
-    matches = _matching_notes(state["notes"], cleaned_identifier)
-    if not matches:
-        return f"No encontre una nota que coincida con '{cleaned_identifier}'."
-    if len(matches) > 1:
-        return _ambiguous_note_message(matches)
+    def mutate(state):
+        matches = _matching_notes(state["notes"], cleaned_identifier)
+        if not matches:
+            return f"No encontre una nota que coincida con '{cleaned_identifier}'."
+        if len(matches) > 1:
+            return _ambiguous_note_message(matches)
 
-    note = matches[0]
-    state["notes"] = [
-        existing_note for existing_note in state["notes"]
-        if existing_note["id"] != note["id"]
-    ]
-    save_state(state)
+        note = matches[0]
+        state["notes"] = [
+            existing_note for existing_note in state["notes"]
+            if existing_note["id"] != note["id"]
+        ]
+        return f"Nota eliminada: [{note['id']}] {note['title']} ({note['category']})"
 
-    return f"Nota eliminada: [{note['id']}] {note['title']} ({note['category']})"
+    return state_transaction("delete_note", mutate)
 
 
 def add_task(title: str, details: str = "", priority: str = "media") -> str:
@@ -1088,7 +1143,6 @@ def add_task(title: str, details: str = "", priority: str = "media") -> str:
     if cleaned_priority not in VALID_TASK_PRIORITY:
         cleaned_priority = "media"
 
-    state = load_state()
     task = {
         "id": _new_id("task"),
         "title": cleaned_title,
@@ -1097,8 +1151,7 @@ def add_task(title: str, details: str = "", priority: str = "media") -> str:
         "priority": cleaned_priority,
         "result": "",
     }
-    state["tasks"].append(task)
-    save_state(state)
+    state_transaction("add_task", lambda state: state["tasks"].append(task))
 
     return (
         f"Tarea creada con id {task['id']}.\n"
@@ -1172,22 +1225,23 @@ def update_task_status(task_id: str, status: str, result: str = "") -> str:
             + ", ".join(sorted(VALID_TASK_STATUS))
         )
 
-    state = load_state()
-    task = _find_task(state["tasks"], task_id)
-    if not task:
-        return f"No encontre una tarea con id o prefijo: {task_id}"
+    def mutate(state):
+        task = _find_task(state["tasks"], task_id)
+        if not task:
+            return f"No encontre una tarea con id o prefijo: {task_id}"
 
-    task["status"] = cleaned_status
-    if str(result).strip():
-        task["result"] = str(result).strip()
+        task["status"] = cleaned_status
+        if str(result).strip():
+            task["result"] = str(result).strip()
 
-    save_state(state)
-    return (
-        f"Tarea actualizada: {task['id']}\n"
-        f"Titulo: {task['title']}\n"
-        f"Nuevo estado: {task['status']}\n"
-        f"Resultado: {task['result'] or 'Sin resultado registrado.'}"
-    )
+        return (
+            f"Tarea actualizada: {task['id']}\n"
+            f"Titulo: {task['title']}\n"
+            f"Nuevo estado: {task['status']}\n"
+            f"Resultado: {task['result'] or 'Sin resultado registrado.'}"
+        )
+
+    return state_transaction("update_task_status", mutate)
 
 
 def set_plan(plan_text: str = "") -> str:
@@ -1200,10 +1254,8 @@ def set_plan(plan_text: str = "") -> str:
     Returns:
         str: Resumen del plan guardado.
     """
-    state = load_state()
     plan_items = _split_text_items(str(plan_text))
-    state["current_plan"] = plan_items
-    save_state(state)
+    state_transaction("set_plan", lambda state: state.__setitem__("current_plan", plan_items))
 
     if not plan_items:
         return "Plan actual borrado."

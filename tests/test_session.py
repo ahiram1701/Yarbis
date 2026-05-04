@@ -324,6 +324,7 @@ class SessionTestCase(unittest.TestCase):
             self.assertTrue(thinking["active"])
             self.assertEqual(thinking["label"], "Ciclo")
             self.assertTrue(thinking["started_at"])
+            self.assertTrue(thinking["operation_id"].startswith("ciclo-"))
             return "Ciclo ejecutado.", {"status": "final"}
 
         with patch.object(memory, "STATE_FILE", state_path):

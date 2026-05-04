@@ -71,6 +71,52 @@ class MemoryTestCase(unittest.TestCase):
         self.assertEqual(stored_state["last_result"], long_result)
         self.assertNotIn("[truncado", stored_state["last_result"])
 
+    def test_state_transaction_preserves_independent_updates_from_stale_snapshots(self):
+        state_path = TEST_RUNTIME_DIR / "memory_transaction_state.json"
+        lock_path = TEST_RUNTIME_DIR / "memory_transaction_state.lock"
+
+        with patch.object(memory, "STATE_FILE", state_path):
+            with patch.object(memory, "STATE_LOCK_FILE", lock_path):
+                memory.save_state(memory.default_state())
+                stale_state = memory.load_state()
+
+                memory.state_transaction(
+                    "add_note",
+                    lambda state: state["notes"].append({
+                        "id": "note-1",
+                        "title": "Contexto",
+                        "content": "Dato estable",
+                        "category": "general",
+                    }),
+                )
+
+                def add_task_from_stale_task_view(state):
+                    state["tasks"] = stale_state["tasks"] + [{
+                        "id": "task-1",
+                        "title": "Validar transaccion",
+                        "status": "pending",
+                        "priority": "media",
+                    }]
+
+                memory.state_transaction("add_task", add_task_from_stale_task_view)
+                state = memory.load_state()
+
+        self.assertEqual([note["id"] for note in state["notes"]], ["note-1"])
+        self.assertEqual([task["id"] for task in state["tasks"]], ["task-1"])
+
+    def test_state_transaction_reports_busy_lock_clearly(self):
+        state_path = TEST_RUNTIME_DIR / "memory_busy_lock_state.json"
+        lock_path = TEST_RUNTIME_DIR / "memory_busy_lock_state.lock"
+
+        with patch.object(memory, "STATE_FILE", state_path):
+            with patch.object(memory, "STATE_LOCK_FILE", lock_path):
+                with patch.object(memory, "_lock_state_handle", return_value=False):
+                    with self.assertRaises(TimeoutError) as ctx:
+                        memory.state_transaction("busy-test", lambda state: None)
+
+        self.assertIn("No pude tomar el lock de estado", str(ctx.exception))
+        self.assertIn("busy-test", str(ctx.exception))
+
     def test_render_state_summary_can_omit_last_result_for_internal_context(self):
         summary = memory.render_state_summary(
             {

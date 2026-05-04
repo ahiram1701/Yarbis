@@ -2,11 +2,14 @@ import json
 import os
 import re
 import sys
-import unicodedata
 from collections.abc import Mapping
 
 from ollama import Client
 
+from intent_text import (
+    looks_like_affirmative_action_reply as _looks_like_affirmative_action_reply,
+    normalize_intent_text as _normalize_intent_text,
+)
 from memory import (
     DEFAULT_OLLAMA_MODEL,
     DEFAULT_OLLAMA_TIMEOUT_SECONDS,
@@ -14,7 +17,7 @@ from memory import (
     MIN_OLLAMA_TIMEOUT_SECONDS,
     load_state,
     render_state_summary,
-    save_state,
+    state_transaction,
 )
 from self_knowledge import render_self_knowledge_summary
 from tools import (
@@ -371,12 +374,18 @@ def build_messages(state):
 
 
 def _record_assistant_message(state, content: str):
-    state["messages"].append({
-        "role": "assistant",
-        "content": content,
-    })
-    state["last_result"] = content
-    save_state(state)
+    awaiting_user_input = state.get("awaiting_user_input", {})
+
+    def mutate(current_state):
+        if awaiting_user_input.get("pending") and awaiting_user_input.get("question"):
+            current_state["awaiting_user_input"] = awaiting_user_input
+        current_state["messages"].append({
+            "role": "assistant",
+            "content": content,
+        })
+        current_state["last_result"] = content
+
+    state_transaction("record_assistant_message", mutate)
 
 
 def _user_is_named_yarbis(state) -> bool:
@@ -517,60 +526,11 @@ def _looks_like_meta_response(text: str) -> bool:
     return len(normalized) < 500 and matches >= 2
 
 
-def _normalize_intent_text(text: str) -> str:
-    normalized = unicodedata.normalize("NFKD", str(text).strip().lower())
-    without_accents = "".join(
-        char for char in normalized
-        if not unicodedata.combining(char)
-    )
-    without_punctuation = re.sub(r"[^\w\s]", " ", without_accents)
-    return " ".join(without_punctuation.replace("_", " ").split())
-
-
 def _last_message_content(state, role: str) -> str:
     for message in reversed(state.get("messages", [])):
         if isinstance(message, dict) and message.get("role") == role:
             return str(message.get("content", "")).strip()
     return ""
-
-
-def _looks_like_affirmative_action_reply(text: str) -> bool:
-    normalized = _normalize_intent_text(text)
-    if not normalized:
-        return False
-
-    exact_replies = {
-        "si",
-        "si hazlo",
-        "si adelante",
-        "si por favor",
-        "hazlo",
-        "adelante",
-        "dale",
-        "ok",
-        "okay",
-        "de acuerdo",
-        "correcto",
-        "confirmo",
-        "procede",
-        "avanza",
-        "ejecutalo",
-        "implementalo",
-    }
-    if normalized in exact_replies:
-        return True
-
-    return normalized.startswith("si ") and any(
-        phrase in normalized
-        for phrase in (
-            "hazlo",
-            "adelante",
-            "procede",
-            "avanza",
-            "ejecuta",
-            "implementa",
-        )
-    )
 
 
 def _last_user_authorized_action(state) -> bool:
@@ -931,8 +891,14 @@ def run_one_cycle(max_steps=None):
     if _is_waiting_for_user_input(state):
         return _build_waiting_for_user_input_result(state)
 
-    state["cycle_count"] += 1
-    save_state(state)
+    state_transaction(
+        "run_one_cycle_increment",
+        lambda current_state: current_state.__setitem__(
+            "cycle_count",
+            current_state["cycle_count"] + 1,
+        ),
+    )
+    state = load_state()
 
     if max_steps is None:
         max_steps = state["autonomy"]["max_steps_per_cycle"]
@@ -965,7 +931,7 @@ def run_one_cycle(max_steps=None):
             used_tools = True
             print("Decidi usar herramientas.")
 
-            state["messages"].append({
+            assistant_tool_message = {
                 "role": "assistant",
                 "content": assistant_content,
                 "tool_calls": [
@@ -977,8 +943,12 @@ def run_one_cycle(max_steps=None):
                     }
                     for tool_call in assistant_message.tool_calls
                 ],
-            })
-            save_state(state)
+            }
+            state_transaction(
+                "record_assistant_tool_calls",
+                lambda current_state: current_state["messages"].append(assistant_tool_message),
+            )
+            state = load_state()
 
             for tool_call in assistant_message.tool_calls:
                 tool_name = tool_call.function.name
@@ -1004,15 +974,16 @@ def run_one_cycle(max_steps=None):
 
                 _print_output(f"> Resultado:\n{tool_output}")
 
-                refreshed_state = load_state()
-                refreshed_state["messages"].append({
-                    "role": "tool",
-                    "tool_name": tool_name,
-                    "content": str(tool_output),
-                })
-                refreshed_state["last_result"] = str(tool_output)
-                save_state(refreshed_state)
-                state = refreshed_state
+                def record_tool_output(current_state):
+                    current_state["messages"].append({
+                        "role": "tool",
+                        "tool_name": tool_name,
+                        "content": str(tool_output),
+                    })
+                    current_state["last_result"] = str(tool_output)
+
+                state_transaction("record_tool_output", record_tool_output)
+                state = load_state()
 
             if _is_waiting_for_user_input(state):
                 return _build_waiting_for_user_input_result(state, used_tools=used_tools)
@@ -1022,14 +993,18 @@ def run_one_cycle(max_steps=None):
         if not final_text:
             if empty_response_retries < EMPTY_RESPONSE_RETRIES:
                 empty_response_retries += 1
-                state["messages"].append({
+                retry_message = {
                     "role": "user",
                     "content": (
                         "Tu respuesta anterior llego vacia. Responde ahora con una salida util, "
                         "concreta y final para este ciclo."
                     ),
-                })
-                save_state(state)
+                }
+                state_transaction(
+                    "record_empty_response_retry",
+                    lambda current_state: current_state["messages"].append(retry_message),
+                )
+                state = load_state()
                 continue
 
             final_text = _handle_empty_response(state)
@@ -1053,15 +1028,18 @@ def run_one_cycle(max_steps=None):
             and step < max_steps
         ):
             non_actionable_retries += 1
-            state["messages"].append({
-                "role": "assistant",
-                "content": final_text,
-            })
-            state["messages"].append({
-                "role": "user",
-                "content": NON_ACTIONABLE_RETRY_MESSAGE,
-            })
-            save_state(state)
+            def record_non_actionable_retry(current_state):
+                current_state["messages"].append({
+                    "role": "assistant",
+                    "content": final_text,
+                })
+                current_state["messages"].append({
+                    "role": "user",
+                    "content": NON_ACTIONABLE_RETRY_MESSAGE,
+                })
+
+            state_transaction("record_non_actionable_retry", record_non_actionable_retry)
+            state = load_state()
             continue
 
         if non_actionable_final:

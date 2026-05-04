@@ -1,0 +1,60 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "yarbis"
+version = "0.1.0"
+description = "Agente local Windows-first con Ollama, memoria persistente y herramientas seguras."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "ollama==0.6.1",
+  "win11toast==0.36.3",
+]
+
+[project.optional-dependencies]
+dev = [
+  "ruff>=0.8,<1",
+]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 120
+exclude = [
+  ".git",
+  ".venv",
+  ".yarbis_runtime",
+  "__pycache__",
+  "tests_runtime",
+]
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F"]
+
+[tool.ruff.lint.per-file-ignores]
+"yarbis_service.py" = ["E402"]
+
+[tool.setuptools]
+py-modules = [
+  "activity",
+  "agent",
+  "intent_text",
+  "internet",
+  "main",
+  "memory",
+  "notifications",
+  "power",
+  "secrets_redaction",
+  "self_knowledge",
+  "service_manager",
+  "session",
+  "telegram_format",
+  "telegram_inbox",
+  "tools",
+  "ui_dialogs",
+  "ui_settings_dialogs",
+  "ui_theme",
+  "yarbis_desktop",
+  "yarbis_service",
+]

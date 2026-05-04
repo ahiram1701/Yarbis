@@ -239,6 +239,33 @@ class NotificationsTestCase(unittest.TestCase):
             settings=None,
         )
 
+    def test_telegram_api_request_redacts_token_from_errors(self):
+        with patch.dict(
+            os.environ,
+            {
+                "YARBIS_NOTIFICATIONS": "1",
+                "YARBIS_NOTIFICATION_CHANNELS": "telegram",
+                "YARBIS_TELEGRAM_BOT_TOKEN": "123456:abc",
+                "YARBIS_NTFY_TOKEN": "token-123",
+            },
+            clear=False,
+        ):
+            with patch.object(
+                notifications,
+                "_post_json",
+                side_effect=RuntimeError(
+                    "fallo en https://api.telegram.org/bot123456:abc/sendMessage "
+                    "con Authorization: Bearer token-123"
+                ),
+            ):
+                with self.assertRaises(RuntimeError) as ctx:
+                    notifications.telegram_api_request("sendMessage", {"chat_id": "456"})
+
+        error_text = str(ctx.exception)
+        self.assertNotIn("123456:abc", error_text)
+        self.assertNotIn("token-123", error_text)
+        self.assertIn("[redacted]", error_text)
+
     def test_user_input_required_telegram_message_mentions_continuity(self):
         with patch.dict(
             os.environ,

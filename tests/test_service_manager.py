@@ -1,8 +1,12 @@
 import subprocess
 import unittest
+from pathlib import Path
 from unittest.mock import call, patch
 
+import memory
 import service_manager
+
+TEST_RUNTIME_DIR = Path.cwd() / "tests_runtime"
 
 
 def completed(args=None, returncode=0, stdout="", stderr=""):
@@ -214,3 +218,52 @@ class ServiceManagerTestCase(unittest.TestCase):
         with patch.object(service_manager.os, "name", "posix"):
             with self.assertRaises(RuntimeError):
                 service_manager.set_autostart_enabled(True)
+
+    def test_health_status_reports_service_telegram_operation_and_model(self):
+        state_path = TEST_RUNTIME_DIR / "service_manager_health_state.json"
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+        seeded_state = memory.normalize_state({
+            "notifications": {
+                "enabled": True,
+                "channels": ["telegram"],
+                "telegram": {
+                    "bot_token": "bot-123",
+                    "chat_id": "456",
+                },
+            },
+            "service": {
+                "proactive": {
+                    "enabled": True,
+                    "last_pulse_at": "2026-05-03T10:00:00+00:00",
+                },
+            },
+            "runtime": {
+                "thinking": {
+                    "active": True,
+                    "label": "Ciclo",
+                    "operation_id": "ciclo-123",
+                    "started_at": "2026-05-03T10:01:00+00:00",
+                },
+            },
+            "ollama": {
+                "model": "llama3.2:3b",
+                "timeout_seconds": 120,
+            },
+        })
+
+        with patch.object(memory, "STATE_FILE", state_path):
+            memory.save_state(seeded_state)
+            with patch.object(
+                service_manager,
+                "get_service_status",
+                return_value=status(installed=True, running=True, pid=1234, autostart=True),
+            ):
+                result = service_manager.health_status()
+                rendered = service_manager.format_health_status(result)
+
+        self.assertTrue(result["service"]["running"])
+        self.assertTrue(result["telegram"]["linked"])
+        self.assertEqual(result["operation"]["operation_id"], "ciclo-123")
+        self.assertEqual(result["ollama"]["model"], "llama3.2:3b")
+        self.assertIn("servicio activo", rendered)
+        self.assertIn("Telegram vinculado", rendered)

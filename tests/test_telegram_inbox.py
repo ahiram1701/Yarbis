@@ -102,6 +102,14 @@ class TelegramInboxTestCase(unittest.TestCase):
         self.assertIn(long_text.strip(), processed_text)
         self.assertNotIn("...", processed_text)
 
+    def test_activity_text_redacts_secret_like_telegram_token(self):
+        activity_text = telegram_inbox._incoming_activity_text(
+            "revisa https://api.telegram.org/bot123456:abc/sendMessage"
+        )
+
+        self.assertNotIn("123456:abc", activity_text)
+        self.assertIn("[redacted]", activity_text)
+
     def test_process_telegram_update_defers_free_text_when_session_is_busy(self):
         state_path = TEST_RUNTIME_DIR / "telegram_busy_reply_state.json"
         queue_path = TEST_RUNTIME_DIR / f"telegram_busy_reply_queue_{id(self)}.json"

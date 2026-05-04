@@ -1,10 +1,27 @@
+import contextlib
 import json
+import os
 import re
 import threading
+import time
 from pathlib import Path
 
+try:
+    import msvcrt
+except ImportError:  # pragma: no cover - Windows path is covered locally.
+    msvcrt = None
+
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - POSIX fallback only.
+    fcntl = None
+
 STATE_FILE = Path("state.json")
+STATE_LOCK_FILE = Path(__file__).resolve().parent / ".yarbis_runtime" / "state.lock"
 STATE_LOCK = threading.RLock()
+_STATE_TRANSACTION_LOCAL = threading.local()
+_STATE_LOCK_POLL_SECONDS = 0.05
+_STATE_LOCK_TIMEOUT_SECONDS = 10.0
 DEFAULT_GOAL = ""
 LEGACY_DEFAULT_GOALS = {
     "Ayudar al usuario de forma autonoma con tareas locales.",
@@ -61,6 +78,7 @@ MAX_SELF_KNOWLEDGE_TIMESTAMP_CHARS = 80
 MAX_RUNTIME_OPERATION_LABEL_CHARS = 80
 MAX_RUNTIME_OPERATION_SOURCE_CHARS = 40
 MAX_RUNTIME_TIMESTAMP_CHARS = 80
+MAX_RUNTIME_OPERATION_ID_CHARS = 80
 
 
 def default_state():
@@ -98,6 +116,7 @@ def default_state():
                 "interval_seconds": DEFAULT_SERVICE_PROACTIVE_INTERVAL_SECONDS,
                 "cycles": DEFAULT_SERVICE_PROACTIVE_CYCLES,
                 "start_delay_seconds": DEFAULT_SERVICE_PROACTIVE_START_DELAY_SECONDS,
+                "last_pulse_at": "",
             },
         },
         "ui": {
@@ -109,6 +128,7 @@ def default_state():
                 "label": "",
                 "source": "",
                 "started_at": "",
+                "operation_id": "",
             },
         },
         "internet": {
@@ -147,8 +167,85 @@ def default_state():
     }
 
 
-def _truncate_text(value, limit: int) -> str:
+def _coerce_text(value, limit: int) -> str:
     return str(value)
+
+
+def _prepare_state_lock_file(handle):
+    handle.seek(0, os.SEEK_END)
+    if handle.tell() == 0:
+        handle.write(b" ")
+        handle.flush()
+    handle.seek(0)
+
+
+def _lock_state_handle(handle, timeout_seconds: float) -> bool:
+    deadline = time.monotonic() + max(0.1, float(timeout_seconds))
+
+    if msvcrt is not None:
+        while True:
+            handle.seek(0)
+            try:
+                msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+                return True
+            except OSError:
+                if time.monotonic() >= deadline:
+                    return False
+                time.sleep(_STATE_LOCK_POLL_SECONDS)
+
+    if fcntl is not None:
+        while True:
+            try:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                return True
+            except (BlockingIOError, OSError):
+                if time.monotonic() >= deadline:
+                    return False
+                time.sleep(_STATE_LOCK_POLL_SECONDS)
+
+    return True
+
+
+def _unlock_state_handle(handle):
+    try:
+        if msvcrt is not None:
+            handle.seek(0)
+            msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+        elif fcntl is not None:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+    except OSError:
+        pass
+
+
+@contextlib.contextmanager
+def _state_file_lock(label: str = "state"):
+    depth = int(getattr(_STATE_TRANSACTION_LOCAL, "depth", 0) or 0)
+    if depth > 0:
+        _STATE_TRANSACTION_LOCAL.depth = depth + 1
+        try:
+            yield
+        finally:
+            _STATE_TRANSACTION_LOCAL.depth = depth
+        return
+
+    STATE_LOCK_FILE.parent.mkdir(parents=True, exist_ok=True)
+    handle = open(STATE_LOCK_FILE, "a+b")
+    try:
+        _prepare_state_lock_file(handle)
+        if not _lock_state_handle(handle, _STATE_LOCK_TIMEOUT_SECONDS):
+            raise TimeoutError(
+                "No pude tomar el lock de estado "
+                f"({STATE_LOCK_FILE}) para {str(label).strip() or 'state'}."
+            )
+
+        _STATE_TRANSACTION_LOCAL.depth = 1
+        try:
+            yield
+        finally:
+            _STATE_TRANSACTION_LOCAL.depth = 0
+            _unlock_state_handle(handle)
+    finally:
+        handle.close()
 
 
 def _normalize_message(message):
@@ -159,7 +256,7 @@ def _normalize_message(message):
     normalized = {"role": role}
 
     content = message.get("content", "")
-    normalized["content"] = _truncate_text(content, MAX_MESSAGE_CHARS)
+    normalized["content"] = _coerce_text(content, MAX_MESSAGE_CHARS)
 
     tool_name = message.get("tool_name")
     if tool_name:
@@ -186,7 +283,7 @@ def _normalize_string_list(value, item_limit: int, char_limit: int) -> list[str]
         if not item:
             continue
 
-        normalized_item = _truncate_text(item, char_limit)
+        normalized_item = _coerce_text(item, char_limit)
         lowered = normalized_item.casefold()
         if lowered in seen:
             continue
@@ -208,14 +305,14 @@ def _normalize_note(note):
     if not isinstance(note, dict):
         return None
 
-    title = _truncate_text(note.get("title", ""), MAX_NOTE_TITLE_CHARS).strip()
-    content = _truncate_text(note.get("content", ""), MAX_NOTE_CONTENT_CHARS).strip()
-    category = _truncate_text(note.get("category", "general"), 40).strip() or "general"
+    title = _coerce_text(note.get("title", ""), MAX_NOTE_TITLE_CHARS).strip()
+    content = _coerce_text(note.get("content", ""), MAX_NOTE_CONTENT_CHARS).strip()
+    category = _coerce_text(note.get("category", "general"), 40).strip() or "general"
 
     if not title and not content:
         return None
 
-    note_id = _truncate_text(note.get("id") or _fallback_id("note", title or content), 32).strip()
+    note_id = _coerce_text(note.get("id") or _fallback_id("note", title or content), 32).strip()
 
     return {
         "id": note_id,
@@ -229,9 +326,9 @@ def _normalize_task(task):
     if not isinstance(task, dict):
         return None
 
-    title = _truncate_text(task.get("title", ""), MAX_TASK_TITLE_CHARS).strip()
-    details = _truncate_text(task.get("details", ""), MAX_TASK_DETAILS_CHARS).strip()
-    result = _truncate_text(task.get("result", ""), MAX_TASK_RESULT_CHARS).strip()
+    title = _coerce_text(task.get("title", ""), MAX_TASK_TITLE_CHARS).strip()
+    details = _coerce_text(task.get("details", ""), MAX_TASK_DETAILS_CHARS).strip()
+    result = _coerce_text(task.get("result", ""), MAX_TASK_RESULT_CHARS).strip()
 
     if not title:
         return None
@@ -241,7 +338,7 @@ def _normalize_task(task):
 
     status = raw_status if raw_status in VALID_TASK_STATUS else "pending"
     priority = raw_priority if raw_priority in VALID_TASK_PRIORITY else "media"
-    task_id = _truncate_text(task.get("id") or _fallback_id("task", title), 32).strip()
+    task_id = _coerce_text(task.get("id") or _fallback_id("task", title), 32).strip()
 
     return {
         "id": task_id,
@@ -258,8 +355,8 @@ def _normalize_profile(profile):
         profile = {}
 
     return {
-        "name": _truncate_text(profile.get("name", ""), 80).strip(),
-        "role": _truncate_text(profile.get("role", ""), 120).strip(),
+        "name": _coerce_text(profile.get("name", ""), 80).strip(),
+        "role": _coerce_text(profile.get("role", ""), 120).strip(),
         "preferences": _normalize_string_list(
             profile.get("preferences", []),
             item_limit=MAX_PROFILE_ITEMS,
@@ -312,7 +409,7 @@ def _normalize_ollama(ollama):
     if not isinstance(ollama, dict):
         ollama = {}
 
-    model = _truncate_text(
+    model = _coerce_text(
         ollama.get("model", defaults["model"]),
         MAX_OLLAMA_MODEL_CHARS,
     ).strip()
@@ -404,6 +501,10 @@ def _normalize_service(service):
             "interval_seconds": interval_seconds,
             "cycles": cycles,
             "start_delay_seconds": start_delay_seconds,
+            "last_pulse_at": _coerce_text(
+                proactive.get("last_pulse_at", proactive_defaults.get("last_pulse_at", "")),
+                MAX_RUNTIME_TIMESTAMP_CHARS,
+            ).strip(),
         },
     }
 
@@ -412,11 +513,11 @@ def _normalize_awaiting_user_input(awaiting_user_input):
     if not isinstance(awaiting_user_input, dict):
         awaiting_user_input = {}
 
-    question = _truncate_text(
+    question = _coerce_text(
         awaiting_user_input.get("question", ""),
         MAX_AWAITING_INPUT_QUESTION_CHARS,
     ).strip()
-    reason = _truncate_text(
+    reason = _coerce_text(
         awaiting_user_input.get("reason", ""),
         MAX_AWAITING_INPUT_REASON_CHARS,
     ).strip()
@@ -458,17 +559,21 @@ def _normalize_runtime(runtime):
     if not isinstance(thinking, dict):
         thinking = {}
 
-    label = _truncate_text(
+    label = _coerce_text(
         thinking.get("label", ""),
         MAX_RUNTIME_OPERATION_LABEL_CHARS,
     ).strip()
-    source = _truncate_text(
+    source = _coerce_text(
         thinking.get("source", ""),
         MAX_RUNTIME_OPERATION_SOURCE_CHARS,
     ).strip()
-    started_at = _truncate_text(
+    started_at = _coerce_text(
         thinking.get("started_at", ""),
         MAX_RUNTIME_TIMESTAMP_CHARS,
+    ).strip()
+    operation_id = _coerce_text(
+        thinking.get("operation_id", ""),
+        MAX_RUNTIME_OPERATION_ID_CHARS,
     ).strip()
     active = bool(thinking.get("active")) and bool(label)
 
@@ -481,6 +586,7 @@ def _normalize_runtime(runtime):
             "label": label,
             "source": source,
             "started_at": started_at,
+            "operation_id": operation_id,
         },
     }
 
@@ -572,11 +678,11 @@ def _normalize_self_knowledge(self_knowledge):
         self_knowledge = {}
 
     return {
-        "last_analyzed_at": _truncate_text(
+        "last_analyzed_at": _coerce_text(
             self_knowledge.get("last_analyzed_at", ""),
             MAX_SELF_KNOWLEDGE_TIMESTAMP_CHARS,
         ).strip(),
-        "summary": _truncate_text(
+        "summary": _coerce_text(
             self_knowledge.get("summary", ""),
             MAX_SELF_KNOWLEDGE_SUMMARY_CHARS,
         ).strip(),
@@ -612,7 +718,7 @@ def _normalize_notifications(notifications):
     if not isinstance(telegram, dict):
         telegram = {}
 
-    priority = _truncate_text(ntfy.get("priority", defaults["ntfy"]["priority"]), 20).strip().lower()
+    priority = _coerce_text(ntfy.get("priority", defaults["ntfy"]["priority"]), 20).strip().lower()
     if priority not in VALID_NTFY_PRIORITIES:
         priority = defaults["ntfy"]["priority"]
 
@@ -668,23 +774,23 @@ def _normalize_notifications(notifications):
             notifications.get("channels", defaults["channels"]),
         ),
         "ntfy": {
-            "server": _truncate_text(
+            "server": _coerce_text(
                 ntfy.get("server", defaults["ntfy"]["server"]),
                 200,
             ).strip() or defaults["ntfy"]["server"],
-            "topic": _truncate_text(ntfy.get("topic", ""), 180).strip().strip("/"),
-            "token": _truncate_text(ntfy.get("token", ""), 240).strip(),
+            "topic": _coerce_text(ntfy.get("topic", ""), 180).strip().strip("/"),
+            "token": _coerce_text(ntfy.get("token", ""), 240).strip(),
             "priority": priority,
-            "tags": _truncate_text(ntfy.get("tags", ""), 120).strip(),
+            "tags": _coerce_text(ntfy.get("tags", ""), 120).strip(),
             "timeout_seconds": timeout_seconds,
         },
         "telegram": {
-            "api_base": _truncate_text(
+            "api_base": _coerce_text(
                 telegram.get("api_base", defaults["telegram"]["api_base"]),
                 200,
             ).strip() or defaults["telegram"]["api_base"],
-            "bot_token": _truncate_text(telegram.get("bot_token", ""), 240).strip(),
-            "chat_id": _truncate_text(telegram.get("chat_id", ""), 80).strip(),
+            "bot_token": _coerce_text(telegram.get("bot_token", ""), 240).strip(),
+            "chat_id": _coerce_text(telegram.get("chat_id", ""), 80).strip(),
             "timeout_seconds": telegram_timeout_seconds,
             "poll_timeout_seconds": telegram_poll_timeout_seconds,
             "last_update_id": telegram_last_update_id,
@@ -909,36 +1015,57 @@ def render_state_summary(
     return "\n".join(lines)
 
 
+def _load_state_unlocked():
+    if not STATE_FILE.exists():
+        return default_state()
+
+    try:
+        with open(STATE_FILE, "r", encoding="utf-8") as file:
+            state = json.load(file)
+    except (OSError, json.JSONDecodeError):
+        return default_state()
+
+    return normalize_state(state)
+
+
+def _save_state_unlocked(state):
+    normalized = normalize_state(state)
+    STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+    tmp_file = STATE_FILE.with_name(f"{STATE_FILE.name}.tmp")
+
+    with open(tmp_file, "w", encoding="utf-8") as file:
+        json.dump(normalized, file, ensure_ascii=False, indent=2)
+
+    try:
+        tmp_file.replace(STATE_FILE)
+    except PermissionError:
+        with open(STATE_FILE, "w", encoding="utf-8") as file:
+            json.dump(normalized, file, ensure_ascii=False, indent=2)
+        try:
+            tmp_file.unlink()
+        except OSError:
+            pass
+
+
 def load_state():
     with STATE_LOCK:
-        if not STATE_FILE.exists():
-            return default_state()
-
-        try:
-            with open(STATE_FILE, "r", encoding="utf-8") as file:
-                state = json.load(file)
-        except (OSError, json.JSONDecodeError):
-            return default_state()
-
-        return normalize_state(state)
+        with _state_file_lock("load_state"):
+            return _load_state_unlocked()
 
 
 def save_state(state):
-    normalized = normalize_state(state)
+    with STATE_LOCK:
+        with _state_file_lock("save_state"):
+            _save_state_unlocked(state)
+
+
+def state_transaction(label: str, mutator):
+    if not callable(mutator):
+        raise TypeError("state_transaction requiere un mutator callable.")
 
     with STATE_LOCK:
-        STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
-        tmp_file = STATE_FILE.with_name(f"{STATE_FILE.name}.tmp")
-
-        with open(tmp_file, "w", encoding="utf-8") as file:
-            json.dump(normalized, file, ensure_ascii=False, indent=2)
-
-        try:
-            tmp_file.replace(STATE_FILE)
-        except PermissionError:
-            with open(STATE_FILE, "w", encoding="utf-8") as file:
-                json.dump(normalized, file, ensure_ascii=False, indent=2)
-            try:
-                tmp_file.unlink()
-            except OSError:
-                pass
+        with _state_file_lock(label):
+            state = _load_state_unlocked()
+            result = mutator(state)
+            _save_state_unlocked(state)
+            return result

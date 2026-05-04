@@ -1,7 +1,7 @@
 import os
 import time
 import traceback
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 WORKSPACE_ROOT = Path(__file__).resolve().parent
@@ -15,8 +15,9 @@ from memory import (
     DEFAULT_SERVICE_PROACTIVE_INTERVAL_SECONDS,
     DEFAULT_SERVICE_PROACTIVE_START_DELAY_SECONDS,
     load_state,
-    save_state,
+    state_transaction,
 )
+from secrets_redaction import redact_secrets
 from notifications import (
     get_telegram_settings,
     notify_user_input_required,
@@ -26,6 +27,7 @@ from session import (
     SessionOperationBusy,
     has_pending_user_question,
     has_unanswered_user_message,
+    current_operation_id,
     recover_unanswered_user_message_with_output,
     run_auto_with_output,
     run_startup_self_analysis,
@@ -59,9 +61,13 @@ def _timestamp() -> str:
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
 
+def _utc_timestamp() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
 def _log(message: object):
     RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
-    rendered = str(message).strip()
+    rendered = redact_secrets(message).strip()
     if not rendered:
         return
 
@@ -170,13 +176,26 @@ def get_service_proactive_settings() -> dict:
     }
 
 
+def _mark_proactive_pulse() -> str:
+    timestamp = _utc_timestamp()
+
+    def mutate(state):
+        service_state = state.setdefault("service", {})
+        proactive_state = service_state.setdefault("proactive", {})
+        proactive_state["last_pulse_at"] = timestamp
+
+    state_transaction("service_proactive_last_pulse", mutate)
+    return timestamp
+
+
 def _append_proactive_tick_message():
-    state = load_state()
-    state["messages"].append({
-        "role": "user",
-        "content": PROACTIVE_TICK_MESSAGE,
-    })
-    save_state(state)
+    state_transaction(
+        "append_proactive_tick_message",
+        lambda state: state["messages"].append({
+            "role": "user",
+            "content": PROACTIVE_TICK_MESSAGE,
+        }),
+    )
 
 
 def _send_telegram_operation_update(label: str, output: str) -> bool:
@@ -254,10 +273,22 @@ def _recover_unanswered_user_message() -> str:
 def run_proactive_pulse() -> str:
     settings = get_service_proactive_settings()
     if not settings["enabled"]:
+        activity.emit_event(
+            "proactive_pulse_skipped",
+            label="Pulso proactivo",
+            reason="disabled",
+        )
         return "Pulso proactivo omitido: proactividad desactivada."
 
+    last_pulse_at = _mark_proactive_pulse()
     waiting_message = _proactive_waiting_for_user_message(load_state())
     if waiting_message:
+        activity.emit_event(
+            "proactive_pulse_skipped",
+            label="Pulso proactivo",
+            reason="waiting_for_user",
+            last_pulse_at=last_pulse_at,
+        )
         return waiting_message
 
     try:
@@ -265,11 +296,25 @@ def run_proactive_pulse() -> str:
             state = load_state()
             waiting_message = _proactive_waiting_for_user_message(state)
             if waiting_message:
+                activity.emit_event(
+                    "proactive_pulse_skipped",
+                    operation_id=current_operation_id(),
+                    label="Pulso proactivo",
+                    reason="waiting_for_user",
+                    last_pulse_at=last_pulse_at,
+                )
                 return waiting_message
 
             if has_unanswered_user_message(state):
                 recovered_output = _recover_unanswered_user_message()
                 if recovered_output:
+                    activity.emit_event(
+                        "proactive_pulse_completed",
+                        operation_id=current_operation_id(),
+                        label="Pulso proactivo",
+                        recovered_user_message=True,
+                        last_pulse_at=last_pulse_at,
+                    )
                     return recovered_output
 
             _append_proactive_tick_message()
@@ -287,8 +332,21 @@ def run_proactive_pulse() -> str:
             else:
                 _send_proactive_telegram_update(output)
 
+            activity.emit_event(
+                "proactive_pulse_completed",
+                operation_id=current_operation_id(),
+                label="Pulso proactivo",
+                recovered_user_message=False,
+                last_pulse_at=last_pulse_at,
+            )
             return output
     except SessionOperationBusy:
+        activity.emit_event(
+            "proactive_pulse_skipped",
+            label="Pulso proactivo",
+            reason="busy",
+            last_pulse_at=last_pulse_at,
+        )
         return (
             "Pulso proactivo omitido: hay una operacion de Yarbis en curso. "
             "Se intentara en el siguiente intervalo."
@@ -306,6 +364,7 @@ def run_service_loop(should_stop=None):
 
     _write_pid()
     _log("Servicio de Yarbis iniciado.")
+    activity.emit_event("service_started", pid=os.getpid())
 
     try:
         _log(run_startup_self_analysis())
@@ -361,12 +420,14 @@ def run_service_loop(should_stop=None):
 
             time.sleep(SERVICE_LOOP_SLEEP_SECONDS)
     except Exception:
+        activity.emit_event("service_failed", error=traceback.format_exc())
         _log(traceback.format_exc())
         raise
     finally:
         stop_telegram_polling()
         _clear_runtime_files()
         _log("Servicio de Yarbis detenido.")
+        activity.emit_event("service_stopped", pid=os.getpid())
 
 
 def main():

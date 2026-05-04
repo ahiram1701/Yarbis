@@ -3,17 +3,23 @@ import json
 import threading
 import time
 import re
-import unicodedata
 from pathlib import Path
 from typing import Any, Callable
 
-from memory import load_state, save_state
+import activity
+from memory import load_state, state_transaction
+from secrets_redaction import redact_secrets
+from intent_text import (
+    normalize_intent_text as _normalize_intent_text,
+    strip_yarbis_prefix as _strip_yarbis_prefix,
+)
 from notifications import (
     get_telegram_settings,
     send_telegram_chat_action,
     send_telegram_message,
     telegram_api_request,
 )
+from telegram_format import format_telegram_operation_reply
 from power import (
     DEFAULT_SHUTDOWN_DELAY_SECONDS,
     cancel_system_shutdown,
@@ -54,51 +60,73 @@ _deferred_replies_lock = threading.Lock()
 
 def _emit_event(message: Any):
     callback = _poller_callback
-    if not callable(callback):
-        return
 
     if isinstance(message, dict):
-        callback(message)
+        redacted_message = {
+            key: redact_secrets(value) if isinstance(value, str) else value
+            for key, value in message.items()
+        }
+        event_type = str(redacted_message.get("type", "telegram_event")).strip() or "telegram_event"
+        event_fields = {
+            key: value
+            for key, value in redacted_message.items()
+            if key not in {"type", "operation_id"}
+        }
+        activity.emit_event(
+            event_type,
+            operation_id=redacted_message.get("operation_id"),
+            **event_fields,
+        )
+        if callable(callback):
+            callback(redacted_message)
         return
 
-    rendered = str(message).strip()
+    rendered = redact_secrets(message).strip()
     if rendered:
+        activity.emit_event("telegram_event", content=rendered)
+    if rendered and callable(callback):
         callback(rendered)
 
 
-def _emit_job_started(label: str):
+def _emit_job_started(label: str) -> str:
     job_label = str(label).strip() or "Telegram"
+    operation_id = activity.new_operation_id(f"telegram-{job_label}")
     _emit_event({
         "type": "remote_job_started",
+        "operation_id": operation_id,
         "label": job_label,
         "status_text": f"Estoy pensando: {job_label}...",
     })
+    return operation_id
 
 
-def _emit_job_finished(label: str, content: str):
+def _emit_job_finished(label: str, content: str, operation_id: str = ""):
     job_label = str(label).strip() or "Telegram"
     _emit_event({
         "type": "remote_job_finished",
+        "operation_id": operation_id,
         "label": job_label,
         "content": str(content).strip(),
     })
 
 
-def _emit_job_failed(label: str, content: str):
+def _emit_job_failed(label: str, content: str, operation_id: str = ""):
     job_label = str(label).strip() or "Telegram"
     _emit_event({
         "type": "remote_job_failed",
+        "operation_id": operation_id,
         "label": job_label,
-        "content": str(content).strip(),
+        "content": redact_secrets(content).strip(),
     })
 
 
 def _update_telegram_state(**changes):
-    state = load_state()
-    notifications_state = state.setdefault("notifications", {})
-    telegram_state = notifications_state.setdefault("telegram", {})
-    telegram_state.update(changes)
-    save_state(state)
+    def mutate(state):
+        notifications_state = state.setdefault("notifications", {})
+        telegram_state = notifications_state.setdefault("telegram", {})
+        telegram_state.update(changes)
+
+    state_transaction("update_telegram_state", mutate)
 
 
 def _send_telegram_thinking_action(chat_id: str, settings: dict | None = None):
@@ -250,26 +278,27 @@ def process_deferred_telegram_replies(limit: int = 3) -> int:
             continue
 
         label = "Respuesta diferida"
-        _emit_job_started(label)
+        operation_id = _emit_job_started(label)
         try:
             settings = load_state().get("notifications", {})
             with _telegram_thinking_indicator(chat_id, settings=settings, enabled=bool(chat_id)):
                 reply = submit_user_reply(text, emit_notifications=False, blocking=False)
         except SessionOperationBusy:
             _push_deferred_telegram_reply_front(item)
-            _emit_job_failed(label, "Yarbis sigue ocupado.")
+            _emit_job_failed(label, "Yarbis sigue ocupado.", operation_id=operation_id)
             break
         except Exception as exc:
-            _emit_job_failed(label, str(exc))
+            error_text = redact_secrets(exc)
+            _emit_job_failed(label, error_text, operation_id=operation_id)
             if chat_id:
                 send_telegram_message(
-                    f"No pude procesar tu respuesta pendiente: {exc}",
+                    f"No pude procesar tu respuesta pendiente: {error_text}",
                     chat_id=chat_id,
                 )
             processed += 1
             continue
 
-        _emit_job_finished(label, reply)
+        _emit_job_finished(label, reply, operation_id=operation_id)
         if chat_id:
             send_telegram_message(
                 format_telegram_operation_reply(label, reply),
@@ -378,101 +407,7 @@ def _trim_for_activity(text: str, limit: int = 180) -> str:
 
 def _incoming_activity_text(text: str) -> str:
     trimmed_text = _trim_for_activity(text)
-    return f"Telegram: recibido '{trimmed_text}'. Estoy pensando..."
-
-
-def _open_task_count(state: dict) -> int:
-    return sum(
-        1
-        for task in state.get("tasks", [])
-        if task.get("status") in {"pending", "in_progress", "blocked"}
-    )
-
-
-def _clean_telegram_operation_text(text: str) -> str:
-    rendered = str(text).replace("\r\n", "\n").replace("\r", "\n").strip()
-    if not rendered:
-        return ""
-
-    rendered = re.sub(
-        r"\n?\.\.\.\[truncado \d+ caracteres\]",
-        "",
-        rendered,
-        flags=re.IGNORECASE,
-    )
-    rendered = re.sub(
-        r"\n?\.\.\. diff truncado, \d+ lineas mas\.",
-        "",
-        rendered,
-        flags=re.IGNORECASE,
-    )
-    rendered = rendered.replace("Contenido truncado: si", "Contenido resumido: si")
-    return rendered.strip()
-
-
-def _extract_final_cycle_output(text: str) -> str:
-    cleaned = _clean_telegram_operation_text(text)
-    if not cleaned:
-        return ""
-
-    marker = "\nYarbis:\n"
-    marker_index = cleaned.rfind(marker)
-    if marker_index >= 0:
-        cleaned = cleaned[marker_index + len(marker):].strip()
-    elif cleaned.startswith("Yarbis:\n"):
-        cleaned = cleaned[len("Yarbis:\n"):].strip()
-
-    cleaned = re.sub(r"\n={3,} CICLO \d+ ={3,}\n?", "\n", cleaned)
-    cleaned = re.sub(r"\n--- Paso \d+ ---\n?", "\n", cleaned)
-    lines = []
-    for line in cleaned.splitlines():
-        stripped = line.strip()
-        if stripped in {"Yarbis decidio usar tools.", "Decidi usar herramientas."}:
-            continue
-        if stripped.startswith("> Ejecutando tool:") or stripped.startswith("> Argumentos:"):
-            continue
-        lines.append(line.rstrip())
-
-    return "\n".join(lines).strip()
-
-
-def _continuity_line(state: dict) -> str:
-    cycle_count = state.get("cycle_count", 0)
-    open_tasks = _open_task_count(state)
-    awaiting_user_input = state.get("awaiting_user_input", {})
-    pending = bool(awaiting_user_input.get("pending") and awaiting_user_input.get("question"))
-    status = "esperando tu respuesta" if pending else "listo para seguir"
-    return f"Continuidad: {cycle_count} ciclo(s) | {open_tasks} tarea(s) abierta(s) | {status}."
-
-
-def _next_step_line(state: dict) -> str:
-    awaiting_user_input = state.get("awaiting_user_input", {})
-    if awaiting_user_input.get("pending") and awaiting_user_input.get("question"):
-        return "Siguiente: responde por este chat y Yarbis retomara los ciclos."
-    if _open_task_count(state):
-        return "Siguiente: puedes mandar /run o /auto para continuar desde este mismo punto."
-    return "Siguiente: manda contexto nuevo, /status o /auto cuando quieras seguir."
-
-
-def format_telegram_operation_reply(label: str, content: str, state: dict | None = None) -> str:
-    operation_label = str(label).strip() or "Yarbis"
-    state = state or load_state()
-    body = _extract_final_cycle_output(content) or "Operacion completada sin salida visible."
-
-    lines = [
-        f"Yarbis - {operation_label}",
-        _continuity_line(state),
-        "",
-        body,
-    ]
-
-    awaiting_user_input = state.get("awaiting_user_input", {})
-    question = str(awaiting_user_input.get("question", "")).strip()
-    if awaiting_user_input.get("pending") and question and question not in body:
-        lines.extend(["", f"Pregunta pendiente: {question}"])
-
-    lines.extend(["", _next_step_line(state)])
-    return "\n".join(line.rstrip() for line in lines).strip()
+    return f"Telegram: recibido '{redact_secrets(trimmed_text)}'. Estoy pensando..."
 
 
 def _should_format_operation_reply(label: str, content: str) -> bool:
@@ -491,24 +426,6 @@ def _telegram_reply_for_delivery(label: str, content: str) -> str:
     if not _should_format_operation_reply(label, content):
         return str(content).strip()
     return format_telegram_operation_reply(label, content)
-
-
-def _normalize_intent_text(text: str) -> str:
-    normalized = unicodedata.normalize("NFKD", str(text).strip().lower())
-    without_accents = "".join(
-        char for char in normalized
-        if not unicodedata.combining(char)
-    )
-    without_punctuation = re.sub(r"[^\w\s]", " ", without_accents)
-    return " ".join(without_punctuation.replace("_", " ").split())
-
-
-def _strip_yarbis_prefix(text: str) -> str:
-    normalized = _normalize_intent_text(text)
-    for prefix in ("yarbis ", "oye yarbis ", "hey yarbis "):
-        if normalized.startswith(prefix):
-            return normalized[len(prefix):].strip()
-    return normalized
 
 
 def _natural_power_intent(text: str) -> str:
@@ -835,7 +752,9 @@ def process_telegram_update(update: dict) -> str:
     pending_user_question = has_pending_user_question(load_state())
 
     if job_label:
-        _emit_job_started(job_label)
+        operation_id = _emit_job_started(job_label)
+    else:
+        operation_id = ""
 
     try:
         settings = load_state().get("notifications", {})
@@ -858,11 +777,11 @@ def process_telegram_update(update: dict) -> str:
                     reply = _submit_user_reply_from_telegram(text, chat_id)
     except Exception as exc:
         if job_label:
-            _emit_job_failed(job_label, str(exc))
+            _emit_job_failed(job_label, redact_secrets(exc), operation_id=operation_id)
         raise
 
     if job_label:
-        _emit_job_finished(job_label, reply)
+        _emit_job_finished(job_label, reply, operation_id=operation_id)
 
     if binding_notice:
         reply = f"{binding_notice}\n\n{_telegram_reply_for_delivery(job_label, reply)}"
@@ -902,7 +821,9 @@ def _poll_updates_once():
         try:
             summary = process_telegram_update(update)
         except Exception as exc:
-            summary = f"Telegram: error procesando update {update_id or '?'}: {exc}"
+            summary = redact_secrets(
+                f"Telegram: error procesando update {update_id or '?'}: {exc}"
+            )
         finally:
             if update_id > 0:
                 _update_telegram_state(last_update_id=update_id)

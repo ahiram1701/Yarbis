@@ -1,4 +1,6 @@
 import unittest
+import json
+import os
 import uuid
 from pathlib import Path
 from unittest.mock import patch
@@ -44,6 +46,61 @@ class ActivityTestCase(unittest.TestCase):
         public_activity = activity_log.read_text(encoding="utf-8")
         self.assertIn("Servicio", public_activity)
         self.assertIn("Pulso proactivo iniciado.\nDetalle visible.", public_activity)
+
+    def test_service_log_and_activity_redact_known_secret_tokens(self):
+        base_dir = self._unique_path("service_redaction").parent
+        base_dir.mkdir(parents=True, exist_ok=True)
+        service_log = base_dir / "service.log"
+        activity_log = base_dir / "activity.log"
+
+        with patch.dict(
+            yarbis_service.os.environ,
+            {
+                "YARBIS_TELEGRAM_BOT_TOKEN": "123456:abc",
+                "YARBIS_NTFY_TOKEN": "token-123",
+            },
+            clear=False,
+        ):
+            with patch.object(yarbis_service, "LOG_FILE", service_log):
+                with patch.object(activity, "ACTIVITY_LOG_FILE", activity_log):
+                    yarbis_service._log(
+                        "Fallo en https://api.telegram.org/bot123456:abc/sendMessage "
+                        "con Authorization: Bearer token-123"
+                    )
+
+        service_text = service_log.read_text(encoding="utf-8")
+        activity_text = activity_log.read_text(encoding="utf-8")
+        self.assertNotIn("123456:abc", service_text)
+        self.assertNotIn("token-123", service_text)
+        self.assertNotIn("123456:abc", activity_text)
+        self.assertNotIn("token-123", activity_text)
+        self.assertIn("[redacted]", service_text)
+
+    def test_emit_event_writes_jsonl_and_redacts_secrets(self):
+        events_path = self._unique_path("events.jsonl")
+        events_path.parent.mkdir(parents=True, exist_ok=True)
+
+        with patch.dict(
+            os.environ,
+            {
+                "YARBIS_TELEGRAM_BOT_TOKEN": "123456:abc",
+                "YARBIS_NTFY_TOKEN": "token-123",
+            },
+            clear=False,
+        ):
+            with patch.object(activity, "EVENTS_FILE", events_path):
+                event = activity.emit_event(
+                    "telegram_error",
+                    operation_id="op-1",
+                    content="https://api.telegram.org/bot123456:abc/sendMessage Bearer token-123",
+                )
+
+        stored = json.loads(events_path.read_text(encoding="utf-8").strip())
+        self.assertEqual(event["type"], "telegram_error")
+        self.assertEqual(stored["operation_id"], "op-1")
+        self.assertNotIn("123456:abc", stored["content"])
+        self.assertNotIn("token-123", stored["content"])
+        self.assertIn("[redacted]", stored["content"])
 
 
 if __name__ == "__main__":

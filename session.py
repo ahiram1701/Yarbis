@@ -4,7 +4,6 @@ import os
 import re
 import threading
 import time
-import unicodedata
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -18,7 +17,12 @@ try:
 except ImportError:  # pragma: no cover - POSIX fallback only.
     fcntl = None
 
+import activity
 from agent import run_autonomous_session, run_one_cycle
+from intent_text import (
+    looks_like_affirmative_action_reply as _looks_like_affirmative_action_reply,
+    normalize_intent_text as _normalize_intent_text,
+)
 from memory import (
     DEFAULT_OLLAMA_MODEL,
     DEFAULT_OLLAMA_TIMEOUT_SECONDS,
@@ -26,7 +30,7 @@ from memory import (
     MIN_OLLAMA_TIMEOUT_SECONDS,
     load_state,
     render_state_summary,
-    save_state,
+    state_transaction,
 )
 from notifications import (
     get_telegram_settings,
@@ -100,11 +104,12 @@ def _unlock_operation_handle(handle):
         pass
 
 
-def _write_operation_lock_owner(handle, label: str):
+def _write_operation_lock_owner(handle, label: str, operation_id: str):
     try:
         owner = (
             f"pid={os.getpid()}\n"
             f"label={str(label).strip() or 'Operacion'}\n"
+            f"operation_id={str(operation_id).strip()}\n"
             f"started_at={datetime.now(timezone.utc).isoformat()}\n"
         )
         handle.seek(0)
@@ -115,7 +120,7 @@ def _write_operation_lock_owner(handle, label: str):
         pass
 
 
-def _acquire_operation_file_lock(label: str, blocking: bool):
+def _acquire_operation_file_lock(label: str, blocking: bool, operation_id: str):
     OPERATION_LOCK_FILE.parent.mkdir(parents=True, exist_ok=True)
     handle = open(OPERATION_LOCK_FILE, "a+b")
     try:
@@ -123,7 +128,7 @@ def _acquire_operation_file_lock(label: str, blocking: bool):
         if not _lock_operation_handle(handle, blocking=blocking):
             handle.close()
             return None
-        _write_operation_lock_owner(handle, label)
+        _write_operation_lock_owner(handle, label, operation_id)
         return handle
     except Exception:
         handle.close()
@@ -137,34 +142,44 @@ def _release_operation_file_lock(handle):
         handle.close()
 
 
-def _set_runtime_thinking(label: str):
+def _set_runtime_thinking(label: str, operation_id: str):
     try:
-        state = load_state()
-        state["runtime"] = {
-            "thinking": {
-                "active": True,
-                "label": str(label).strip() or "Operacion",
-                "source": f"pid:{os.getpid()}",
-                "started_at": datetime.now(timezone.utc).isoformat(),
-            },
-        }
-        save_state(state)
+        state_transaction(
+            "runtime_thinking_start",
+            lambda state: state.__setitem__(
+                "runtime",
+                {
+                    "thinking": {
+                        "active": True,
+                        "label": str(label).strip() or "Operacion",
+                        "source": f"pid:{os.getpid()}",
+                        "started_at": datetime.now(timezone.utc).isoformat(),
+                        "operation_id": str(operation_id).strip(),
+                    },
+                },
+            ),
+        )
     except Exception:
         pass
 
 
 def _clear_runtime_thinking():
     try:
-        state = load_state()
-        state["runtime"] = {
-            "thinking": {
-                "active": False,
-                "label": "",
-                "source": "",
-                "started_at": "",
-            },
-        }
-        save_state(state)
+        state_transaction(
+            "runtime_thinking_clear",
+            lambda state: state.__setitem__(
+                "runtime",
+                {
+                    "thinking": {
+                        "active": False,
+                        "label": "",
+                        "source": "",
+                        "started_at": "",
+                        "operation_id": "",
+                    },
+                },
+            ),
+        )
     except Exception:
         pass
 
@@ -183,21 +198,50 @@ def session_operation_lock(label: str = "Operacion", blocking: bool = True):
     if not SESSION_LOCK.acquire(blocking=blocking):
         raise SessionOperationBusy("Ya hay una operacion de Yarbis en curso.")
 
+    operation_label = str(label).strip() or "Operacion"
+    operation_id = activity.new_operation_id(operation_label)
     try:
-        handle = _acquire_operation_file_lock(label=label, blocking=blocking)
+        handle = _acquire_operation_file_lock(
+            label=operation_label,
+            blocking=blocking,
+            operation_id=operation_id,
+        )
         if handle is None:
+            activity.emit_event(
+                "operation_busy",
+                operation_id=operation_id,
+                label=operation_label,
+                blocking=blocking,
+            )
             raise SessionOperationBusy("Ya hay una operacion de Yarbis en curso.")
 
         _OPERATION_LOCK_LOCAL.depth = 1
-        _set_runtime_thinking(label)
+        _OPERATION_LOCK_LOCAL.operation_id = operation_id
+        activity.emit_event("operation_started", operation_id=operation_id, label=operation_label)
+        _set_runtime_thinking(operation_label, operation_id)
         try:
             yield
+        except Exception as exc:
+            activity.emit_event(
+                "operation_failed",
+                operation_id=operation_id,
+                label=operation_label,
+                error=str(exc),
+            )
+            raise
+        else:
+            activity.emit_event("operation_finished", operation_id=operation_id, label=operation_label)
         finally:
             _OPERATION_LOCK_LOCAL.depth = 0
+            _OPERATION_LOCK_LOCAL.operation_id = ""
             _clear_runtime_thinking()
             _release_operation_file_lock(handle)
     finally:
         SESSION_LOCK.release()
+
+
+def current_operation_id() -> str:
+    return str(getattr(_OPERATION_LOCK_LOCAL, "operation_id", "") or "").strip()
 
 
 def has_pending_user_question(state) -> bool:
@@ -230,55 +274,6 @@ def clear_pending_user_question(state):
         "reason": "",
         "fields": [],
     }
-
-
-def _normalize_intent_text(text: str) -> str:
-    normalized = unicodedata.normalize("NFKD", str(text).strip().lower())
-    without_accents = "".join(
-        char for char in normalized
-        if not unicodedata.combining(char)
-    )
-    without_punctuation = re.sub(r"[^\w\s]", " ", without_accents)
-    return " ".join(without_punctuation.replace("_", " ").split())
-
-
-def _looks_like_affirmative_action_reply(text: str) -> bool:
-    normalized = _normalize_intent_text(text)
-    if not normalized:
-        return False
-
-    exact_replies = {
-        "si",
-        "si hazlo",
-        "si adelante",
-        "si por favor",
-        "hazlo",
-        "adelante",
-        "dale",
-        "ok",
-        "okay",
-        "de acuerdo",
-        "correcto",
-        "confirmo",
-        "procede",
-        "avanza",
-        "ejecutalo",
-        "implementalo",
-    }
-    if normalized in exact_replies:
-        return True
-
-    return normalized.startswith("si ") and any(
-        phrase in normalized
-        for phrase in (
-            "hazlo",
-            "adelante",
-            "procede",
-            "avanza",
-            "ejecuta",
-            "implementa",
-        )
-    )
 
 
 def _message_content_for_user_reply(cleaned_reply: str, state: dict, had_pending_question: bool) -> str:
@@ -338,12 +333,16 @@ def is_self_analysis_request(text: str) -> bool:
 def run_startup_self_analysis() -> str:
     with SESSION_LOCK:
         summary = render_self_knowledge_summary(refresh=True)
-        state = load_state()
-        state["self_knowledge"] = {
-            "last_analyzed_at": datetime.now(timezone.utc).isoformat(),
-            "summary": summary,
-        }
-        save_state(state)
+        state_transaction(
+            "startup_self_analysis",
+            lambda state: state.__setitem__(
+                "self_knowledge",
+                {
+                    "last_analyzed_at": datetime.now(timezone.utc).isoformat(),
+                    "summary": summary,
+                },
+            ),
+        )
         return (
             "Autoanalisis inicial completado. "
             "Yarbis actualizo identidad, codigo fuente, sistema operativo y hardware."
@@ -410,10 +409,11 @@ def update_ui_theme(theme: str) -> str:
         if cleaned_theme not in {"light", "dark"}:
             raise ValueError("Tema invalido. Usa 'light' o 'dark'.")
 
-        state = load_state()
-        state.setdefault("ui", {})
-        state["ui"]["theme"] = cleaned_theme
-        save_state(state)
+        def mutate(state):
+            state.setdefault("ui", {})
+            state["ui"]["theme"] = cleaned_theme
+
+        state_transaction("update_ui_theme", mutate)
         return f"Tema actualizado a {cleaned_theme}."
 
 
@@ -442,12 +442,16 @@ def update_ollama_settings(model: str, timeout_seconds: int) -> str:
                 f"{MIN_OLLAMA_TIMEOUT_SECONDS} y {MAX_OLLAMA_TIMEOUT_SECONDS} segundos."
             )
 
-        state = load_state()
-        state["ollama"] = {
-            "model": cleaned_model,
-            "timeout_seconds": cleaned_timeout,
-        }
-        save_state(state)
+        state_transaction(
+            "update_ollama_settings",
+            lambda state: state.__setitem__(
+                "ollama",
+                {
+                    "model": cleaned_model,
+                    "timeout_seconds": cleaned_timeout,
+                },
+            ),
+        )
         settings = load_state()["ollama"]
 
         return (
@@ -491,15 +495,16 @@ def update_service_proactive_settings(
         if not 0 <= cleaned_start_delay <= 24 * 60 * 60:
             raise ValueError("La espera inicial debe estar entre 0 y 86400 segundos.")
 
-        state = load_state()
-        state.setdefault("service", {})
-        state["service"]["proactive"] = {
-            "enabled": bool(enabled),
-            "interval_seconds": cleaned_interval,
-            "cycles": cleaned_cycles,
-            "start_delay_seconds": cleaned_start_delay,
-        }
-        save_state(state)
+        def mutate(state):
+            state.setdefault("service", {})
+            state["service"]["proactive"] = {
+                "enabled": bool(enabled),
+                "interval_seconds": cleaned_interval,
+                "cycles": cleaned_cycles,
+                "start_delay_seconds": cleaned_start_delay,
+            }
+
+        state_transaction("update_service_proactive_settings", mutate)
         settings = load_state()["service"]["proactive"]
 
         status = "activo" if settings["enabled"] else "desactivado"
@@ -551,41 +556,42 @@ def update_notification_settings(
         if enabled and telegram_enabled and not cleaned_telegram_bot_token:
             raise ValueError("Para usar Telegram necesitas indicar el bot token.")
 
-        state = load_state()
-        defaults = state.get("notifications", {})
-        default_ntfy = defaults.get("ntfy", {}) if isinstance(defaults.get("ntfy", {}), dict) else {}
-        default_telegram = (
-            defaults.get("telegram", {})
-            if isinstance(defaults.get("telegram", {}), dict)
-            else {}
-        )
+        def mutate(state):
+            defaults = state.get("notifications", {})
+            default_ntfy = defaults.get("ntfy", {}) if isinstance(defaults.get("ntfy", {}), dict) else {}
+            default_telegram = (
+                defaults.get("telegram", {})
+                if isinstance(defaults.get("telegram", {}), dict)
+                else {}
+            )
 
-        previous_telegram_token = str(default_telegram.get("bot_token", "")).strip()
-        telegram_last_update_id = default_telegram.get("last_update_id", 0)
-        if cleaned_telegram_bot_token and cleaned_telegram_bot_token != previous_telegram_token:
-            telegram_last_update_id = 0
+            previous_telegram_token = str(default_telegram.get("bot_token", "")).strip()
+            telegram_last_update_id = default_telegram.get("last_update_id", 0)
+            if cleaned_telegram_bot_token and cleaned_telegram_bot_token != previous_telegram_token:
+                telegram_last_update_id = 0
 
-        state["notifications"] = {
-            "enabled": bool(enabled),
-            "channels": channels,
-            "ntfy": {
-                "server": str(ntfy_server).strip() or default_ntfy.get("server", "https://ntfy.sh"),
-                "topic": cleaned_topic,
-                "token": str(ntfy_token).strip(),
-                "priority": str(ntfy_priority).strip().lower(),
-                "tags": str(ntfy_tags).strip(),
-                "timeout_seconds": default_ntfy.get("timeout_seconds", 10),
-            },
-            "telegram": {
-                "api_base": default_telegram.get("api_base", "https://api.telegram.org"),
-                "bot_token": cleaned_telegram_bot_token,
-                "chat_id": cleaned_telegram_chat_id,
-                "timeout_seconds": default_telegram.get("timeout_seconds", 10),
-                "poll_timeout_seconds": default_telegram.get("poll_timeout_seconds", 25),
-                "last_update_id": telegram_last_update_id,
-            },
-        }
-        save_state(state)
+            state["notifications"] = {
+                "enabled": bool(enabled),
+                "channels": channels,
+                "ntfy": {
+                    "server": str(ntfy_server).strip() or default_ntfy.get("server", "https://ntfy.sh"),
+                    "topic": cleaned_topic,
+                    "token": str(ntfy_token).strip(),
+                    "priority": str(ntfy_priority).strip().lower(),
+                    "tags": str(ntfy_tags).strip(),
+                    "timeout_seconds": default_ntfy.get("timeout_seconds", 10),
+                },
+                "telegram": {
+                    "api_base": default_telegram.get("api_base", "https://api.telegram.org"),
+                    "bot_token": cleaned_telegram_bot_token,
+                    "chat_id": cleaned_telegram_chat_id,
+                    "timeout_seconds": default_telegram.get("timeout_seconds", 10),
+                    "poll_timeout_seconds": default_telegram.get("poll_timeout_seconds", 25),
+                    "last_update_id": telegram_last_update_id,
+                },
+            }
+
+        state_transaction("update_notification_settings", mutate)
 
         if not enabled:
             return "Notificaciones desactivadas."
@@ -1037,20 +1043,22 @@ def submit_user_reply(
             )
             return note_result
 
-        state = load_state()
-        had_pending_question = has_pending_user_question(state)
-        auto_cycles_default = state["autonomy"]["auto_cycles_default"]
-        message_content = _message_content_for_user_reply(
-            cleaned_reply,
-            state,
-            had_pending_question,
-        )
-        state["messages"].append({
-            "role": "user",
-            "content": message_content,
-        })
-        clear_pending_user_question(state)
-        save_state(state)
+        def mutate(state):
+            had_pending_question = has_pending_user_question(state)
+            auto_cycles_default = state["autonomy"]["auto_cycles_default"]
+            message_content = _message_content_for_user_reply(
+                cleaned_reply,
+                state,
+                had_pending_question,
+            )
+            state["messages"].append({
+                "role": "user",
+                "content": message_content,
+            })
+            clear_pending_user_question(state)
+            return had_pending_question, auto_cycles_default
+
+        had_pending_question, auto_cycles_default = state_transaction("submit_user_reply", mutate)
 
         if had_pending_question:
             auto_output = run_auto_with_output(

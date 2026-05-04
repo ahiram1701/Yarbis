@@ -1,0 +1,86 @@
+import os
+import re
+from collections.abc import Iterable
+
+REDACTED = "[redacted]"
+SECRET_ENV_NAMES = (
+    "YARBIS_TELEGRAM_BOT_TOKEN",
+    "YARBIS_NTFY_TOKEN",
+)
+_TELEGRAM_BOT_URL_RE = re.compile(r"/bot([^/\s]+)/")
+_TELEGRAM_TOKEN_RE = re.compile(r"\b\d{5,}:[A-Za-z0-9_-]{3,}\b")
+_BEARER_RE = re.compile(r"\bBearer\s+[A-Za-z0-9._~+/=-]{4,}", re.IGNORECASE)
+_ENV_ASSIGNMENT_RE = re.compile(
+    r"\b(YARBIS_TELEGRAM_BOT_TOKEN|YARBIS_NTFY_TOKEN)(\s*[:=]\s*)([^\s,;]+)",
+    re.IGNORECASE,
+)
+
+
+def _notification_settings(state: dict | None) -> dict:
+    if not isinstance(state, dict):
+        return {}
+    notifications = state.get("notifications")
+    if isinstance(notifications, dict):
+        return notifications
+    if any(key in state for key in ("telegram", "ntfy")):
+        return state
+    return {}
+
+
+def _state_secret_values(state: dict | None) -> Iterable[str]:
+    notifications = _notification_settings(state)
+
+    telegram = notifications.get("telegram", {})
+    if isinstance(telegram, dict):
+        yield str(telegram.get("bot_token", "")).strip()
+
+    ntfy = notifications.get("ntfy", {})
+    if isinstance(ntfy, dict):
+        yield str(ntfy.get("token", "")).strip()
+
+
+def _load_current_state() -> dict:
+    try:
+        from memory import load_state
+
+        return load_state()
+    except Exception:
+        return {}
+
+
+def _secret_values(state: dict | None) -> list[str]:
+    values = []
+    source_state = state if state is not None else _load_current_state()
+
+    for value in _state_secret_values(source_state):
+        if value:
+            values.append(value)
+
+    for env_name in SECRET_ENV_NAMES:
+        value = os.getenv(env_name, "").strip()
+        if value:
+            values.append(value)
+
+    unique_values = []
+    seen = set()
+    for value in values:
+        if len(value) < 4 or value in seen:
+            continue
+        seen.add(value)
+        unique_values.append(value)
+    return unique_values
+
+
+def redact_secrets(text: object, state: dict | None = None) -> str:
+    rendered = str(text)
+    if not rendered:
+        return rendered
+
+    redacted = _TELEGRAM_BOT_URL_RE.sub(f"/bot{REDACTED}/", rendered)
+    redacted = _BEARER_RE.sub(f"Bearer {REDACTED}", redacted)
+    redacted = _ENV_ASSIGNMENT_RE.sub(rf"\1\2{REDACTED}", redacted)
+
+    for value in _secret_values(state):
+        redacted = redacted.replace(value, REDACTED)
+
+    return _TELEGRAM_TOKEN_RE.sub(REDACTED, redacted)

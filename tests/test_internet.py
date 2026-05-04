@@ -106,3 +106,17 @@ class InternetTestCase(unittest.TestCase):
         self.assertIn("Primer parrafo.", page["content"])
         self.assertIn("Segundo parrafo.", page["content"])
         self.assertNotIn("console.log", page["content"])
+
+    def test_fetch_web_page_respects_max_page_chars(self):
+        fake_response = FakeResponse(
+            body=("inicio " + ("x" * 500)).encode("utf-8"),
+            url="https://example.com/plain",
+            content_type="text/plain; charset=utf-8",
+        )
+
+        with patch.object(internet.request, "urlopen", return_value=fake_response):
+            page = internet.fetch_web_page("https://example.com/plain", max_page_chars=40)
+
+        self.assertTrue(page["truncated"])
+        self.assertLessEqual(len(page["content"]), 40)
+        self.assertTrue(page["content"].startswith("inicio"))

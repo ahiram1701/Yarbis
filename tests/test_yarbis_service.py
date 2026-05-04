@@ -140,6 +140,7 @@ class YarbisServiceTestCase(unittest.TestCase):
         auto_mock.assert_called_once_with(cycles=2, emit_notifications=False)
         self.assertEqual(state["messages"][-1]["role"], "user")
         self.assertIn("Pulso proactivo 24/7", state["messages"][-1]["content"])
+        self.assertTrue(state["service"]["proactive"]["last_pulse_at"])
         notify_mock.assert_not_called()
 
     def test_run_proactive_pulse_recovers_unanswered_user_message_first(self):

@@ -307,15 +307,7 @@ El archivo `state.json` guarda:
 - resumen de autoconocimiento
 - configuracion de notificaciones
 
-El estado se normaliza antes de guardarse:
-
-- historial: hasta 40 mensajes
-- notas: hasta 30
-- tareas: hasta 60
-- plan: hasta 12 pasos
-- perfil: hasta 12 preferencias y 12 restricciones
-- pregunta pendiente: hasta 280 caracteres
-- resumen de autoconocimiento: hasta 20,000 caracteres
+El estado se normaliza antes de guardarse para mantener estructura compatible y valores validos. Yarbis no recorta destructivamente historial, notas, tareas ni resultados persistentes; cuando necesita enviar contexto al modelo, mostrar previews, resumir diffs o devolver salidas de tools, aplica limites sobre esa salida derivada.
 
 `state.json` y `state.json.tmp` estan ignorados por git.
 
@@ -365,9 +357,9 @@ Yarbis expone al modelo estas herramientas:
 
 Las tools de archivos trabajan solo dentro del workspace.
 
-Limites actuales:
+Limites de salida actuales:
 
-- lectura de archivos: 16,000 bytes
+- lectura de archivos: completa por defecto; opcionalmente acotada hasta 16,000 bytes con `max_bytes`
 - escritura por operacion: 64,000 bytes
 - vista previa de escritura: 600 caracteres
 - diff resumido: 160 lineas
@@ -434,18 +426,29 @@ El servicio usa `.yarbis_runtime/` para PID y log. La marca `.yarbis_runtime/ser
 - `agent.py`: prompt, tool loop, ciclos autonomos y comunicacion con Ollama
 - `main.py`: interfaz de terminal
 - `yarbis_desktop.py`: interfaz grafica Tkinter
+- `ui_theme.py`, `ui_dialogs.py`, `ui_settings_dialogs.py`: tema y dialogos de la UI
 - `yarbis_service.py`: loop Python de fondo ejecutado por el host del servicio
-- `service_manager.py`: inicio, parada, estado y autostart del servicio
+- `service_manager.py`: inicio, parada, estado, autostart y health del servicio
 - `service_host/`: host nativo .NET que se registra ante SCM y controla el proceso Python
-- `memory.py`: estado persistente, defaults y normalizacion
+- `memory.py`: estado persistente, defaults, normalizacion y transacciones
 - `tools.py`: herramientas internas del agente
 - `internet.py`: busqueda y lectura web segura
 - `notifications.py`: Windows, ntfy y Telegram
 - `telegram_inbox.py`: polling y comandos remotos de Telegram
+- `telegram_format.py`: formato compartido de respuestas Telegram
+- `intent_text.py`: normalizacion compartida de intenciones
+- `secrets_redaction.py`: redaccion de tokens en logs, eventos y errores
+- `activity.py`: actividad legible y eventos JSONL
 - `power.py`: apagado, reinicio y cancelacion de acciones de energia de Windows
 - `self_knowledge.py`: autoanalisis local
 - `abrir_yarbis.vbs` y `abrir_yarbis.cmd`: lanzadores de escritorio
 - `tests/`: suite de tests con `unittest`
+
+## Observabilidad
+
+Yarbis escribe actividad humana en `.yarbis_runtime/activity.log` y eventos estructurados en `.yarbis_runtime/events.jsonl`. Los eventos incluyen `operation_id` cuando aplican a ciclos, respuestas, pulsos proactivos o jobs remotos de Telegram, y pasan por redaccion de secretos antes de guardarse.
+
+La funcion `health_status()` de `service_manager.py` reporta servicio, Telegram, pulso proactivo, operacion activa y modelo Ollama. La UI muestra un resumen de ese health en el panel principal.
 
 ## Tests
 
@@ -453,7 +456,22 @@ El servicio usa `.yarbis_runtime/` para PID y log. La marca `.yarbis_runtime/ser
 .\.venv\Scripts\python.exe -m unittest discover -s tests
 ```
 
-Tambien puedes usar la tool interna `run_project_tests`, que ejecuta `unittest` dentro del workspace.
+Validacion completa antes de cerrar cambios:
+
+```powershell
+.\scripts\check.ps1
+```
+
+El script ejecuta la suite Python con `unittest` y compila `service_host\YarbisServiceHost.csproj` con .NET 8. Tambien puedes usar la tool interna `run_project_tests`, que ejecuta `unittest` dentro del workspace.
+
+Lint gradual:
+
+```powershell
+.\.venv\Scripts\python.exe -m pip install -e ".[dev]"
+.\scripts\lint.ps1
+```
+
+Ruff esta configurado solo con reglas seguras iniciales.
 
 ## Limitaciones actuales
 

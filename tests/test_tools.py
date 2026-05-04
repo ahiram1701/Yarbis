@@ -1,7 +1,6 @@
 import json
 import subprocess
 import unittest
-from pathlib import Path
 from unittest.mock import patch
 from uuid import uuid4
 
@@ -25,6 +24,20 @@ class ToolsTestCase(unittest.TestCase):
         result = tools.read_text_file(file_path.relative_to(tools.WORKSPACE_ROOT).as_posix())
 
         self.assertEqual(result, content)
+
+    def test_read_text_file_can_return_bounded_content(self):
+        file_path = self.runtime_dir / "bounded.txt"
+        content = "a" * 200
+        file_path.write_text(content, encoding="utf-8")
+
+        result = tools.read_text_file(
+            file_path.relative_to(tools.WORKSPACE_ROOT).as_posix(),
+            max_bytes=50,
+        )
+
+        self.assertTrue(result.startswith("a" * 50))
+        self.assertIn("truncado por max_bytes=50", result)
+        self.assertNotEqual(result, content)
 
     def test_write_text_file_blocks_paths_outside_workspace(self):
         result = tools.write_text_file("../outside.txt", "hola")
@@ -60,6 +73,25 @@ class ToolsTestCase(unittest.TestCase):
         )
         self.assertTrue(metadata["existed_before"])
 
+    def test_write_text_file_bounds_preview_and_diff(self):
+        file_path = self.runtime_dir / "large_diff.txt"
+        previous_content = "\n".join(f"old {index}" for index in range(tools.MAX_DIFF_LINES + 50))
+        new_content = "\n".join(f"new {index}" for index in range(tools.MAX_DIFF_LINES + 50))
+        file_path.write_text(previous_content, encoding="utf-8")
+
+        with patch.object(tools, "CHECKPOINTS_DIR", self.checkpoints_dir):
+            result = tools.write_text_file(
+                file_path.relative_to(tools.WORKSPACE_ROOT).as_posix(),
+                new_content,
+            )
+
+        preview = result.split("Vista previa:\n", 1)[1].split("\nDiff:\n", 1)[0]
+        diff = result.split("\nDiff:\n", 1)[1].split("\nSiguiente paso recomendado:", 1)[0]
+        self.assertLessEqual(len(preview), tools.MAX_WRITE_PREVIEW_CHARS + 40)
+        self.assertIn("[truncado", preview)
+        self.assertIn("diff truncado", diff)
+        self.assertLessEqual(len(diff.splitlines()), tools.MAX_DIFF_LINES)
+
     def test_restore_checkpoint_recovers_previous_content(self):
         file_path = self.runtime_dir / "recover_me.py"
         file_path.write_text("print('stable')\n", encoding="utf-8")
@@ -94,6 +126,22 @@ class ToolsTestCase(unittest.TestCase):
         self.assertIn("Tests OK.", result)
         self.assertIn("Ran 1 test", result)
         self.assertEqual(run_mock.call_count, 1)
+
+    def test_run_project_tests_bounds_long_output_and_keeps_tail(self):
+        fake_result = subprocess.CompletedProcess(
+            args=["python", "-m", "unittest"],
+            returncode=1,
+            stdout="inicio\n" + ("x" * (tools.MAX_TEST_OUTPUT_CHARS + 500)) + "\nFINAL_RELEVANTE",
+            stderr="",
+        )
+
+        with patch.object(tools.subprocess, "run", return_value=fake_result):
+            result = tools.run_project_tests()
+
+        output = result.split("Salida:\n", 1)[1]
+        self.assertLessEqual(len(output), tools.MAX_TEST_OUTPUT_CHARS)
+        self.assertIn("[truncado", output)
+        self.assertIn("FINAL_RELEVANTE", output)
 
     def test_list_files_returns_relative_paths(self):
         nested_dir = self.runtime_dir / "docs"

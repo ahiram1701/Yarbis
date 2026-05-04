@@ -360,10 +360,10 @@ def fetch_web_page(
     if error or not safe_url:
         raise ValueError(error or "URL no valida.")
 
-    raw_body, final_url, content_type, was_truncated = _http_get(
+    raw_body, final_url, content_type, was_truncated_by_bytes = _http_get(
         safe_url,
         timeout_seconds=timeout_seconds,
-        max_bytes=0,
+        max_bytes=MAX_PAGE_BYTES,
     )
 
     final_safe_url, final_error = validate_public_url(
@@ -392,14 +392,23 @@ def fetch_web_page(
             f"Tipo de contenido no soportado para lectura: {normalized_content_type or content_type}"
         )
 
+    try:
+        normalized_max_page_chars = max(1, int(max_page_chars))
+    except (TypeError, ValueError):
+        normalized_max_page_chars = 12_000
+
     cleaned_content = content_text.strip()
     if not cleaned_content:
         raise ValueError("La pagina no devolvio texto legible.")
+
+    was_truncated_by_chars = len(cleaned_content) > normalized_max_page_chars
+    if was_truncated_by_chars:
+        cleaned_content = cleaned_content[:normalized_max_page_chars].rstrip()
 
     return {
         "url": final_safe_url,
         "title": title,
         "content": cleaned_content,
         "content_type": normalized_content_type or content_type,
-        "truncated": bool(was_truncated),
+        "truncated": bool(was_truncated_by_bytes or was_truncated_by_chars),
     }

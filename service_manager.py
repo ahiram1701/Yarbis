@@ -1,14 +1,17 @@
 import os
 import subprocess
-import sys
 import time
 from pathlib import Path
+
+import activity
+from memory import DEFAULT_OLLAMA_MODEL, DEFAULT_OLLAMA_TIMEOUT_SECONDS, load_state
 
 WORKSPACE_ROOT = Path(__file__).resolve().parent
 RUNTIME_DIR = WORKSPACE_ROOT / ".yarbis_runtime"
 PID_FILE = RUNTIME_DIR / "service.pid"
 STOP_FILE = RUNTIME_DIR / "service.stop"
 LOG_FILE = RUNTIME_DIR / "service.log"
+OPERATION_LOCK_FILE = RUNTIME_DIR / "session.lock"
 SERVICE_SCRIPT = WORKSPACE_ROOT / "yarbis_service.py"
 SERVICE_HOST_PROJECT = WORKSPACE_ROOT / "service_host" / "YarbisServiceHost.csproj"
 SERVICE_HOST_OUTPUT_DIR = RUNTIME_DIR / "service_host"
@@ -251,6 +254,130 @@ def get_service_status() -> dict:
         "start_type": start_type,
     })
     return base
+
+
+def _safe_service_status() -> dict:
+    try:
+        return get_service_status()
+    except Exception as exc:
+        return {
+            "service_name": SERVICE_NAME,
+            "display_name": SERVICE_DISPLAY_NAME,
+            "installed": False,
+            "running": False,
+            "state": "unknown",
+            "pid": None,
+            "autostart_enabled": False,
+            "start_type": "unknown",
+            "log_file": str(LOG_FILE),
+            "service_binary": _service_binary_path(),
+            "error": str(exc),
+        }
+
+
+def health_status() -> dict:
+    try:
+        state = load_state()
+    except Exception as exc:
+        state = {}
+        state_error = str(exc)
+    else:
+        state_error = ""
+
+    notifications = state.get("notifications", {}) if isinstance(state, dict) else {}
+    if not isinstance(notifications, dict):
+        notifications = {}
+    channels = notifications.get("channels", [])
+    telegram = notifications.get("telegram", {})
+    if not isinstance(telegram, dict):
+        telegram = {}
+
+    service = state.get("service", {}) if isinstance(state, dict) else {}
+    if not isinstance(service, dict):
+        service = {}
+    proactive = service.get("proactive", {})
+    if not isinstance(proactive, dict):
+        proactive = {}
+
+    runtime = state.get("runtime", {}) if isinstance(state, dict) else {}
+    if not isinstance(runtime, dict):
+        runtime = {}
+    thinking = runtime.get("thinking", {})
+    if not isinstance(thinking, dict):
+        thinking = {}
+
+    ollama = state.get("ollama", {}) if isinstance(state, dict) else {}
+    if not isinstance(ollama, dict):
+        ollama = {}
+
+    service_status = _safe_service_status()
+    telegram_enabled = bool(notifications.get("enabled", True) and "telegram" in channels)
+    telegram_configured = bool(str(telegram.get("bot_token", "")).strip())
+    telegram_linked = bool(str(telegram.get("chat_id", "")).strip())
+    operation_active = bool(thinking.get("active") and str(thinking.get("label", "")).strip())
+
+    return {
+        "service": service_status,
+        "telegram": {
+            "enabled": telegram_enabled,
+            "configured": telegram_configured,
+            "linked": telegram_linked,
+        },
+        "proactive": {
+            "enabled": bool(proactive.get("enabled")),
+            "interval_seconds": proactive.get("interval_seconds"),
+            "cycles": proactive.get("cycles"),
+            "last_pulse_at": str(proactive.get("last_pulse_at", "")).strip(),
+        },
+        "operation": {
+            "active": operation_active,
+            "label": str(thinking.get("label", "")).strip() if operation_active else "",
+            "operation_id": str(thinking.get("operation_id", "")).strip() if operation_active else "",
+            "started_at": str(thinking.get("started_at", "")).strip() if operation_active else "",
+            "lock_file": str(OPERATION_LOCK_FILE),
+            "lock_file_present": OPERATION_LOCK_FILE.exists(),
+        },
+        "ollama": {
+            "model": str(ollama.get("model", DEFAULT_OLLAMA_MODEL)).strip() or DEFAULT_OLLAMA_MODEL,
+            "timeout_seconds": ollama.get("timeout_seconds", DEFAULT_OLLAMA_TIMEOUT_SECONDS),
+        },
+        "events_file": str(activity.EVENTS_FILE),
+        "state_error": state_error,
+    }
+
+
+def format_health_status(status: dict | None = None) -> str:
+    status = status or health_status()
+    service = status.get("service", {})
+    telegram = status.get("telegram", {})
+    proactive = status.get("proactive", {})
+    operation = status.get("operation", {})
+    ollama = status.get("ollama", {})
+
+    if service.get("running"):
+        service_text = f"servicio activo (PID {service.get('pid') or '-'})"
+    elif service.get("installed"):
+        service_text = f"servicio detenido ({service.get('state', 'unknown')})"
+    else:
+        service_text = "servicio no instalado"
+
+    if telegram.get("enabled"):
+        telegram_text = "Telegram vinculado" if telegram.get("linked") else "Telegram pendiente de vincular"
+    else:
+        telegram_text = "Telegram desactivado"
+
+    pulse_text = "pulso activo" if proactive.get("enabled") else "pulso desactivado"
+    if proactive.get("last_pulse_at"):
+        pulse_text += f", ultimo {proactive['last_pulse_at']}"
+
+    operation_text = (
+        f"operacion activa: {operation.get('label')}"
+        if operation.get("active")
+        else "sin operacion activa"
+    )
+    model_text = f"Ollama {ollama.get('model')} ({ollama.get('timeout_seconds')}s)"
+
+    return " | ".join((service_text, telegram_text, pulse_text, operation_text, model_text))
 
 
 def is_service_running() -> bool:
