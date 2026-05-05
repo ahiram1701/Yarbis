@@ -2,7 +2,9 @@ import json
 import os
 import re
 import sys
+import threading
 from collections.abc import Mapping
+from urllib.parse import urlparse
 
 from ollama import Client
 
@@ -12,6 +14,8 @@ from intent_text import (
 )
 from memory import (
     DEFAULT_OLLAMA_MODEL,
+    DEFAULT_OLLAMA_API_KEY_ENV_VAR,
+    DEFAULT_OLLAMA_HOST,
     DEFAULT_OLLAMA_TIMEOUT_SECONDS,
     MAX_OLLAMA_TIMEOUT_SECONDS,
     MIN_OLLAMA_TIMEOUT_SECONDS,
@@ -33,6 +37,7 @@ from tools import (
     read_text_file,
     request_user_input,
     restore_checkpoint,
+    run_project_check,
     run_project_tests,
     save_note,
     set_plan,
@@ -60,6 +65,7 @@ NON_ACTIONABLE_RETRY_MESSAGE = (
     "de procesador."
 )
 MAX_NON_ACTIONABLE_RETRIES = 1
+_CANCEL_WATCH_INTERVAL_SECONDS = 0.25
 
 
 def _get_env_int(name: str, default: int) -> int:
@@ -74,6 +80,12 @@ def _get_env_int(name: str, default: int) -> int:
 
 
 MODEL = os.getenv("YARBIS_MODEL", DEFAULT_MODEL).strip() or DEFAULT_MODEL
+OLLAMA_FALLBACK_MODELS = []
+OLLAMA_HOST = os.getenv("YARBIS_OLLAMA_HOST", DEFAULT_OLLAMA_HOST).strip() or DEFAULT_OLLAMA_HOST
+OLLAMA_API_KEY_ENV_VAR = (
+    os.getenv("YARBIS_OLLAMA_API_KEY_ENV_VAR", DEFAULT_OLLAMA_API_KEY_ENV_VAR).strip()
+    or DEFAULT_OLLAMA_API_KEY_ENV_VAR
+)
 OLLAMA_TIMEOUT_SECONDS = _get_env_int(
     "YARBIS_OLLAMA_TIMEOUT_SECONDS",
     DEFAULT_OLLAMA_TIMEOUT_SECONDS,
@@ -87,8 +99,63 @@ EMPTY_RESPONSE_RETRIES = max(
     _get_env_int("YARBIS_EMPTY_RESPONSE_RETRIES", DEFAULT_EMPTY_RESPONSE_RETRIES),
 )
 
-client = Client(timeout=OLLAMA_TIMEOUT_SECONDS)
+
+def _env_list(name: str) -> list[str]:
+    raw_value = os.getenv(name, "").strip()
+    if not raw_value:
+        return []
+    return [
+        item.strip()
+        for item in re.split(r"[,;\n]+", raw_value)
+        if item.strip()
+    ]
+
+
+def _normalize_host(host: str) -> str:
+    cleaned = str(host).strip()
+    if cleaned.endswith("/api"):
+        cleaned = cleaned[:-4].rstrip("/")
+    return cleaned.rstrip("/")
+
+
+def _host_uses_ollama_cloud(host: str) -> bool:
+    hostname = urlparse(str(host).strip()).hostname or ""
+    return hostname.lower().endswith("ollama.com")
+
+
+def _ollama_client_signature(host: str, timeout_seconds: int, api_key_env_var: str) -> tuple:
+    cleaned_host = _normalize_host(host)
+    cleaned_env_var = str(api_key_env_var).strip() or DEFAULT_OLLAMA_API_KEY_ENV_VAR
+    api_key = os.getenv(cleaned_env_var, "").strip() if _host_uses_ollama_cloud(cleaned_host) else ""
+    return cleaned_host, int(timeout_seconds), cleaned_env_var, api_key
+
+
+def _build_ollama_client(host: str, timeout_seconds: int, api_key_env_var: str):
+    cleaned_host, _timeout_seconds, cleaned_env_var, api_key = _ollama_client_signature(
+        host,
+        timeout_seconds,
+        api_key_env_var,
+    )
+    kwargs = {"timeout": timeout_seconds}
+    if cleaned_host:
+        kwargs["host"] = cleaned_host
+    if api_key:
+        kwargs["headers"] = {"Authorization": f"Bearer {api_key}"}
+    return Client(**kwargs)
+
+
+client = _build_ollama_client(
+    OLLAMA_HOST,
+    OLLAMA_TIMEOUT_SECONDS,
+    OLLAMA_API_KEY_ENV_VAR,
+)
+_client_signature = _ollama_client_signature(
+    OLLAMA_HOST,
+    OLLAMA_TIMEOUT_SECONDS,
+    OLLAMA_API_KEY_ENV_VAR,
+)
 _client_timeout_seconds = OLLAMA_TIMEOUT_SECONDS
+_client_lock = threading.RLock()
 tool_definitions = [
     agent_overview,
     update_profile,
@@ -109,6 +176,7 @@ tool_definitions = [
     list_checkpoints,
     restore_checkpoint,
     run_project_tests,
+    run_project_check,
     web_search,
     fetch_web_page,
     self_overview,
@@ -134,6 +202,7 @@ available_functions = {
     "list_checkpoints": list_checkpoints,
     "restore_checkpoint": restore_checkpoint,
     "run_project_tests": run_project_tests,
+    "run_project_check": run_project_check,
     "web_search": web_search,
     "fetch_web_page": fetch_web_page,
     "self_overview": self_overview,
@@ -152,6 +221,7 @@ ACTION_PROOF_TOOL_NAMES = {
     "write_text_file",
     "restore_checkpoint",
     "run_project_tests",
+    "run_project_check",
 }
 
 TOOL_FAILURE_PREFIXES = (
@@ -180,6 +250,36 @@ def _normalize_timeout_seconds(value, default: int = DEFAULT_OLLAMA_TIMEOUT_SECO
         parsed = default
 
     return max(MIN_OLLAMA_TIMEOUT_SECONDS, min(MAX_OLLAMA_TIMEOUT_SECONDS, parsed))
+
+
+def _close_ollama_client(ollama_client) -> None:
+    raw_client = getattr(ollama_client, "_client", None)
+    close = getattr(raw_client, "close", None)
+    if callable(close):
+        close()
+
+
+def cancel_active_ollama_request() -> bool:
+    global client, _client_signature, _client_timeout_seconds
+
+    with _client_lock:
+        old_client = client
+        try:
+            _close_ollama_client(old_client)
+        except Exception:
+            pass
+        client = _build_ollama_client(
+            OLLAMA_HOST,
+            OLLAMA_TIMEOUT_SECONDS,
+            OLLAMA_API_KEY_ENV_VAR,
+        )
+        _client_signature = _ollama_client_signature(
+            OLLAMA_HOST,
+            OLLAMA_TIMEOUT_SECONDS,
+            OLLAMA_API_KEY_ENV_VAR,
+        )
+        _client_timeout_seconds = OLLAMA_TIMEOUT_SECONDS
+        return True
 
 
 def _normalize_tool_arguments(raw_arguments) -> tuple[dict | None, str | None]:
@@ -241,6 +341,16 @@ def _resolve_ollama_runtime_settings(state=None) -> dict:
         ollama = {}
 
     model = str(ollama.get("model", DEFAULT_MODEL)).strip() or DEFAULT_MODEL
+    fallback_models = [
+        str(candidate).strip()
+        for candidate in ollama.get("fallback_models", [])
+        if str(candidate).strip()
+    ]
+    host = _normalize_host(ollama.get("host", DEFAULT_OLLAMA_HOST))
+    api_key_env_var = (
+        str(ollama.get("api_key_env_var", DEFAULT_OLLAMA_API_KEY_ENV_VAR)).strip()
+        or DEFAULT_OLLAMA_API_KEY_ENV_VAR
+    )
     timeout_seconds = _normalize_timeout_seconds(
         ollama.get("timeout_seconds", DEFAULT_OLLAMA_TIMEOUT_SECONDS),
     )
@@ -249,28 +359,69 @@ def _resolve_ollama_runtime_settings(state=None) -> dict:
     if env_model:
         model = env_model
 
+    env_fallback_models = _env_list("YARBIS_OLLAMA_FALLBACK_MODELS")
+    if env_fallback_models:
+        fallback_models = env_fallback_models
+
+    env_host = os.getenv("YARBIS_OLLAMA_HOST", "").strip()
+    if env_host:
+        host = _normalize_host(env_host)
+
+    env_api_key_env_var = os.getenv("YARBIS_OLLAMA_API_KEY_ENV_VAR", "").strip()
+    if env_api_key_env_var:
+        api_key_env_var = env_api_key_env_var
+
     env_timeout = os.getenv("YARBIS_OLLAMA_TIMEOUT_SECONDS", "").strip()
     if env_timeout:
         timeout_seconds = _normalize_timeout_seconds(env_timeout, timeout_seconds)
 
+    model_candidates = []
+    for candidate in [model, *fallback_models]:
+        if candidate and candidate not in model_candidates:
+            model_candidates.append(candidate)
+
     return {
-        "model": model,
+        "model": model_candidates[0] if model_candidates else DEFAULT_MODEL,
+        "fallback_models": model_candidates[1:],
+        "models": model_candidates or [DEFAULT_MODEL],
+        "host": host,
+        "api_key_env_var": api_key_env_var,
         "timeout_seconds": timeout_seconds,
     }
 
 
 def _apply_ollama_runtime_settings(state=None):
-    global MODEL, OLLAMA_TIMEOUT_SECONDS, client, _client_timeout_seconds
+    global MODEL, OLLAMA_FALLBACK_MODELS, OLLAMA_HOST, OLLAMA_API_KEY_ENV_VAR
+    global OLLAMA_TIMEOUT_SECONDS, client, _client_signature, _client_timeout_seconds
 
     settings = _resolve_ollama_runtime_settings(state)
     MODEL = settings["model"]
+    OLLAMA_FALLBACK_MODELS = settings["fallback_models"]
+    OLLAMA_HOST = settings["host"]
+    OLLAMA_API_KEY_ENV_VAR = settings["api_key_env_var"]
     OLLAMA_TIMEOUT_SECONDS = settings["timeout_seconds"]
 
-    if _client_timeout_seconds != OLLAMA_TIMEOUT_SECONDS:
-        client = Client(timeout=OLLAMA_TIMEOUT_SECONDS)
-        _client_timeout_seconds = OLLAMA_TIMEOUT_SECONDS
+    with _client_lock:
+        signature = _ollama_client_signature(
+            OLLAMA_HOST,
+            OLLAMA_TIMEOUT_SECONDS,
+            OLLAMA_API_KEY_ENV_VAR,
+        )
+        if _client_signature != signature:
+            try:
+                _close_ollama_client(client)
+            except Exception:
+                pass
+            client = _build_ollama_client(
+                OLLAMA_HOST,
+                OLLAMA_TIMEOUT_SECONDS,
+                OLLAMA_API_KEY_ENV_VAR,
+            )
+            _client_signature = signature
+            _client_timeout_seconds = OLLAMA_TIMEOUT_SECONDS
+        current_client = client
 
-    return MODEL, OLLAMA_TIMEOUT_SECONDS, client
+    return settings, current_client
 
 
 SYSTEM_PROMPT = """
@@ -313,7 +464,7 @@ Reglas:
 - Antes de razonar sobre tu propio codigo con detalle, usa `self_overview`, `list_files` o `read_text_file` segun haga falta.
 - Antes de editar archivos de codigo, lee primero el archivo actual con `read_text_file`.
 - `write_text_file` crea un checkpoint automatico y devuelve un diff. Usalo para cambios pequenos, enfocados y bien entendidos.
-- Despues de modificar codigo o tests, ejecuta `run_project_tests`.
+- Despues de modificar codigo o tests, ejecuta `run_project_tests`; antes de cerrar cambios grandes, usa `run_project_check` para tests Python y build .NET.
 - Si un cambio rompe algo, revisa `list_checkpoints` y usa `restore_checkpoint` para volver al estado anterior.
 - Despues de cada accion, evalua el siguiente mejor paso.
 - Si una tarea ya quedo resuelta, dilo claramente y deja evidencia en el estado.
@@ -455,17 +606,31 @@ def _is_timeout_error(exc: Exception) -> bool:
 
 def _format_chat_error(exc: Exception) -> str:
     error_text = f"No pude consultar Ollama en este ciclo: {exc}"
+    host_text = OLLAMA_HOST or "local"
+    fallback_text = (
+        f" Fallbacks configurados: {', '.join(OLLAMA_FALLBACK_MODELS)}."
+        if OLLAMA_FALLBACK_MODELS
+        else ""
+    )
+    cloud_hint = ""
+    if _host_uses_ollama_cloud(OLLAMA_HOST) and not os.getenv(OLLAMA_API_KEY_ENV_VAR, "").strip():
+        cloud_hint = (
+            f"\nPara Ollama Cloud directo, define `{OLLAMA_API_KEY_ENV_VAR}` "
+            "o cambia el host a local y usa `ollama signin`."
+        )
     if not _is_timeout_error(exc):
-        return error_text
+        return f"{error_text}\nHost Ollama: {host_text}.{fallback_text}{cloud_hint}"
 
     return (
         f"{error_text}\n\n"
         "Diagnostico: Ollama no respondio dentro del tiempo configurado "
-        f"({OLLAMA_TIMEOUT_SECONDS}s) usando el modelo {MODEL}.\n"
+        f"({OLLAMA_TIMEOUT_SECONDS}s) usando el modelo {MODEL} en {host_text}."
+        f"{fallback_text}\n"
         "Para resolverlo, verifica que Ollama este activo, calienta el modelo con "
-        f"`ollama run {MODEL}`, aumenta el timeout en la interfaz grafica o con "
-        "`YARBIS_OLLAMA_TIMEOUT_SECONDS`, o usa un modelo mas ligero desde la interfaz "
-        "o con `YARBIS_MODEL`."
+        f"`ollama run {MODEL}`, aumenta el timeout desde la app, Telegram "
+        "(`/timeout`) o con `YARBIS_OLLAMA_TIMEOUT_SECONDS`, o usa un modelo mas "
+        "ligero desde la app, Telegram (`/modelo`) o con `YARBIS_MODEL`."
+        f"{cloud_hint}"
     )
 
 
@@ -503,6 +668,116 @@ def _build_waiting_for_user_input_result(state, used_tools: bool = False) -> dic
         "used_tools": used_tools,
         "looks_meta": False,
         "needs_user_input": True,
+    }
+
+
+def _stop_requested_for_operation(state=None, operation_id: str = "") -> bool:
+    if state is None:
+        state = load_state()
+
+    runtime = state.get("runtime", {}) if isinstance(state, dict) else {}
+    if not isinstance(runtime, dict):
+        return False
+
+    stop_requested = runtime.get("stop_requested", {})
+    if not isinstance(stop_requested, dict) or not stop_requested.get("active"):
+        return False
+
+    requested_operation_id = str(stop_requested.get("operation_id", "")).strip()
+    if operation_id and requested_operation_id and requested_operation_id != operation_id:
+        return False
+
+    thinking = runtime.get("thinking", {})
+    thinking_operation_id = ""
+    if isinstance(thinking, dict):
+        thinking_operation_id = str(thinking.get("operation_id", "")).strip()
+
+    if requested_operation_id and thinking_operation_id and requested_operation_id != thinking_operation_id:
+        return False
+
+    return True
+
+
+def _current_runtime_operation_id(state=None) -> str:
+    if state is None:
+        state = load_state()
+
+    runtime = state.get("runtime", {}) if isinstance(state, dict) else {}
+    if not isinstance(runtime, dict):
+        return ""
+
+    thinking = runtime.get("thinking", {})
+    if not isinstance(thinking, dict):
+        return ""
+    return str(thinking.get("operation_id", "")).strip()
+
+
+def _cancel_watchdog(operation_id: str, stop_event: threading.Event):
+    while not stop_event.wait(_CANCEL_WATCH_INTERVAL_SECONDS):
+        try:
+            if _stop_requested_for_operation(operation_id=operation_id):
+                cancel_active_ollama_request()
+                return
+        except Exception:
+            continue
+
+
+def _chat_with_cancel_watch(ollama_client, operation_id: str, **kwargs):
+    stop_event = threading.Event()
+    watcher = threading.Thread(
+        target=_cancel_watchdog,
+        args=(operation_id, stop_event),
+        name="yarbis-ollama-cancel-watchdog",
+        daemon=True,
+    )
+    watcher.start()
+    try:
+        return ollama_client.chat(**kwargs)
+    finally:
+        stop_event.set()
+
+
+def _chat_with_model_candidates(
+    ollama_client,
+    operation_id: str,
+    model_candidates: list[str],
+    **kwargs,
+):
+    errors = []
+    last_exc = None
+    for model_name in model_candidates:
+        try:
+            return _chat_with_cancel_watch(
+                ollama_client,
+                operation_id=operation_id,
+                model=model_name,
+                **kwargs,
+            )
+        except Exception as exc:
+            if _stop_requested_for_operation(operation_id=operation_id):
+                raise
+            last_exc = exc
+            errors.append(f"{model_name}: {exc}")
+
+    if len(errors) > 1:
+        raise RuntimeError("Todos los modelos configurados fallaron: " + " | ".join(errors))
+    if last_exc is not None:
+        raise last_exc
+    raise RuntimeError("No hay modelos Ollama configurados.")
+
+
+def _handle_stop_requested(state, used_tools: bool = False, action_tools_used: bool = False) -> dict:
+    final_text = "Operacion detenida por solicitud del usuario."
+    _print_output(f"\nYarbis:\n{final_text}")
+    _record_assistant_message(state, final_text)
+    return {
+        "status": "cancelled",
+        "content": final_text,
+        "used_tools": used_tools,
+        "action_tools_used": action_tools_used,
+        "looks_meta": False,
+        "needs_user_input": False,
+        "cancelled": True,
     }
 
 
@@ -772,6 +1047,36 @@ def _should_reject_non_actionable_final(
     )
 
 
+def _should_retry_rejected_final(
+    state,
+    text: str,
+    used_tools: bool,
+    action_tools_used: bool = False,
+) -> bool:
+    if not _should_reject_non_actionable_final(
+        state,
+        text,
+        used_tools=used_tools,
+        action_tools_used=action_tools_used,
+    ):
+        return False
+
+    if (
+        not used_tools
+        and (
+            _looks_like_unsolicited_self_intro_or_capabilities(text)
+            or _looks_like_environment_claim(text)
+        )
+        and not (
+            _last_user_authorized_action(state)
+            or _last_user_requested_action(state)
+        )
+    ):
+        return False
+
+    return True
+
+
 def _safe_rejected_final_message(state, text: str) -> str:
     if _looks_like_environment_claim(text) and not _last_user_asked_about_environment(state):
         return (
@@ -888,6 +1193,9 @@ def _extract_user_input_request(text: str) -> str:
 
 def run_one_cycle(max_steps=None):
     state = load_state()
+    if _stop_requested_for_operation(state):
+        return _handle_stop_requested(state)
+
     if _is_waiting_for_user_input(state):
         return _build_waiting_for_user_input_result(state)
 
@@ -903,7 +1211,9 @@ def run_one_cycle(max_steps=None):
     if max_steps is None:
         max_steps = state["autonomy"]["max_steps_per_cycle"]
 
-    model, _timeout_seconds, ollama_client = _apply_ollama_runtime_settings(state)
+    ollama_settings, ollama_client = _apply_ollama_runtime_settings(state)
+    model_candidates = ollama_settings["models"]
+    operation_id = _current_runtime_operation_id(state)
 
     print(f"\n=== CICLO {state['cycle_count']} ===")
     used_tools = False
@@ -914,15 +1224,32 @@ def run_one_cycle(max_steps=None):
     for step in range(1, max_steps + 1):
         print(f"\n--- Paso {step} ---")
 
+        state = load_state()
+        if _stop_requested_for_operation(state, operation_id=operation_id):
+            return _handle_stop_requested(state, used_tools=used_tools, action_tools_used=action_tools_used)
+
         try:
-            response = ollama_client.chat(
-                model=model,
+            response = _chat_with_model_candidates(
+                ollama_client,
+                operation_id=operation_id,
+                model_candidates=model_candidates,
                 messages=build_messages(state),
                 tools=tool_definitions,
                 think=False,
             )
         except Exception as exc:
+            latest_state = load_state()
+            if _stop_requested_for_operation(latest_state, operation_id=operation_id):
+                return _handle_stop_requested(
+                    latest_state,
+                    used_tools=used_tools,
+                    action_tools_used=action_tools_used,
+                )
             return _handle_chat_error(state, exc)
+
+        state = load_state()
+        if _stop_requested_for_operation(state, operation_id=operation_id):
+            return _handle_stop_requested(state, used_tools=used_tools, action_tools_used=action_tools_used)
 
         assistant_message = response.message
         assistant_content = assistant_message.content or ""
@@ -951,6 +1278,14 @@ def run_one_cycle(max_steps=None):
             state = load_state()
 
             for tool_call in assistant_message.tool_calls:
+                state = load_state()
+                if _stop_requested_for_operation(state, operation_id=operation_id):
+                    return _handle_stop_requested(
+                        state,
+                        used_tools=used_tools,
+                        action_tools_used=action_tools_used,
+                    )
+
                 tool_name = tool_call.function.name
                 raw_tool_args = tool_call.function.arguments
                 tool_args, tool_args_error = _normalize_tool_arguments(raw_tool_args)
@@ -984,12 +1319,25 @@ def run_one_cycle(max_steps=None):
 
                 state_transaction("record_tool_output", record_tool_output)
                 state = load_state()
+                if _stop_requested_for_operation(state, operation_id=operation_id):
+                    return _handle_stop_requested(
+                        state,
+                        used_tools=used_tools,
+                        action_tools_used=action_tools_used,
+                    )
 
             if _is_waiting_for_user_input(state):
                 return _build_waiting_for_user_input_result(state, used_tools=used_tools)
             continue
 
         final_text = assistant_content.strip()
+        latest_state = load_state()
+        if _stop_requested_for_operation(latest_state, operation_id=operation_id):
+            return _handle_stop_requested(
+                latest_state,
+                used_tools=used_tools,
+                action_tools_used=action_tools_used,
+            )
         if not final_text:
             if empty_response_retries < EMPTY_RESPONSE_RETRIES:
                 empty_response_retries += 1
@@ -1024,6 +1372,12 @@ def run_one_cycle(max_steps=None):
         )
         if (
             non_actionable_final
+            and _should_retry_rejected_final(
+                state,
+                final_text,
+                used_tools=used_tools,
+                action_tools_used=action_tools_used,
+            )
             and non_actionable_retries < MAX_NON_ACTIONABLE_RETRIES
             and step < max_steps
         ):
@@ -1090,6 +1444,10 @@ def run_autonomous_session(cycles=None):
 
     for _ in range(cycles):
         current_state = load_state()
+        if _stop_requested_for_operation(current_state):
+            print("\nYarbis: operacion detenida por solicitud del usuario.")
+            break
+
         if _is_waiting_for_user_input(current_state):
             print("\nYarbis: estoy esperando una respuesta del usuario antes de continuar.")
             print(f"Pregunta pendiente: {current_state['awaiting_user_input']['question']}")
@@ -1108,6 +1466,10 @@ def run_autonomous_session(cycles=None):
 
         updated_state = load_state()
         saw_tasks = saw_tasks or bool(updated_state["tasks"])
+        if cycle_result.get("status") == "cancelled" or _stop_requested_for_operation(updated_state):
+            print("\nYarbis: operacion detenida por solicitud del usuario.")
+            break
+
         if cycle_result.get("needs_user_input") or _is_waiting_for_user_input(updated_state):
             print("\nYarbis: falta informacion del usuario. Deteniendo modo autonomo.")
             break

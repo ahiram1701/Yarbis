@@ -91,6 +91,85 @@ def emit_event(event_type: object, operation_id: str | None = None, **fields) ->
     return event
 
 
+def _parse_event_timestamp(value: object) -> str:
+    text = str(value).strip()
+    if not text:
+        return _timestamp()
+    try:
+        parsed = datetime.fromisoformat(text)
+        return parsed.astimezone().strftime("%Y-%m-%d %H:%M:%S")
+    except ValueError:
+        return text
+
+
+def _event_title(event: dict) -> str:
+    event_type = str(event.get("type", "event")).strip() or "event"
+    label = str(event.get("label", "")).strip()
+    if label:
+        if event_type == "operation_started":
+            return f"{label} iniciado"
+        if event_type == "operation_finished":
+            return f"{label} finalizado"
+        if event_type == "remote_job_started":
+            return f"{label} remoto iniciado"
+        if event_type == "remote_job_finished":
+            return f"{label} remoto finalizado"
+        if event_type == "remote_job_failed":
+            return f"{label} remoto con error"
+        return label
+    return event_type.replace("_", " ").capitalize()
+
+
+def _event_content(event: dict) -> str:
+    preferred_keys = ("content", "status_text", "reason")
+    for key in preferred_keys:
+        value = str(event.get(key, "")).strip()
+        if value:
+            return value
+
+    details = []
+    for key in ("operation_id", "source", "last_pulse_at", "recovered_user_message"):
+        if key in event and str(event.get(key)).strip():
+            details.append(f"{key}: {event[key]}")
+    return "\n".join(details) if details else "Sin salida adicional."
+
+
+def read_recent_events(limit: int = 80) -> list[dict]:
+    try:
+        normalized_limit = max(1, min(500, int(limit)))
+    except (TypeError, ValueError):
+        normalized_limit = 80
+
+    with _ACTIVITY_LOCK:
+        try:
+            lines = EVENTS_FILE.read_text(encoding="utf-8").splitlines()
+        except FileNotFoundError:
+            return []
+        except OSError:
+            return []
+
+    events = []
+    for line in lines[-normalized_limit:]:
+        try:
+            parsed = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(parsed, dict):
+            events.append(parsed)
+    return events
+
+
+def render_recent_events(limit: int = 80) -> str:
+    rendered = []
+    for event in read_recent_events(limit=limit):
+        rendered.append(format_activity_entry(
+            _event_title(event),
+            _event_content(event),
+            timestamp=_parse_event_timestamp(event.get("timestamp", "")),
+        ))
+    return "".join(rendered)
+
+
 def read_activity_log() -> str:
     with _ACTIVITY_LOCK:
         try:
@@ -104,7 +183,25 @@ def read_activity_log() -> str:
             )
 
 
+def read_activity_history(event_limit: int = 80) -> str:
+    human_log = read_activity_log()
+    event_log = render_recent_events(limit=event_limit)
+    if human_log and event_log:
+        return human_log + "Eventos recientes\n\n" + event_log
+    return human_log or event_log
+
+
 def clear_activity_log():
     with _ACTIVITY_LOCK:
         ACTIVITY_LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
         ACTIVITY_LOG_FILE.write_text("", encoding="utf-8")
+
+
+def clear_activity_history():
+    clear_activity_log()
+    with _ACTIVITY_LOCK:
+        try:
+            EVENTS_FILE.parent.mkdir(parents=True, exist_ok=True)
+            EVENTS_FILE.write_text("", encoding="utf-8")
+        except OSError:
+            pass

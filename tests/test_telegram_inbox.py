@@ -92,6 +92,157 @@ class TelegramInboxTestCase(unittest.TestCase):
         self.assertIn("Respuesta procesada.", sent_text)
         self.assertEqual(send_mock.call_args.kwargs["chat_id"], "123")
 
+    def test_process_telegram_update_stops_current_operation(self):
+        state_path = TEST_RUNTIME_DIR / "telegram_stop_state.json"
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+
+        seeded_state = memory.normalize_state({
+            "notifications": {
+                "enabled": True,
+                "channels": ["telegram"],
+                "telegram": {
+                    "bot_token": "bot-123",
+                    "chat_id": "123",
+                },
+            },
+        })
+        update = {
+            "update_id": 23,
+            "message": {
+                "chat": {"id": 123, "type": "private"},
+                "text": "/stop",
+            },
+        }
+
+        with patch.object(memory, "STATE_FILE", state_path):
+            memory.save_state(seeded_state)
+            with patch.object(
+                telegram_inbox,
+                "request_stop_current_operation",
+                return_value="Solicitud de parada enviada para Ciclo.",
+            ) as stop_mock:
+                with patch.object(telegram_inbox, "send_telegram_message", return_value=True) as send_mock:
+                    telegram_inbox.process_telegram_update(update)
+
+        stop_mock.assert_called_once_with(source="telegram")
+        self.assertIn("Solicitud de parada enviada", send_mock.call_args.args[0])
+
+    def test_process_telegram_update_changes_ollama_model_and_timeout(self):
+        state_path = TEST_RUNTIME_DIR / "telegram_ollama_state.json"
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+
+        seeded_state = memory.normalize_state({
+            "notifications": {
+                "enabled": True,
+                "channels": ["telegram"],
+                "telegram": {
+                    "bot_token": "bot-123",
+                    "chat_id": "123",
+                },
+            },
+        })
+        update = {
+            "update_id": 24,
+            "message": {
+                "chat": {"id": 123, "type": "private"},
+                "text": "/ollama llama3.2:3b 15m",
+            },
+        }
+
+        with patch.object(memory, "STATE_FILE", state_path):
+            memory.save_state(seeded_state)
+            with patch.object(telegram_inbox, "send_telegram_message", return_value=True) as send_mock:
+                telegram_inbox.process_telegram_update(update)
+            state = memory.load_state()
+
+        self.assertEqual(state["ollama"]["model"], "llama3.2:3b")
+        self.assertEqual(state["ollama"]["timeout_seconds"], 900)
+        sent_text = send_mock.call_args.args[0]
+        self.assertIn("Configuracion de Ollama actualizada", sent_text)
+        self.assertIn("llama3.2:3b", sent_text)
+
+    def test_process_telegram_update_changes_timeout_only(self):
+        state_path = TEST_RUNTIME_DIR / "telegram_timeout_state.json"
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+
+        seeded_state = memory.normalize_state({
+            "ollama": {
+                "model": "llama3.2:3b",
+                "timeout_seconds": 300,
+            },
+            "notifications": {
+                "enabled": True,
+                "channels": ["telegram"],
+                "telegram": {
+                    "bot_token": "bot-123",
+                    "chat_id": "123",
+                },
+            },
+        })
+        update = {
+            "update_id": 25,
+            "message": {
+                "chat": {"id": 123, "type": "private"},
+                "text": "/timeout 1200",
+            },
+        }
+
+        with patch.object(memory, "STATE_FILE", state_path):
+            memory.save_state(seeded_state)
+            with patch.object(telegram_inbox, "send_telegram_message", return_value=True):
+                telegram_inbox.process_telegram_update(update)
+            state = memory.load_state()
+
+        self.assertEqual(state["ollama"]["model"], "llama3.2:3b")
+        self.assertEqual(state["ollama"]["timeout_seconds"], 1200)
+
+    def test_process_telegram_update_changes_ollama_cloud_and_fallbacks(self):
+        state_path = TEST_RUNTIME_DIR / "telegram_ollama_cloud_state.json"
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+
+        seeded_state = memory.normalize_state({
+            "ollama": {
+                "model": "qwen3.5:2b",
+                "timeout_seconds": 300,
+            },
+            "notifications": {
+                "enabled": True,
+                "channels": ["telegram"],
+                "telegram": {
+                    "bot_token": "bot-123",
+                    "chat_id": "123",
+                },
+            },
+        })
+        cloud_update = {
+            "update_id": 26,
+            "message": {
+                "chat": {"id": 123, "type": "private"},
+                "text": "/ollama cloud gpt-oss:120b",
+            },
+        }
+        fallback_update = {
+            "update_id": 27,
+            "message": {
+                "chat": {"id": 123, "type": "private"},
+                "text": "/ollama fallback qwen3.5:2b, gpt-oss:120b-cloud",
+            },
+        }
+
+        with patch.object(memory, "STATE_FILE", state_path):
+            memory.save_state(seeded_state)
+            with patch.object(telegram_inbox, "send_telegram_message", return_value=True):
+                telegram_inbox.process_telegram_update(cloud_update)
+                telegram_inbox.process_telegram_update(fallback_update)
+            state = memory.load_state()
+
+        self.assertEqual(state["ollama"]["model"], "gpt-oss:120b")
+        self.assertEqual(state["ollama"]["host"], "https://ollama.com")
+        self.assertEqual(
+            state["ollama"]["fallback_models"],
+            ["qwen3.5:2b", "gpt-oss:120b-cloud"],
+        )
+
     def test_activity_text_keeps_full_telegram_message(self):
         long_text = "mensaje largo " * 80
 
@@ -522,9 +673,15 @@ class TelegramInboxTestCase(unittest.TestCase):
             ) as shutdown_mock:
                 with patch.object(telegram_inbox, "send_telegram_message", return_value=True) as send_mock:
                     summary = telegram_inbox.process_telegram_update(update)
+                    state = memory.load_state()
 
-        shutdown_mock.assert_called_once_with(delay_seconds=300)
-        send_mock.assert_called_once_with("Apagado programado.", chat_id="123")
+        shutdown_mock.assert_not_called()
+        pending = state["notifications"]["telegram"]["pending_power_confirmation"]
+        self.assertEqual(pending["action"], "shutdown")
+        self.assertEqual(pending["delay_seconds"], 300)
+        self.assertEqual(pending["chat_id"], "123")
+        self.assertIn("Confirmacion requerida", send_mock.call_args.args[0])
+        self.assertIn("/confirmar_apagado", send_mock.call_args.args[0])
         self.assertIn("Telegram: procesado", summary)
 
     def test_process_telegram_update_routes_restart_command(self):
@@ -559,9 +716,14 @@ class TelegramInboxTestCase(unittest.TestCase):
             ) as restart_mock:
                 with patch.object(telegram_inbox, "send_telegram_message", return_value=True) as send_mock:
                     summary = telegram_inbox.process_telegram_update(update)
+                    state = memory.load_state()
 
-        restart_mock.assert_called_once_with(delay_seconds=180)
-        send_mock.assert_called_once_with("Reinicio programado.", chat_id="123")
+        restart_mock.assert_not_called()
+        pending = state["notifications"]["telegram"]["pending_power_confirmation"]
+        self.assertEqual(pending["action"], "restart")
+        self.assertEqual(pending["delay_seconds"], 180)
+        self.assertIn("Confirmacion requerida", send_mock.call_args.args[0])
+        self.assertIn("/confirmar_reinicio", send_mock.call_args.args[0])
         self.assertIn("Telegram: procesado", summary)
 
     def test_process_telegram_update_routes_natural_shutdown_phrase(self):
@@ -598,9 +760,10 @@ class TelegramInboxTestCase(unittest.TestCase):
                     with patch.object(telegram_inbox, "send_telegram_message", return_value=True) as send_mock:
                         telegram_inbox.process_telegram_update(update)
 
-        shutdown_mock.assert_called_once_with(delay_seconds=60)
+        shutdown_mock.assert_not_called()
         reply_mock.assert_not_called()
-        send_mock.assert_called_once_with("Apagado programado.", chat_id="123")
+        self.assertIn("Confirmacion requerida", send_mock.call_args.args[0])
+        self.assertIn("/confirmar_apagado", send_mock.call_args.args[0])
 
     def test_process_telegram_update_routes_natural_restart_phrase(self):
         state_path = TEST_RUNTIME_DIR / "telegram_natural_restart_state.json"
@@ -636,9 +799,10 @@ class TelegramInboxTestCase(unittest.TestCase):
                     with patch.object(telegram_inbox, "send_telegram_message", return_value=True) as send_mock:
                         telegram_inbox.process_telegram_update(update)
 
-        restart_mock.assert_called_once_with(delay_seconds=60)
+        restart_mock.assert_not_called()
         reply_mock.assert_not_called()
-        send_mock.assert_called_once_with("Reinicio programado.", chat_id="123")
+        self.assertIn("Confirmacion requerida", send_mock.call_args.args[0])
+        self.assertIn("/confirmar_reinicio", send_mock.call_args.args[0])
 
     def test_process_telegram_update_routes_short_natural_shutdown_phrase(self):
         state_path = TEST_RUNTIME_DIR / "telegram_short_natural_shutdown_state.json"
@@ -674,9 +838,100 @@ class TelegramInboxTestCase(unittest.TestCase):
                     with patch.object(telegram_inbox, "send_telegram_message", return_value=True) as send_mock:
                         telegram_inbox.process_telegram_update(update)
 
-        shutdown_mock.assert_called_once_with(delay_seconds=60)
+        shutdown_mock.assert_not_called()
         reply_mock.assert_not_called()
-        send_mock.assert_called_once_with("Apagado programado.", chat_id="123")
+        self.assertIn("Confirmacion requerida", send_mock.call_args.args[0])
+        self.assertIn("/confirmar_apagado", send_mock.call_args.args[0])
+
+    def test_process_telegram_update_confirms_pending_shutdown(self):
+        state_path = TEST_RUNTIME_DIR / "telegram_confirm_shutdown_state.json"
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+
+        seeded_state = memory.normalize_state({
+            "notifications": {
+                "enabled": True,
+                "channels": ["telegram"],
+                "telegram": {
+                    "bot_token": "bot-123",
+                    "chat_id": "123",
+                    "pending_power_confirmation": {
+                        "action": "shutdown",
+                        "delay_seconds": 300,
+                        "token": "ABC123",
+                        "chat_id": "123",
+                        "requested_at": "2026-05-05T10:00:00+00:00",
+                    },
+                },
+            },
+        })
+
+        update = {
+            "update_id": 70,
+            "message": {
+                "chat": {"id": 123, "type": "private"},
+                "text": "/confirmar_apagado ABC123",
+            },
+        }
+
+        with patch.object(memory, "STATE_FILE", state_path):
+            memory.save_state(seeded_state)
+            with patch.object(telegram_inbox, "_power_confirmation_expired", return_value=False):
+                with patch.object(
+                    telegram_inbox,
+                    "request_system_shutdown",
+                    return_value="Apagado programado.",
+                ) as shutdown_mock:
+                    with patch.object(telegram_inbox, "send_telegram_message", return_value=True) as send_mock:
+                        telegram_inbox.process_telegram_update(update)
+                        state = memory.load_state()
+
+        shutdown_mock.assert_called_once_with(delay_seconds=300)
+        self.assertEqual(state["notifications"]["telegram"]["pending_power_confirmation"]["action"], "")
+        self.assertIn("Apagado programado.", send_mock.call_args.args[0])
+
+    def test_process_telegram_update_confirms_pending_restart(self):
+        state_path = TEST_RUNTIME_DIR / "telegram_confirm_restart_state.json"
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+
+        seeded_state = memory.normalize_state({
+            "notifications": {
+                "enabled": True,
+                "channels": ["telegram"],
+                "telegram": {
+                    "bot_token": "bot-123",
+                    "chat_id": "123",
+                    "pending_power_confirmation": {
+                        "action": "restart",
+                        "delay_seconds": 180,
+                        "token": "XYZ789",
+                        "chat_id": "123",
+                        "requested_at": "2026-05-05T10:00:00+00:00",
+                    },
+                },
+            },
+        })
+
+        update = {
+            "update_id": 71,
+            "message": {
+                "chat": {"id": 123, "type": "private"},
+                "text": "/confirmar_reinicio XYZ789",
+            },
+        }
+
+        with patch.object(memory, "STATE_FILE", state_path):
+            memory.save_state(seeded_state)
+            with patch.object(telegram_inbox, "_power_confirmation_expired", return_value=False):
+                with patch.object(
+                    telegram_inbox,
+                    "request_system_restart",
+                    return_value="Reinicio programado.",
+                ) as restart_mock:
+                    with patch.object(telegram_inbox, "send_telegram_message", return_value=True) as send_mock:
+                        telegram_inbox.process_telegram_update(update)
+
+        restart_mock.assert_called_once_with(delay_seconds=180)
+        self.assertIn("Reinicio programado.", send_mock.call_args.args[0])
 
     def test_process_telegram_update_routes_shutdown_cancel_command(self):
         state_path = TEST_RUNTIME_DIR / "telegram_cancel_shutdown_state.json"

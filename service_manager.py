@@ -1,10 +1,20 @@
+import importlib.util
 import os
+import shutil
 import subprocess
+import sys
 import time
 from pathlib import Path
+from urllib.parse import urlparse
 
 import activity
-from memory import DEFAULT_OLLAMA_MODEL, DEFAULT_OLLAMA_TIMEOUT_SECONDS, load_state
+from memory import (
+    DEFAULT_OLLAMA_API_KEY_ENV_VAR,
+    DEFAULT_OLLAMA_HOST,
+    DEFAULT_OLLAMA_MODEL,
+    DEFAULT_OLLAMA_TIMEOUT_SECONDS,
+    load_state,
+)
 
 WORKSPACE_ROOT = Path(__file__).resolve().parent
 RUNTIME_DIR = WORKSPACE_ROOT / ".yarbis_runtime"
@@ -22,6 +32,11 @@ SERVICE_DISPLAY_NAME = "Yarbis"
 SERVICE_DESCRIPTION = "Yarbis local agent background service."
 STARTUP_WAIT_SECONDS = 15.0
 STOP_WAIT_SECONDS = 15.0
+READINESS_CACHE_SECONDS = 15.0
+_READINESS_CACHE = {
+    "created_at": 0.0,
+    "status": None,
+}
 
 
 def _windows_only():
@@ -339,6 +354,12 @@ def health_status() -> dict:
         },
         "ollama": {
             "model": str(ollama.get("model", DEFAULT_OLLAMA_MODEL)).strip() or DEFAULT_OLLAMA_MODEL,
+            "fallback_models": ollama.get("fallback_models", []),
+            "host": str(ollama.get("host", DEFAULT_OLLAMA_HOST)).strip(),
+            "api_key_env_var": (
+                str(ollama.get("api_key_env_var", DEFAULT_OLLAMA_API_KEY_ENV_VAR)).strip()
+                or DEFAULT_OLLAMA_API_KEY_ENV_VAR
+            ),
             "timeout_seconds": ollama.get("timeout_seconds", DEFAULT_OLLAMA_TIMEOUT_SECONDS),
         },
         "events_file": str(activity.EVENTS_FILE),
@@ -375,9 +396,274 @@ def format_health_status(status: dict | None = None) -> str:
         if operation.get("active")
         else "sin operacion activa"
     )
-    model_text = f"Ollama {ollama.get('model')} ({ollama.get('timeout_seconds')}s)"
+    fallback_models = ollama.get("fallback_models") if isinstance(ollama.get("fallback_models"), list) else []
+    fallback_text = f" + {len(fallback_models)} fallback(s)" if fallback_models else ""
+    model_text = (
+        f"Ollama {ollama.get('model')}{fallback_text} "
+        f"@ {_ollama_host_label(ollama.get('host', ''))} "
+        f"({ollama.get('timeout_seconds')}s)"
+    )
 
     return " | ".join((service_text, telegram_text, pulse_text, operation_text, model_text))
+
+
+def _readiness_item(key: str, label: str, status: str, detail: str = "", action: str = "") -> dict:
+    return {
+        "key": key,
+        "label": label,
+        "status": status,
+        "detail": str(detail).strip(),
+        "action": str(action).strip(),
+    }
+
+
+def _dependency_available(module_name: str) -> bool:
+    try:
+        return importlib.util.find_spec(module_name) is not None
+    except (ImportError, ValueError):
+        return False
+
+
+def _ollama_host_label(host: str) -> str:
+    return str(host).strip() or "local"
+
+
+def _host_uses_ollama_cloud(host: str) -> bool:
+    hostname = urlparse(str(host).strip()).hostname or ""
+    return hostname.lower().endswith("ollama.com")
+
+
+def _ollama_model_names(timeout_seconds: int = 5) -> tuple[list[str], str]:
+    ollama_exe = shutil.which("ollama")
+    if not ollama_exe:
+        return [], "No encontre ollama en PATH."
+
+    try:
+        completed = subprocess.run(
+            [ollama_exe, "list"],
+            cwd=str(WORKSPACE_ROOT),
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=timeout_seconds,
+            creationflags=_creationflags(),
+        )
+    except subprocess.TimeoutExpired:
+        return [], "ollama list excedio el tiempo limite."
+    except OSError as exc:
+        return [], f"No pude ejecutar ollama list: {exc}"
+
+    output = "\n".join(
+        part.strip()
+        for part in (completed.stdout, completed.stderr)
+        if str(part).strip()
+    )
+    if completed.returncode != 0:
+        return [], output or f"ollama list fallo con exit={completed.returncode}."
+
+    model_names = []
+    for line in completed.stdout.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.lower().startswith("name"):
+            continue
+        model_names.append(stripped.split()[0])
+    return model_names, ""
+
+
+def readiness_status(force: bool = False) -> dict:
+    now = time.monotonic()
+    if (
+        not force
+        and _READINESS_CACHE["status"] is not None
+        and now - float(_READINESS_CACHE["created_at"]) < READINESS_CACHE_SECONDS
+    ):
+        return _READINESS_CACHE["status"]
+
+    try:
+        state = load_state()
+    except Exception as exc:
+        state = {}
+        state_error = str(exc)
+    else:
+        state_error = ""
+
+    items = []
+    version_ok = sys.version_info >= (3, 11)
+    items.append(_readiness_item(
+        "python",
+        "Python",
+        "ok" if version_ok else "missing",
+        f"{sys.version.split()[0]} en {sys.executable}",
+        "Instala Python 3.11 o superior." if not version_ok else "",
+    ))
+
+    python_path = WORKSPACE_ROOT / ".venv" / "Scripts" / "python.exe"
+    venv_ok = python_path.exists()
+    items.append(_readiness_item(
+        "venv",
+        "Entorno virtual",
+        "ok" if venv_ok else "missing",
+        str(python_path) if venv_ok else "No existe .venv\\Scripts\\python.exe.",
+        ".\\scripts\\setup.ps1 puede crearlo." if not venv_ok else "",
+    ))
+
+    missing_modules = [
+        module_name
+        for module_name in ("ollama", "win11toast")
+        if not _dependency_available(module_name)
+    ]
+    items.append(_readiness_item(
+        "dependencies",
+        "Dependencias Python",
+        "ok" if not missing_modules else "missing",
+        "ollama y win11toast disponibles." if not missing_modules else "Faltan: " + ", ".join(missing_modules),
+        ".\\.venv\\Scripts\\python.exe -m pip install -r requirements.txt" if missing_modules else "",
+    ))
+
+    ollama = state.get("ollama", {}) if isinstance(state, dict) else {}
+    if not isinstance(ollama, dict):
+        ollama = {}
+    model = str(ollama.get("model", DEFAULT_OLLAMA_MODEL)).strip() or DEFAULT_OLLAMA_MODEL
+    host = str(ollama.get("host", DEFAULT_OLLAMA_HOST)).strip()
+    api_key_env_var = (
+        str(ollama.get("api_key_env_var", DEFAULT_OLLAMA_API_KEY_ENV_VAR)).strip()
+        or DEFAULT_OLLAMA_API_KEY_ENV_VAR
+    )
+    if _host_uses_ollama_cloud(host):
+        api_key_present = bool(os.getenv(api_key_env_var, "").strip())
+        items.append(_readiness_item(
+            "ollama",
+            "Ollama",
+            "ok" if api_key_present else "missing",
+            f"Cloud directo: {model} @ {host}",
+            f"Define `{api_key_env_var}` con tu API key de Ollama Cloud." if not api_key_present else "",
+        ))
+    elif host:
+        items.append(_readiness_item(
+            "ollama",
+            "Ollama",
+            "warning",
+            f"Host remoto configurado: {model} @ {host}. No verifico modelos remotos aqui.",
+            "",
+        ))
+    else:
+        model_names, ollama_error = _ollama_model_names()
+        if ollama_error:
+            items.append(_readiness_item(
+                "ollama",
+                "Ollama",
+                "missing",
+                ollama_error,
+                "Instala/inicia Ollama y ejecuta `ollama list`, o configura host cloud.",
+            ))
+        else:
+            model_ok = model in model_names
+            items.append(_readiness_item(
+                "ollama",
+                "Ollama",
+                "ok" if model_ok else "missing",
+                f"Modelo configurado: {model}" if model_ok else f"No encontre el modelo configurado: {model}",
+                f"Ejecuta `ollama pull {model}` o cambia el modelo en Yarbis." if not model_ok else "",
+            ))
+
+    goal = str(state.get("goal", "")).strip() if isinstance(state, dict) else ""
+    items.append(_readiness_item(
+        "goal",
+        "Objetivo",
+        "ok" if goal else "missing",
+        goal if goal else "Todavia no hay objetivo principal.",
+        "Define un objetivo desde la app para ejecutar el primer ciclo." if not goal else "",
+    ))
+
+    service_status = _safe_service_status()
+    items.append(_readiness_item(
+        "service",
+        "Servicio",
+        "ok" if service_status.get("running") else "warning",
+        (
+            f"Activo (PID {service_status.get('pid') or '-'})"
+            if service_status.get("running")
+            else (
+                f"Instalado, estado {service_status.get('state', 'unknown')}"
+                if service_status.get("installed")
+                else "No instalado. La app igual puede usarse."
+            )
+        ),
+        "Instalalo desde la app si quieres continuidad 24/7." if not service_status.get("running") else "",
+    ))
+
+    notifications = state.get("notifications", {}) if isinstance(state, dict) else {}
+    if not isinstance(notifications, dict):
+        notifications = {}
+    channels = notifications.get("channels", [])
+    telegram = notifications.get("telegram", {})
+    if not isinstance(telegram, dict):
+        telegram = {}
+    telegram_enabled = bool(notifications.get("enabled", True) and "telegram" in channels)
+    if telegram_enabled and telegram.get("bot_token") and telegram.get("chat_id"):
+        telegram_status = "ok"
+        telegram_detail = "Vinculado."
+        telegram_action = ""
+    elif telegram_enabled and telegram.get("bot_token"):
+        telegram_status = "warning"
+        telegram_detail = "Configurado, falta vincular chat."
+        telegram_action = "Envia /start al bot."
+    else:
+        telegram_status = "warning"
+        telegram_detail = "Desactivado. La app local igual funciona."
+        telegram_action = "Configuralo solo si quieres control remoto."
+    items.append(_readiness_item("telegram", "Telegram", telegram_status, telegram_detail, telegram_action))
+
+    dotnet_ok = shutil.which("dotnet") is not None
+    items.append(_readiness_item(
+        "dotnet",
+        ".NET SDK",
+        "ok" if dotnet_ok else "warning",
+        "Disponible para compilar el host del servicio." if dotnet_ok else "No disponible; solo afecta el servicio SCM.",
+        "Instala .NET SDK 8 para usar el servicio." if not dotnet_ok else "",
+    ))
+
+    if state_error:
+        items.append(_readiness_item("state", "Estado", "missing", state_error, "Revisa state.json."))
+
+    blocking = [item for item in items if item["status"] == "missing"]
+    warnings = [item for item in items if item["status"] == "warning"]
+    ready = not blocking
+    status = {
+        "ready": ready,
+        "summary": "Listo para usar." if ready else f"Faltan {len(blocking)} punto(s) para el primer uso.",
+        "blocking_count": len(blocking),
+        "warning_count": len(warnings),
+        "items": items,
+    }
+    _READINESS_CACHE["created_at"] = now
+    _READINESS_CACHE["status"] = status
+    return status
+
+
+def format_readiness_status(status: dict | None = None, compact: bool = True) -> str:
+    status = status or readiness_status()
+    items = status.get("items", [])
+    missing = [item for item in items if item.get("status") == "missing"]
+    warnings = [item for item in items if item.get("status") == "warning"]
+    if compact:
+        if missing:
+            return "Falta configurar: " + ", ".join(item["label"] for item in missing)
+        if warnings:
+            return "Usable ahora. Opcional: " + ", ".join(item["label"] for item in warnings)
+        return "Listo para usar."
+
+    lines = [str(status.get("summary") or "Preparacion")]
+    for item in items:
+        marker = "OK" if item.get("status") == "ok" else ("FALTA" if item.get("status") == "missing" else "OPCIONAL")
+        line = f"- {marker}: {item.get('label')}"
+        if item.get("detail"):
+            line += f" - {item['detail']}"
+        if item.get("action"):
+            line += f" ({item['action']})"
+        lines.append(line)
+    return "\n".join(lines)
 
 
 def is_service_running() -> bool:

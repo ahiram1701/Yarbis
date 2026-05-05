@@ -1,7 +1,7 @@
 import tkinter as tk
 from tkinter import messagebox, simpledialog, ttk
 
-from memory import load_state
+from memory import DEFAULT_OLLAMA_HOST, DEFAULT_OLLAMA_MODEL, DEFAULT_OLLAMA_TIMEOUT_SECONDS, load_state
 from session import delete_note_text, save_note_text
 from ui_theme import THEMES, style_listbox_widget, style_scrollbar_widget, style_text_widget
 
@@ -111,6 +111,142 @@ class ProfileDialog(ThemedDialog):
             "role": self.role_entry.get().strip(),
             "preferences": self.preferences_text.get("1.0", "end-1c").strip(),
             "constraints": self.constraints_text.get("1.0", "end-1c").strip(),
+        }
+
+
+class FirstRunDialog(ThemedDialog):
+    GOAL_TEMPLATES = (
+        "Organizar mis tareas y avanzar el siguiente paso importante",
+        "Mejorar este proyecto y dejarlo listo para usar",
+        "Investigar informacion publica y resumir decisiones accionables",
+        "Crear un sistema de notas y seguimiento por Telegram",
+    )
+
+    def __init__(self, parent, initial_state: dict):
+        self.initial_state = initial_state
+        super().__init__(parent, "Primer uso de Yarbis")
+
+    def body(self, master):
+        self._prepare_body(master)
+        master.columnconfigure(0, weight=1)
+
+        state_goal = str(self.initial_state.get("goal", "")).strip()
+        profile = self.initial_state.get("profile", {})
+        if not isinstance(profile, dict):
+            profile = {}
+        ollama = self.initial_state.get("ollama", {})
+        if not isinstance(ollama, dict):
+            ollama = {}
+
+        ttk.Label(
+            master,
+            text="Objetivo principal",
+            font=("Segoe UI", 11, "bold"),
+        ).grid(row=0, column=0, sticky="w", padx=6, pady=(6, 2))
+
+        self.goal_text = tk.Text(master, width=68, height=4, wrap="word")
+        self.goal_text.grid(row=1, column=0, sticky="ew", padx=6)
+        self._style_text_widget(self.goal_text)
+        self.goal_text.insert("1.0", state_goal)
+
+        ttk.Label(master, text="Plantillas rapidas").grid(row=2, column=0, sticky="w", padx=6, pady=(8, 2))
+        self.template_combo = ttk.Combobox(
+            master,
+            values=self.GOAL_TEMPLATES,
+            state="readonly",
+            width=64,
+        )
+        self.template_combo.grid(row=3, column=0, sticky="ew", padx=6)
+        self.template_combo.bind("<<ComboboxSelected>>", self._apply_template)
+
+        identity = ttk.LabelFrame(master, text="Contexto minimo")
+        identity.grid(row=4, column=0, sticky="ew", padx=6, pady=(10, 0))
+        identity.columnconfigure(0, weight=1)
+
+        ttk.Label(identity, text="Nombre opcional").grid(row=0, column=0, sticky="w", padx=8, pady=(8, 2))
+        self.name_entry = ttk.Entry(identity, width=54)
+        self.name_entry.grid(row=1, column=0, sticky="ew", padx=8)
+        self.name_entry.insert(0, profile.get("name", ""))
+
+        ttk.Label(identity, text="Rol o contexto opcional").grid(row=2, column=0, sticky="w", padx=8, pady=(8, 2))
+        self.role_entry = ttk.Entry(identity, width=54)
+        self.role_entry.grid(row=3, column=0, sticky="ew", padx=8, pady=(0, 8))
+        self.role_entry.insert(0, profile.get("role", ""))
+
+        model_frame = ttk.LabelFrame(master, text="Modelo Ollama")
+        model_frame.grid(row=5, column=0, sticky="ew", padx=6, pady=(10, 0))
+        model_frame.columnconfigure(0, weight=1)
+
+        ttk.Label(model_frame, text="Modelo Ollama").grid(row=0, column=0, sticky="w", padx=8, pady=(8, 2))
+        self.model_entry = ttk.Entry(model_frame, width=42)
+        self.model_entry.grid(row=1, column=0, sticky="ew", padx=8)
+        self.model_entry.insert(0, str(ollama.get("model", DEFAULT_OLLAMA_MODEL)).strip() or DEFAULT_OLLAMA_MODEL)
+
+        ttk.Label(model_frame, text="Timeout en segundos").grid(row=0, column=1, sticky="w", padx=8, pady=(8, 2))
+        self.timeout_entry = ttk.Entry(model_frame, width=12)
+        self.timeout_entry.grid(row=1, column=1, sticky="w", padx=8, pady=(0, 8))
+        self.timeout_entry.insert(0, str(ollama.get("timeout_seconds", DEFAULT_OLLAMA_TIMEOUT_SECONDS)))
+
+        ttk.Label(model_frame, text="Host opcional").grid(row=2, column=0, sticky="w", padx=8, pady=(4, 2))
+        self.host_entry = ttk.Entry(model_frame, width=42)
+        self.host_entry.grid(row=3, column=0, columnspan=2, sticky="ew", padx=8, pady=(0, 8))
+        self.host_entry.insert(0, str(ollama.get("host", DEFAULT_OLLAMA_HOST)).strip())
+
+        options = ttk.LabelFrame(master, text="Al guardar")
+        options.grid(row=6, column=0, sticky="ew", padx=6, pady=(10, 6))
+        self.run_first_cycle_var = tk.BooleanVar(value=True)
+        self.open_notifications_var = tk.BooleanVar(value=False)
+        self.install_service_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(
+            options,
+            text="Ejecutar el primer ciclo",
+            variable=self.run_first_cycle_var,
+        ).grid(row=0, column=0, sticky="w", padx=8, pady=(8, 2))
+        ttk.Checkbutton(
+            options,
+            text="Abrir configuracion de Telegram",
+            variable=self.open_notifications_var,
+        ).grid(row=1, column=0, sticky="w", padx=8, pady=2)
+        ttk.Checkbutton(
+            options,
+            text="Instalar/iniciar servicio de fondo",
+            variable=self.install_service_var,
+        ).grid(row=2, column=0, sticky="w", padx=8, pady=(2, 8))
+
+        return self.goal_text
+
+    def _apply_template(self, _event=None):
+        selected = self.template_combo.get().strip()
+        if not selected:
+            return
+        self.goal_text.delete("1.0", "end")
+        self.goal_text.insert("1.0", selected)
+
+    def validate(self):
+        if not self.goal_text.get("1.0", "end-1c").strip():
+            messagebox.showwarning("Yarbis", "Define un objetivo para empezar.", parent=self)
+            return False
+        if not self.model_entry.get().strip():
+            messagebox.showwarning("Yarbis", "El modelo Ollama no puede quedar vacio.", parent=self)
+            return False
+        try:
+            int(self.timeout_entry.get().strip())
+        except ValueError:
+            messagebox.showwarning("Yarbis", "El timeout debe ser un numero de segundos.", parent=self)
+            return False
+        return True
+
+    def apply(self):
+        self.result = {
+            "goal": self.goal_text.get("1.0", "end-1c").strip(),
+            "name": self.name_entry.get().strip(),
+            "role": self.role_entry.get().strip(),
+            "model": self.model_entry.get().strip(),
+            "timeout_seconds": self.timeout_entry.get().strip(),
+            "host": self.host_entry.get().strip(),
+            "run_first_cycle": self.run_first_cycle_var.get(),
+            "open_notifications": self.open_notifications_var.get(),
+            "install_service": self.install_service_var.get(),
         }
 
 

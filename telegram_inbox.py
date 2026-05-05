@@ -3,11 +3,13 @@ import json
 import threading
 import time
 import re
+import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
 import activity
-from memory import load_state, state_transaction
+from memory import DEFAULT_OLLAMA_CLOUD_HOST, load_state, state_transaction
 from secrets_redaction import redact_secrets
 from intent_text import (
     normalize_intent_text as _normalize_intent_text,
@@ -28,14 +30,17 @@ from power import (
 )
 from session import (
     SessionOperationBusy,
+    get_ollama_settings,
     get_status_text,
     has_pending_user_question,
     handle_note_text_request,
     note_request_label,
+    request_stop_current_operation,
     run_auto_with_output,
     run_cycle_with_output,
     submit_user_reply,
     update_goal,
+    update_ollama_settings,
 )
 
 _POLL_IDLE_SECONDS = 3
@@ -46,16 +51,20 @@ DEFERRED_TELEGRAM_REPLIES_FILE = (
 MAX_DEFERRED_TELEGRAM_REPLIES = 20
 TELEGRAM_OPERATION_LABELS = {
     "Ciclo",
+    "Detener",
+    "Modelo",
     "Modo autonomo",
     "Pulso proactivo",
     "Respuesta",
     "Respuesta diferida",
+    "Timeout",
 }
 _poller_thread = None
 _poller_stop_event = threading.Event()
 _poller_callback = None
 _poller_lock = threading.Lock()
 _deferred_replies_lock = threading.Lock()
+POWER_CONFIRMATION_TTL_SECONDS = 10 * 60
 
 
 def _emit_event(message: Any):
@@ -349,11 +358,19 @@ def _help_text() -> str:
         "Yarbis por Telegram listo.\n\n"
         "Comandos disponibles:\n"
         "/status - ver el estado actual\n"
+        "/stop - detener la operacion en curso\n"
         "/goal TEXTO - cambiar el objetivo\n"
         "/objetivo TEXTO - cambiar el objetivo\n"
         "/run - ejecutar un ciclo\n"
         "/auto - ejecutar el modo autonomo con los ciclos por defecto\n"
         "/auto N - ejecutar N ciclos\n"
+        "/modelo NOMBRE - cambiar el modelo de Ollama\n"
+        "/timeout SEGUNDOS - cambiar el timeout de Ollama\n"
+        "/ollama NOMBRE SEGUNDOS - cambiar modelo y timeout juntos\n"
+        "/ollama host URL - cambiar host Ollama; vacio/local usa el daemon local\n"
+        "/ollama cloud MODELO - usar Ollama Cloud directo con OLLAMA_API_KEY\n"
+        "/ollama local MODELO - volver al daemon local\n"
+        "/ollama fallback MODELO1, MODELO2 - modelos de respaldo\n"
         "/notas - listar notas\n"
         "/nota crear Titulo | contenido | categoria - guardar una nota\n"
         "/nota ID - ver una nota\n"
@@ -362,10 +379,12 @@ def _help_text() -> str:
         "/apagar ahora - apagar esta PC inmediatamente\n"
         "/reiniciar - reiniciar esta PC en 60 segundos\n"
         "/reiniciar ahora - reiniciar esta PC inmediatamente\n"
+        "/confirmar_apagado CODIGO - confirmar un apagado solicitado\n"
+        "/confirmar_reinicio CODIGO - confirmar un reinicio solicitado\n"
         "/cancelar_apagado - cancelar un apagado programado\n"
         "/cancelar_reinicio - cancelar un reinicio programado\n"
         "/help - ver esta ayuda\n\n"
-        "Tambien puedes decir 'guarda una nota: ...', 'apaga la pc', 'reinicia pc' "
+        "Tambien puedes decir 'guarda una nota: ...', 'detente', 'apaga la pc', 'reinicia pc' "
         "o responder con texto libre cuando Yarbis te pida algo."
     )
 
@@ -426,6 +445,185 @@ def _telegram_reply_for_delivery(label: str, content: str) -> str:
     if not _should_format_operation_reply(label, content):
         return str(content).strip()
     return format_telegram_operation_reply(label, content)
+
+
+def _is_stop_command(command: str) -> bool:
+    return command in {
+        "/stop",
+        "/detener",
+        "/parar",
+        "/cancelar_operacion",
+        "/cancelar_operación",
+        "/abortar",
+        "/abort",
+    }
+
+
+def _stop_intent_for_message(text: str) -> bool:
+    cleaned_text = str(text).strip()
+    if not cleaned_text:
+        return False
+
+    if cleaned_text.startswith("/"):
+        command = cleaned_text.split()[0].split("@")[0].lower()
+        return _is_stop_command(command)
+
+    normalized = _strip_yarbis_prefix(cleaned_text)
+    return normalized in {
+        "detente",
+        "deten",
+        "deten la operacion",
+        "deten la operacion actual",
+        "deten lo que estas haciendo",
+        "para",
+        "para ya",
+        "para la operacion",
+        "para lo que estas haciendo",
+        "deja de pensar",
+        "cancela la operacion",
+        "cancela la operacion actual",
+        "aborta la operacion",
+    }
+
+
+def _parse_timeout_seconds_arg(argument_text: str) -> tuple[int | None, str | None]:
+    cleaned = _normalize_intent_text(argument_text)
+    if not cleaned:
+        return None, "Uso: /timeout 900"
+
+    match = re.fullmatch(r"(\d{1,6})\s*(?:segundo|segundos|second|seconds|sec|s)?", cleaned)
+    if match:
+        return int(match.group(1)), None
+
+    match = re.fullmatch(r"(\d{1,4})\s*(?:minuto|minutos|minute|minutes|min|m)", cleaned)
+    if match:
+        return int(match.group(1)) * 60, None
+
+    return None, "Uso: /timeout 900, /timeout 15m o /ollama modelo 900"
+
+
+def _ollama_settings_reply(prefix: str = "Configuracion actual de Ollama.") -> str:
+    settings = get_ollama_settings()
+    fallback_models = settings.get("fallback_models", [])
+    fallback_text = ", ".join(fallback_models) if fallback_models else "-"
+    return (
+        f"{prefix}\n"
+        f"Modelo: {settings.get('model', '')}\n"
+        f"Fallbacks: {fallback_text}\n"
+        f"Host: {settings.get('host') or 'local'}\n"
+        f"API key env: {settings.get('api_key_env_var', 'OLLAMA_API_KEY')}\n"
+        f"Timeout: {settings.get('timeout_seconds', '')} segundos"
+    )
+
+
+def _dispatch_model_command(argument_text: str) -> str:
+    settings = get_ollama_settings()
+    cleaned_argument = str(argument_text).strip()
+    if not cleaned_argument:
+        return _ollama_settings_reply("Modelo actual de Ollama.") + "\n\nUso: /modelo llama3.2:3b"
+
+    parts = cleaned_argument.split()
+    model = parts[0]
+    timeout_seconds = settings["timeout_seconds"]
+    if len(parts) > 1:
+        parsed_timeout, error = _parse_timeout_seconds_arg(" ".join(parts[1:]))
+        if error:
+            return "Uso: /modelo llama3.2:3b 900"
+        timeout_seconds = parsed_timeout
+
+    return update_ollama_settings(model, timeout_seconds)
+
+
+def _dispatch_timeout_command(argument_text: str) -> str:
+    timeout_seconds, error = _parse_timeout_seconds_arg(argument_text)
+    if error:
+        return error
+
+    settings = get_ollama_settings()
+    return update_ollama_settings(settings["model"], timeout_seconds)
+
+
+def _first_argument_tail(text: str) -> str:
+    parts = str(text).strip().split(maxsplit=1)
+    return parts[1].strip() if len(parts) > 1 else ""
+
+
+def _dispatch_ollama_command(argument_text: str) -> str:
+    cleaned_argument = str(argument_text).strip()
+    if not cleaned_argument:
+        return (
+            _ollama_settings_reply()
+            + "\n\nUso: /ollama llama3.2:3b 900, /ollama cloud gpt-oss:120b, "
+            "/ollama host https://ollama.com o /ollama fallback gpt-oss:120b-cloud"
+        )
+
+    normalized_argument = _normalize_intent_text(cleaned_argument)
+    if normalized_argument.startswith("modelo "):
+        return _dispatch_model_command(cleaned_argument.split(maxsplit=1)[1])
+    if normalized_argument.startswith("model "):
+        return _dispatch_model_command(cleaned_argument.split(maxsplit=1)[1])
+    if normalized_argument.startswith("timeout "):
+        return _dispatch_timeout_command(cleaned_argument.split(maxsplit=1)[1])
+    if normalized_argument.startswith("host "):
+        settings = get_ollama_settings()
+        host = _first_argument_tail(cleaned_argument)
+        if _normalize_intent_text(host) in {"local", "daemon local", "localhost", "vacio"}:
+            host = ""
+        return update_ollama_settings(
+            settings["model"],
+            settings["timeout_seconds"],
+            host=host,
+        )
+    if normalized_argument in {"host local", "local"} or normalized_argument.startswith("local "):
+        settings = get_ollama_settings()
+        model = _first_argument_tail(cleaned_argument) or settings["model"]
+        return update_ollama_settings(
+            model,
+            settings["timeout_seconds"],
+            host="",
+        )
+    if normalized_argument.startswith("cloud "):
+        settings = get_ollama_settings()
+        model = _first_argument_tail(cleaned_argument)
+        if not model:
+            return "Uso: /ollama cloud gpt-oss:120b"
+        return update_ollama_settings(
+            model,
+            settings["timeout_seconds"],
+            host=DEFAULT_OLLAMA_CLOUD_HOST,
+        )
+    if normalized_argument.startswith("fallback ") or normalized_argument.startswith("fallbacks "):
+        settings = get_ollama_settings()
+        fallback_models = _first_argument_tail(cleaned_argument)
+        return update_ollama_settings(
+            settings["model"],
+            settings["timeout_seconds"],
+            fallback_models=fallback_models,
+        )
+    if normalized_argument.startswith("api key env") or normalized_argument.startswith("api_key_env"):
+        settings = get_ollama_settings()
+        if normalized_argument.strip() in {"api key env", "api_key_env"}:
+            return "Uso: /ollama api_key_env OLLAMA_API_KEY"
+        api_key_env_var = cleaned_argument.split()[-1].strip() if len(cleaned_argument.split()) > 1 else ""
+        if not api_key_env_var:
+            return "Uso: /ollama api_key_env OLLAMA_API_KEY"
+        return update_ollama_settings(
+            settings["model"],
+            settings["timeout_seconds"],
+            api_key_env_var=api_key_env_var,
+        )
+
+    parts = cleaned_argument.split()
+    model = parts[0]
+    settings = get_ollama_settings()
+    timeout_seconds = settings["timeout_seconds"]
+    if len(parts) > 1:
+        parsed_timeout, error = _parse_timeout_seconds_arg(" ".join(parts[1:]))
+        if error:
+            return "Uso: /ollama llama3.2:3b 900"
+        timeout_seconds = parsed_timeout
+
+    return update_ollama_settings(model, timeout_seconds)
 
 
 def _natural_power_intent(text: str) -> str:
@@ -569,6 +767,132 @@ def _parse_shutdown_delay_seconds(argument_text: str) -> tuple[int | None, str |
     return None, "Uso: /apagar, /apagar ahora, /apagar 30s o /apagar 5m"
 
 
+def _format_power_delay(delay_seconds: int) -> str:
+    if delay_seconds <= 0:
+        return "inmediatamente"
+    if delay_seconds == 60:
+        return "en 1 minuto"
+    if delay_seconds % 60 == 0:
+        return f"en {delay_seconds // 60} minutos"
+    return f"en {delay_seconds} segundos"
+
+
+def _power_action_label(action: str) -> str:
+    return "reinicio" if action == "restart" else "apagado"
+
+
+def _power_confirmation_command(action: str) -> str:
+    return "/confirmar_reinicio" if action == "restart" else "/confirmar_apagado"
+
+
+def _store_power_confirmation(action: str, delay_seconds: int, chat_id: str) -> str:
+    token = uuid.uuid4().hex[:6].upper()
+    requested_at = datetime.now(timezone.utc).isoformat()
+
+    def mutate(state):
+        notifications = state.setdefault("notifications", {})
+        telegram = notifications.setdefault("telegram", {})
+        telegram["pending_power_confirmation"] = {
+            "action": action,
+            "delay_seconds": int(delay_seconds),
+            "token": token,
+            "chat_id": str(chat_id).strip(),
+            "requested_at": requested_at,
+        }
+
+    state_transaction("telegram_power_confirmation_store", mutate)
+    return token
+
+
+def _load_power_confirmation() -> dict:
+    telegram = load_state().get("notifications", {}).get("telegram", {})
+    if not isinstance(telegram, dict):
+        return {}
+    pending = telegram.get("pending_power_confirmation", {})
+    return pending if isinstance(pending, dict) else {}
+
+
+def _clear_power_confirmation(action: str = "", chat_id: str = "") -> bool:
+    cleared = False
+
+    def mutate(state):
+        nonlocal cleared
+        telegram = state.setdefault("notifications", {}).setdefault("telegram", {})
+        pending = telegram.get("pending_power_confirmation", {})
+        if not isinstance(pending, dict) or not pending.get("action"):
+            return
+        if action and pending.get("action") != action:
+            return
+        if chat_id and str(pending.get("chat_id", "")).strip() != str(chat_id).strip():
+            return
+        telegram["pending_power_confirmation"] = {
+            "action": "",
+            "delay_seconds": 0,
+            "token": "",
+            "chat_id": "",
+            "requested_at": "",
+        }
+        cleared = True
+
+    state_transaction("telegram_power_confirmation_clear", mutate)
+    return cleared
+
+
+def _power_confirmation_expired(pending: dict) -> bool:
+    requested_at = str(pending.get("requested_at", "")).strip()
+    if not requested_at:
+        return True
+    try:
+        parsed = datetime.fromisoformat(requested_at)
+    except ValueError:
+        return True
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    age = (datetime.now(timezone.utc) - parsed.astimezone(timezone.utc)).total_seconds()
+    return age > POWER_CONFIRMATION_TTL_SECONDS
+
+
+def _request_power_confirmation(action: str, delay_seconds: int, chat_id: str) -> str:
+    if not chat_id:
+        return "No pude preparar la confirmacion: falta el chat de Telegram."
+
+    token = _store_power_confirmation(action, delay_seconds, chat_id)
+    label = _power_action_label(action)
+    command = _power_confirmation_command(action)
+    return (
+        f"Confirmacion requerida para {label} de esta PC {_format_power_delay(delay_seconds)}.\n\n"
+        f"Responde exactamente: {command} {token}\n"
+        "Caduca en 10 minutos. Para cancelar esta solicitud usa /cancelar_apagado o /cancelar_reinicio."
+    )
+
+
+def _dispatch_confirm_power(action: str, argument_text: str, chat_id: str) -> str:
+    token = str(argument_text).strip().upper()
+    label = _power_action_label(action)
+    command = _power_confirmation_command(action)
+    if not token:
+        return f"Uso: {command} CODIGO"
+
+    pending = _load_power_confirmation()
+    if not pending.get("action"):
+        return f"No hay ningun {label} pendiente de confirmar."
+    if pending.get("action") != action:
+        return f"La confirmacion pendiente no corresponde a {label}."
+    if str(pending.get("chat_id", "")).strip() != str(chat_id).strip():
+        return "Esta confirmacion pertenece a otro chat vinculado."
+    if _power_confirmation_expired(pending):
+        _clear_power_confirmation(action=action, chat_id=chat_id)
+        return f"La confirmacion de {label} caduco. Vuelve a solicitarla."
+    if str(pending.get("token", "")).strip().upper() != token:
+        return "Codigo de confirmacion incorrecto."
+
+    delay_seconds = int(pending.get("delay_seconds", DEFAULT_SHUTDOWN_DELAY_SECONDS))
+    _clear_power_confirmation(action=action, chat_id=chat_id)
+    if action == "restart":
+        return request_system_restart(delay_seconds=delay_seconds)
+    return request_system_shutdown(delay_seconds=delay_seconds)
+
+
 def _argument_after_natural_delay_prefix(text: str) -> str:
     normalized = _strip_yarbis_prefix(text)
     for prefix in (
@@ -592,17 +916,21 @@ def _argument_after_natural_delay_prefix(text: str) -> str:
     return ""
 
 
-def _dispatch_shutdown(argument_text: str = "") -> str:
+def _dispatch_shutdown(argument_text: str = "", chat_id: str = "", confirmed: bool = False) -> str:
     delay_seconds, error = _parse_shutdown_delay_seconds(argument_text)
     if error:
         return error
+    if not confirmed:
+        return _request_power_confirmation("shutdown", delay_seconds, chat_id)
     return request_system_shutdown(delay_seconds=delay_seconds)
 
 
-def _dispatch_restart(argument_text: str = "") -> str:
+def _dispatch_restart(argument_text: str = "", chat_id: str = "", confirmed: bool = False) -> str:
     delay_seconds, error = _parse_shutdown_delay_seconds(argument_text)
     if error:
         return error.replace("/apagar", "/reiniciar")
+    if not confirmed:
+        return _request_power_confirmation("restart", delay_seconds, chat_id)
     return request_system_restart(delay_seconds=delay_seconds)
 
 
@@ -633,6 +961,9 @@ def _job_label_for_message(text: str) -> str:
     if note_label:
         return note_label
 
+    if _stop_intent_for_message(cleaned_text):
+        return "Detener"
+
     if not cleaned_text.startswith("/"):
         natural_intent = _power_intent_for_message(cleaned_text)
         if natural_intent == "shutdown":
@@ -648,6 +979,12 @@ def _job_label_for_message(text: str) -> str:
         return "Ciclo"
     if command == "/auto":
         return "Modo autonomo"
+    if _is_stop_command(command):
+        return "Detener"
+    if command in {"/modelo", "/model", "/ollama"}:
+        return "Modelo"
+    if command in {"/timeout", "/tiempo"}:
+        return "Timeout"
     if command in {"/goal", "/objetivo"}:
         return "Objetivo"
     if command in {"/notas", "/nota", "/crear_nota", "/guardar_nota", "/borrar_nota", "/eliminar_nota", "/ver_nota"}:
@@ -656,13 +993,17 @@ def _job_label_for_message(text: str) -> str:
         return "Apagado"
     if command in {"/reiniciar", "/reiniciar_pc", "/restart", "/reboot"}:
         return "Reinicio"
+    if command in {"/confirmar_apagado", "/confirmarapagado"}:
+        return "Confirmar apagado"
+    if command in {"/confirmar_reinicio", "/confirmarreinicio"}:
+        return "Confirmar reinicio"
     if _is_shutdown_cancel_command(command) or _is_restart_cancel_command(command):
         return "Cancelar apagado/reinicio"
 
     return ""
 
 
-def _dispatch_command(command_text: str) -> str:
+def _dispatch_command(command_text: str, chat_id: str = "") -> str:
     cleaned_text = str(command_text).strip()
     parts = cleaned_text.split()
     command_parts = cleaned_text.split(maxsplit=1)
@@ -674,6 +1015,18 @@ def _dispatch_command(command_text: str) -> str:
 
     if command == "/status":
         return get_status_text()
+
+    if _is_stop_command(command):
+        return request_stop_current_operation(source="telegram")
+
+    if command in {"/modelo", "/model"}:
+        return _dispatch_model_command(argument_text)
+
+    if command in {"/timeout", "/tiempo"}:
+        return _dispatch_timeout_command(argument_text)
+
+    if command == "/ollama":
+        return _dispatch_ollama_command(argument_text)
 
     note_reply = handle_note_text_request(cleaned_text)
     if note_reply is not None:
@@ -701,16 +1054,26 @@ def _dispatch_command(command_text: str) -> str:
         return run_auto_with_output(cycles=cycles, emit_notifications=False)
 
     if command in {"/apagar", "/apagar_pc", "/shutdown"}:
-        return _dispatch_shutdown(argument_text)
+        return _dispatch_shutdown(argument_text, chat_id=chat_id)
 
     if command in {"/reiniciar", "/reiniciar_pc", "/restart", "/reboot"}:
-        return _dispatch_restart(argument_text)
+        return _dispatch_restart(argument_text, chat_id=chat_id)
+
+    if command in {"/confirmar_apagado", "/confirmarapagado"}:
+        return _dispatch_confirm_power("shutdown", argument_text, chat_id=chat_id)
+
+    if command in {"/confirmar_reinicio", "/confirmarreinicio"}:
+        return _dispatch_confirm_power("restart", argument_text, chat_id=chat_id)
 
     if _is_restart_cancel_command(command):
-        return cancel_system_shutdown(action_label="reinicio")
+        cleared = _clear_power_confirmation(action="restart", chat_id=chat_id)
+        result = cancel_system_shutdown(action_label="reinicio")
+        return ("Confirmacion pendiente de reinicio cancelada.\n" if cleared else "") + result
 
     if _is_shutdown_cancel_command(command):
-        return cancel_system_shutdown(action_label="apagado")
+        cleared = _clear_power_confirmation(action="shutdown", chat_id=chat_id)
+        result = cancel_system_shutdown(action_label="apagado")
+        return ("Confirmacion pendiente de apagado cancelada.\n" if cleared else "") + result
 
     return "Comando no reconocido.\n\n" + _help_text()
 
@@ -738,6 +1101,7 @@ def process_telegram_update(update: dict) -> str:
         send_telegram_message(reply, chat_id=chat_id)
         return "Telegram: mensaje no textual ignorado."
 
+    stop_intent = _stop_intent_for_message(text)
     power_intent = _power_intent_for_message(text)
     if binding_notice and power_intent:
         reply = (
@@ -760,15 +1124,22 @@ def process_telegram_update(update: dict) -> str:
         settings = load_state().get("notifications", {})
         with _telegram_thinking_indicator(chat_id, settings=settings, enabled=bool(job_label)):
             if text.startswith("/"):
-                reply = _dispatch_command(text)
+                reply = _dispatch_command(text, chat_id=chat_id)
+            elif stop_intent:
+                reply = request_stop_current_operation(source="telegram")
             elif pending_user_question:
                 reply = _submit_user_reply_from_telegram(text, chat_id)
             elif power_intent == "shutdown":
-                reply = _dispatch_shutdown(_argument_after_natural_delay_prefix(text))
+                reply = _dispatch_shutdown(_argument_after_natural_delay_prefix(text), chat_id=chat_id)
             elif power_intent == "restart":
-                reply = _dispatch_restart(_argument_after_natural_delay_prefix(text))
+                reply = _dispatch_restart(_argument_after_natural_delay_prefix(text), chat_id=chat_id)
             elif power_intent == "cancel_power_action":
-                reply = cancel_system_shutdown(action_label=_cancel_label_for_natural_text(text))
+                action_label = _cancel_label_for_natural_text(text)
+                action = "restart" if action_label == "reinicio" else "shutdown"
+                cleared = _clear_power_confirmation(action=action, chat_id=chat_id)
+                reply = cancel_system_shutdown(action_label=action_label)
+                if cleared:
+                    reply = f"Confirmacion pendiente de {action_label} cancelada.\n{reply}"
             else:
                 note_reply = handle_note_text_request(text)
                 if note_reply is not None:

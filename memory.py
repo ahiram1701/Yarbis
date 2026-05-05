@@ -50,10 +50,16 @@ DEFAULT_SERVICE_PROACTIVE_INTERVAL_SECONDS = 30 * 60
 DEFAULT_SERVICE_PROACTIVE_CYCLES = 1
 DEFAULT_SERVICE_PROACTIVE_START_DELAY_SECONDS = 60
 DEFAULT_OLLAMA_MODEL = "qwen3.5:2b"
+DEFAULT_OLLAMA_HOST = ""
+DEFAULT_OLLAMA_CLOUD_HOST = "https://ollama.com"
+DEFAULT_OLLAMA_API_KEY_ENV_VAR = "OLLAMA_API_KEY"
 DEFAULT_OLLAMA_TIMEOUT_SECONDS = 900
 MIN_OLLAMA_TIMEOUT_SECONDS = 1
 MAX_OLLAMA_TIMEOUT_SECONDS = 24 * 60 * 60
 MAX_OLLAMA_MODEL_CHARS = 120
+MAX_OLLAMA_HOST_CHARS = 240
+MAX_OLLAMA_API_KEY_ENV_VAR_CHARS = 80
+MAX_OLLAMA_FALLBACK_MODELS = 8
 VALID_TASK_STATUS = {"pending", "in_progress", "blocked", "done"}
 VALID_TASK_PRIORITY = {"alta", "media", "baja"}
 VALID_UI_THEME = {"light", "dark"}
@@ -79,6 +85,7 @@ MAX_RUNTIME_OPERATION_LABEL_CHARS = 80
 MAX_RUNTIME_OPERATION_SOURCE_CHARS = 40
 MAX_RUNTIME_TIMESTAMP_CHARS = 80
 MAX_RUNTIME_OPERATION_ID_CHARS = 80
+MAX_RUNTIME_STOP_REASON_CHARS = 240
 
 
 def default_state():
@@ -108,6 +115,9 @@ def default_state():
         },
         "ollama": {
             "model": DEFAULT_OLLAMA_MODEL,
+            "fallback_models": [],
+            "host": DEFAULT_OLLAMA_HOST,
+            "api_key_env_var": DEFAULT_OLLAMA_API_KEY_ENV_VAR,
             "timeout_seconds": DEFAULT_OLLAMA_TIMEOUT_SECONDS,
         },
         "service": {
@@ -129,6 +139,13 @@ def default_state():
                 "source": "",
                 "started_at": "",
                 "operation_id": "",
+            },
+            "stop_requested": {
+                "active": False,
+                "operation_id": "",
+                "requested_at": "",
+                "source": "",
+                "reason": "",
             },
         },
         "internet": {
@@ -162,6 +179,13 @@ def default_state():
                 "timeout_seconds": DEFAULT_TELEGRAM_TIMEOUT_SECONDS,
                 "poll_timeout_seconds": DEFAULT_TELEGRAM_POLL_TIMEOUT_SECONDS,
                 "last_update_id": 0,
+                "pending_power_confirmation": {
+                    "action": "",
+                    "delay_seconds": 0,
+                    "token": "",
+                    "chat_id": "",
+                    "requested_at": "",
+                },
             },
         },
     }
@@ -416,6 +440,38 @@ def _normalize_ollama(ollama):
     if not model:
         model = defaults["model"]
 
+    host = _coerce_text(
+        ollama.get("host", defaults["host"]),
+        MAX_OLLAMA_HOST_CHARS,
+    ).strip()
+    if host.endswith("/api"):
+        host = host[:-4].rstrip("/")
+    host = host.rstrip("/")
+
+    api_key_env_var = _coerce_text(
+        ollama.get("api_key_env_var", defaults["api_key_env_var"]),
+        MAX_OLLAMA_API_KEY_ENV_VAR_CHARS,
+    ).strip() or defaults["api_key_env_var"]
+
+    raw_fallback_models = ollama.get("fallback_models", defaults["fallback_models"])
+    if isinstance(raw_fallback_models, str):
+        fallback_candidates = re.split(r"[,;\n]+", raw_fallback_models)
+    elif isinstance(raw_fallback_models, list):
+        fallback_candidates = raw_fallback_models
+    else:
+        fallback_candidates = []
+
+    fallback_models = []
+    seen_models = {model}
+    for candidate in fallback_candidates:
+        fallback_model = _coerce_text(candidate, MAX_OLLAMA_MODEL_CHARS).strip()
+        if not fallback_model or fallback_model in seen_models:
+            continue
+        fallback_models.append(fallback_model)
+        seen_models.add(fallback_model)
+        if len(fallback_models) >= MAX_OLLAMA_FALLBACK_MODELS:
+            break
+
     try:
         timeout_seconds = max(
             MIN_OLLAMA_TIMEOUT_SECONDS,
@@ -429,6 +485,9 @@ def _normalize_ollama(ollama):
 
     return {
         "model": model,
+        "fallback_models": fallback_models,
+        "host": host,
+        "api_key_env_var": api_key_env_var,
         "timeout_seconds": timeout_seconds,
     }
 
@@ -555,6 +614,11 @@ def _normalize_runtime(runtime):
     if not isinstance(runtime, dict):
         runtime = {}
 
+    normalized = {
+        "thinking": defaults["thinking"],
+        "stop_requested": defaults["stop_requested"],
+    }
+
     thinking = runtime.get("thinking", {})
     if not isinstance(thinking, dict):
         thinking = {}
@@ -577,18 +641,46 @@ def _normalize_runtime(runtime):
     ).strip()
     active = bool(thinking.get("active")) and bool(label)
 
-    if not active:
-        return defaults
-
-    return {
-        "thinking": {
+    if active:
+        normalized["thinking"] = {
             "active": True,
             "label": label,
             "source": source,
             "started_at": started_at,
             "operation_id": operation_id,
-        },
-    }
+        }
+
+    stop_requested = runtime.get("stop_requested", {})
+    if not isinstance(stop_requested, dict):
+        stop_requested = {}
+
+    stop_operation_id = _coerce_text(
+        stop_requested.get("operation_id", ""),
+        MAX_RUNTIME_OPERATION_ID_CHARS,
+    ).strip()
+    stop_requested_at = _coerce_text(
+        stop_requested.get("requested_at", ""),
+        MAX_RUNTIME_TIMESTAMP_CHARS,
+    ).strip()
+    stop_source = _coerce_text(
+        stop_requested.get("source", ""),
+        MAX_RUNTIME_OPERATION_SOURCE_CHARS,
+    ).strip()
+    stop_reason = _coerce_text(
+        stop_requested.get("reason", ""),
+        MAX_RUNTIME_STOP_REASON_CHARS,
+    ).strip()
+
+    if bool(stop_requested.get("active")):
+        normalized["stop_requested"] = {
+            "active": True,
+            "operation_id": stop_operation_id,
+            "requested_at": stop_requested_at,
+            "source": stop_source,
+            "reason": stop_reason,
+        }
+
+    return normalized
 
 
 def _normalize_domain_list(value) -> list[str]:
@@ -768,6 +860,17 @@ def _normalize_notifications(notifications):
     except (TypeError, ValueError):
         telegram_last_update_id = defaults["telegram"]["last_update_id"]
 
+    raw_pending_power = telegram.get("pending_power_confirmation", {})
+    if not isinstance(raw_pending_power, dict):
+        raw_pending_power = {}
+    pending_action = _coerce_text(raw_pending_power.get("action", ""), 20).strip().lower()
+    if pending_action not in {"shutdown", "restart"}:
+        pending_action = ""
+    try:
+        pending_delay = max(0, min(3600, int(raw_pending_power.get("delay_seconds", 0))))
+    except (TypeError, ValueError):
+        pending_delay = 0
+
     return {
         "enabled": bool(notifications.get("enabled", defaults["enabled"])),
         "channels": _normalize_notification_channels(
@@ -794,6 +897,13 @@ def _normalize_notifications(notifications):
             "timeout_seconds": telegram_timeout_seconds,
             "poll_timeout_seconds": telegram_poll_timeout_seconds,
             "last_update_id": telegram_last_update_id,
+            "pending_power_confirmation": {
+                "action": pending_action,
+                "delay_seconds": pending_delay,
+                "token": _coerce_text(raw_pending_power.get("token", ""), 40).strip(),
+                "chat_id": _coerce_text(raw_pending_power.get("chat_id", ""), 80).strip(),
+                "requested_at": _coerce_text(raw_pending_power.get("requested_at", ""), 80).strip(),
+            },
         },
     }
 
@@ -884,6 +994,8 @@ def render_state_summary(
         (
             "Ollama: "
             f"modelo={normalized['ollama']['model']}, "
+            f"fallbacks={', '.join(normalized['ollama']['fallback_models']) or '-'}, "
+            f"host={normalized['ollama']['host'] or 'local'}, "
             f"timeout={normalized['ollama']['timeout_seconds']}s"
         ),
         (
@@ -902,6 +1014,7 @@ def render_state_summary(
 
     if include_runtime:
         thinking = normalized["runtime"]["thinking"]
+        stop_requested = normalized["runtime"]["stop_requested"]
         if thinking["active"]:
             started_at = f" desde {thinking['started_at']}" if thinking["started_at"] else ""
             lines.append(
@@ -909,6 +1022,14 @@ def render_state_summary(
             )
         else:
             lines.append("Estado operativo: listo.")
+        if stop_requested["active"]:
+            requested_at = f" en {stop_requested['requested_at']}" if stop_requested["requested_at"] else ""
+            lines.append(
+                "Parada solicitada: activa"
+                f"{requested_at}"
+                + (f" por {stop_requested['source']}" if stop_requested["source"] else "")
+                + "."
+            )
 
     lines.append(
         f"Perfil: nombre={profile['name'] or '-'}, rol={profile['role'] or '-'}"

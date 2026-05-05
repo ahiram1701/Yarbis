@@ -560,6 +560,74 @@ def run_project_tests(
     )
 
 
+def run_project_check(timeout_seconds: int = 240) -> str:
+    """
+    Ejecuta la validacion completa del proyecto: tests Python y build del host .NET.
+
+    Args:
+        timeout_seconds (int): Timeout maximo para cada etapa.
+
+    Returns:
+        str: Resumen de la validacion completa.
+    """
+    try:
+        normalized_timeout = max(30, min(900, int(timeout_seconds)))
+    except (TypeError, ValueError):
+        normalized_timeout = 240
+
+    test_result = run_project_tests(timeout_seconds=normalized_timeout)
+    tests_ok = test_result.startswith("Tests OK.")
+
+    project_path = WORKSPACE_ROOT / "service_host" / "YarbisServiceHost.csproj"
+    if not project_path.exists():
+        build_result = "No encontre service_host/YarbisServiceHost.csproj."
+        build_ok = False
+    else:
+        command = ["dotnet", "build", str(project_path.relative_to(WORKSPACE_ROOT))]
+        try:
+            completed = subprocess.run(
+                command,
+                cwd=str(WORKSPACE_ROOT),
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=normalized_timeout,
+            )
+        except subprocess.TimeoutExpired:
+            build_result = (
+                f"El build .NET excedio el timeout de {normalized_timeout} segundos.\n"
+                f"Comando: {' '.join(command)}"
+            )
+            build_ok = False
+        except OSError as exc:
+            build_result = f"No pude ejecutar dotnet build: {exc}"
+            build_ok = False
+        else:
+            combined_output = "\n".join(
+                part.strip()
+                for part in (completed.stdout, completed.stderr)
+                if str(part).strip()
+            )
+            if not combined_output:
+                combined_output = "El build no produjo salida visible."
+            combined_output = _bounded_text(combined_output, MAX_TEST_OUTPUT_CHARS)
+            build_ok = completed.returncode == 0
+            build_status = "Build .NET OK." if build_ok else f"Build .NET con fallos (exit={completed.returncode})."
+            build_result = (
+                f"{build_status}\n"
+                f"Comando: {' '.join(command)}\n"
+                f"Salida:\n{combined_output}"
+            )
+
+    overall = "Validacion completa OK." if tests_ok and build_ok else "Validacion completa con problemas."
+    return (
+        f"{overall}\n\n"
+        f"Python:\n{test_result}\n\n"
+        f"Servicio .NET:\n{build_result}"
+    )
+
+
 def _get_internet_settings() -> dict:
     state = load_state()
     return state.get("internet", {})

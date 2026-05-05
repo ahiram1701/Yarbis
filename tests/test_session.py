@@ -64,11 +64,23 @@ class SessionTestCase(unittest.TestCase):
 
         with patch.object(memory, "STATE_FILE", state_path):
             memory.save_state(memory.default_state())
-            result = session.update_ollama_settings("llama3.2:3b", 900)
+            result = session.update_ollama_settings(
+                "llama3.2:3b",
+                900,
+                host="https://ollama.com/api",
+                fallback_models="gpt-oss:120b-cloud, qwen3.5:0.8b",
+                api_key_env_var="OLLAMA_API_KEY",
+            )
             state = memory.load_state()
 
         self.assertIn("Configuracion de Ollama actualizada", result)
         self.assertEqual(state["ollama"]["model"], "llama3.2:3b")
+        self.assertEqual(
+            state["ollama"]["fallback_models"],
+            ["gpt-oss:120b-cloud", "qwen3.5:0.8b"],
+        )
+        self.assertEqual(state["ollama"]["host"], "https://ollama.com")
+        self.assertEqual(state["ollama"]["api_key_env_var"], "OLLAMA_API_KEY")
         self.assertEqual(state["ollama"]["timeout_seconds"], 900)
 
     def test_update_ollama_settings_rejects_invalid_values(self):
@@ -352,6 +364,47 @@ class SessionTestCase(unittest.TestCase):
             state = memory.load_state()
 
         self.assertFalse(state["runtime"]["thinking"]["active"])
+
+    def test_request_stop_current_operation_marks_runtime_and_cancels_ollama(self):
+        state_path = TEST_RUNTIME_DIR / "session_stop_state.json"
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+
+        seeded_state = memory.normalize_state({
+            "runtime": {
+                "thinking": {
+                    "active": True,
+                    "label": "Ciclo",
+                    "source": "pid:1234",
+                    "started_at": "2026-05-01T12:00:00+00:00",
+                    "operation_id": "ciclo-demo",
+                },
+            },
+        })
+
+        with patch.object(memory, "STATE_FILE", state_path):
+            memory.save_state(seeded_state)
+            with patch.object(session, "cancel_active_ollama_request", return_value=True) as cancel_mock:
+                result = session.request_stop_current_operation(source="telegram")
+            state = memory.load_state()
+
+        self.assertIn("Solicitud de parada enviada", result)
+        cancel_mock.assert_called_once()
+        stop_requested = state["runtime"]["stop_requested"]
+        self.assertTrue(stop_requested["active"])
+        self.assertEqual(stop_requested["operation_id"], "ciclo-demo")
+        self.assertEqual(stop_requested["source"], "telegram")
+
+    def test_request_stop_current_operation_reports_idle_state(self):
+        state_path = TEST_RUNTIME_DIR / "session_stop_idle_state.json"
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+
+        with patch.object(memory, "STATE_FILE", state_path):
+            memory.save_state(memory.default_state())
+            with patch.object(session, "cancel_active_ollama_request") as cancel_mock:
+                result = session.request_stop_current_operation(source="desktop")
+
+        self.assertEqual(result, "Yarbis no esta pensando ahora.")
+        cancel_mock.assert_not_called()
 
     def test_recover_unanswered_user_message_runs_one_cycle(self):
         state_path = TEST_RUNTIME_DIR / "session_recover_user_state.json"

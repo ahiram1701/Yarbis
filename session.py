@@ -18,12 +18,14 @@ except ImportError:  # pragma: no cover - POSIX fallback only.
     fcntl = None
 
 import activity
-from agent import run_autonomous_session, run_one_cycle
+from agent import cancel_active_ollama_request, run_autonomous_session, run_one_cycle
 from intent_text import (
     looks_like_affirmative_action_reply as _looks_like_affirmative_action_reply,
     normalize_intent_text as _normalize_intent_text,
 )
 from memory import (
+    DEFAULT_OLLAMA_API_KEY_ENV_VAR,
+    DEFAULT_OLLAMA_HOST,
     DEFAULT_OLLAMA_MODEL,
     DEFAULT_OLLAMA_TIMEOUT_SECONDS,
     MAX_OLLAMA_TIMEOUT_SECONDS,
@@ -49,6 +51,7 @@ from tools import (
     update_goal as update_goal_tool,
     update_profile,
 )
+from service_manager import format_readiness_status, readiness_status
 
 SESSION_LOCK = threading.RLock()
 OPERATION_LOCK_FILE = Path(__file__).resolve().parent / ".yarbis_runtime" / "session.lock"
@@ -144,44 +147,95 @@ def _release_operation_file_lock(handle):
 
 def _set_runtime_thinking(label: str, operation_id: str):
     try:
-        state_transaction(
-            "runtime_thinking_start",
-            lambda state: state.__setitem__(
-                "runtime",
-                {
-                    "thinking": {
-                        "active": True,
-                        "label": str(label).strip() or "Operacion",
-                        "source": f"pid:{os.getpid()}",
-                        "started_at": datetime.now(timezone.utc).isoformat(),
-                        "operation_id": str(operation_id).strip(),
-                    },
+        def mutate(state):
+            state["runtime"] = {
+                "thinking": {
+                    "active": True,
+                    "label": str(label).strip() or "Operacion",
+                    "source": f"pid:{os.getpid()}",
+                    "started_at": datetime.now(timezone.utc).isoformat(),
+                    "operation_id": str(operation_id).strip(),
                 },
-            ),
-        )
+                "stop_requested": {
+                    "active": False,
+                    "operation_id": "",
+                    "requested_at": "",
+                    "source": "",
+                    "reason": "",
+                },
+            }
+
+        state_transaction("runtime_thinking_start", mutate)
     except Exception:
         pass
 
 
 def _clear_runtime_thinking():
     try:
-        state_transaction(
-            "runtime_thinking_clear",
-            lambda state: state.__setitem__(
-                "runtime",
-                {
-                    "thinking": {
-                        "active": False,
-                        "label": "",
-                        "source": "",
-                        "started_at": "",
-                        "operation_id": "",
-                    },
+        def mutate(state):
+            state["runtime"] = {
+                "thinking": {
+                    "active": False,
+                    "label": "",
+                    "source": "",
+                    "started_at": "",
+                    "operation_id": "",
                 },
-            ),
-        )
+                "stop_requested": {
+                    "active": False,
+                    "operation_id": "",
+                    "requested_at": "",
+                    "source": "",
+                    "reason": "",
+                },
+            }
+
+        state_transaction("runtime_thinking_clear", mutate)
     except Exception:
         pass
+
+
+def request_stop_current_operation(source: str = "usuario") -> str:
+    requested_at = datetime.now(timezone.utc).isoformat()
+    cleaned_source = str(source).strip() or "usuario"
+
+    def mutate(state):
+        runtime = state.setdefault("runtime", {})
+        thinking = runtime.get("thinking", {})
+        if not isinstance(thinking, dict):
+            thinking = {}
+
+        label = str(thinking.get("label", "")).strip() or "Operacion"
+        operation_id = str(thinking.get("operation_id", "")).strip()
+        if not (thinking.get("active") and operation_id):
+            return "", ""
+
+        runtime["stop_requested"] = {
+            "active": True,
+            "operation_id": operation_id,
+            "requested_at": requested_at,
+            "source": cleaned_source,
+            "reason": "Solicitud explicita del usuario para detener la operacion en curso.",
+        }
+        state["runtime"] = runtime
+        return label, operation_id
+
+    label, operation_id = state_transaction("runtime_stop_requested", mutate)
+    if not operation_id:
+        return "Yarbis no esta pensando ahora."
+
+    try:
+        cancel_active_ollama_request()
+    except Exception:
+        pass
+
+    activity.emit_event(
+        "operation_stop_requested",
+        operation_id=operation_id,
+        label=label,
+        source=cleaned_source,
+    )
+    return f"Solicitud de parada enviada para {label}."
 
 
 @contextlib.contextmanager
@@ -397,6 +451,10 @@ def get_status_text() -> str:
         return render_state_summary(load_state())
 
 
+def get_readiness_text(force: bool = False, compact: bool = False) -> str:
+    return format_readiness_status(readiness_status(force=force), compact=compact)
+
+
 def get_ui_theme() -> str:
     with SESSION_LOCK:
         state = load_state()
@@ -418,47 +476,91 @@ def update_ui_theme(theme: str) -> str:
 
 
 def get_ollama_settings() -> dict:
-    with SESSION_LOCK:
-        return load_state().get("ollama", {
-            "model": DEFAULT_OLLAMA_MODEL,
-            "timeout_seconds": DEFAULT_OLLAMA_TIMEOUT_SECONDS,
-        })
+    return load_state().get("ollama", {
+        "model": DEFAULT_OLLAMA_MODEL,
+        "fallback_models": [],
+        "host": DEFAULT_OLLAMA_HOST,
+        "api_key_env_var": DEFAULT_OLLAMA_API_KEY_ENV_VAR,
+        "timeout_seconds": DEFAULT_OLLAMA_TIMEOUT_SECONDS,
+    })
 
 
-def update_ollama_settings(model: str, timeout_seconds: int) -> str:
-    with SESSION_LOCK:
-        cleaned_model = str(model).strip()
-        if not cleaned_model:
-            raise ValueError("El modelo no puede quedar vacio.")
+def update_ollama_settings(
+    model: str,
+    timeout_seconds: int,
+    host: str | None = None,
+    fallback_models=None,
+    api_key_env_var: str | None = None,
+) -> str:
+    cleaned_model = str(model).strip()
+    if not cleaned_model:
+        raise ValueError("El modelo no puede quedar vacio.")
 
-        try:
-            cleaned_timeout = int(timeout_seconds)
-        except (TypeError, ValueError) as exc:
-            raise ValueError("El timeout debe ser un numero de segundos.") from exc
+    try:
+        cleaned_timeout = int(timeout_seconds)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("El timeout debe ser un numero de segundos.") from exc
 
-        if not MIN_OLLAMA_TIMEOUT_SECONDS <= cleaned_timeout <= MAX_OLLAMA_TIMEOUT_SECONDS:
-            raise ValueError(
-                "El timeout debe estar entre "
-                f"{MIN_OLLAMA_TIMEOUT_SECONDS} y {MAX_OLLAMA_TIMEOUT_SECONDS} segundos."
-            )
-
-        state_transaction(
-            "update_ollama_settings",
-            lambda state: state.__setitem__(
-                "ollama",
-                {
-                    "model": cleaned_model,
-                    "timeout_seconds": cleaned_timeout,
-                },
-            ),
+    if not MIN_OLLAMA_TIMEOUT_SECONDS <= cleaned_timeout <= MAX_OLLAMA_TIMEOUT_SECONDS:
+        raise ValueError(
+            "El timeout debe estar entre "
+            f"{MIN_OLLAMA_TIMEOUT_SECONDS} y {MAX_OLLAMA_TIMEOUT_SECONDS} segundos."
         )
-        settings = load_state()["ollama"]
 
-        return (
-            "Configuracion de Ollama actualizada.\n"
-            f"Modelo: {settings['model']}\n"
-            f"Timeout: {settings['timeout_seconds']} segundos"
-        )
+    current_settings = get_ollama_settings()
+    cleaned_host = (
+        str(host).strip()
+        if host is not None
+        else str(current_settings.get("host", DEFAULT_OLLAMA_HOST)).strip()
+    )
+    if cleaned_host.endswith("/api"):
+        cleaned_host = cleaned_host[:-4].rstrip("/")
+    cleaned_host = cleaned_host.rstrip("/")
+
+    cleaned_api_key_env_var = (
+        str(api_key_env_var).strip()
+        if api_key_env_var is not None
+        else str(current_settings.get("api_key_env_var", DEFAULT_OLLAMA_API_KEY_ENV_VAR)).strip()
+    ) or DEFAULT_OLLAMA_API_KEY_ENV_VAR
+
+    if fallback_models is None:
+        cleaned_fallback_models = current_settings.get("fallback_models", [])
+    elif isinstance(fallback_models, str):
+        cleaned_fallback_models = [
+            item.strip()
+            for item in re.split(r"[,;\n]+", fallback_models)
+            if item.strip()
+        ]
+    elif isinstance(fallback_models, list):
+        cleaned_fallback_models = [str(item).strip() for item in fallback_models if str(item).strip()]
+    else:
+        cleaned_fallback_models = []
+
+    state_transaction(
+        "update_ollama_settings",
+        lambda state: state.__setitem__(
+            "ollama",
+            {
+                "model": cleaned_model,
+                "fallback_models": cleaned_fallback_models,
+                "host": cleaned_host,
+                "api_key_env_var": cleaned_api_key_env_var,
+                "timeout_seconds": cleaned_timeout,
+            },
+        ),
+    )
+    settings = load_state()["ollama"]
+    host_text = settings["host"] or "local"
+    fallback_text = ", ".join(settings["fallback_models"]) or "-"
+
+    return (
+        "Configuracion de Ollama actualizada.\n"
+        f"Modelo: {settings['model']}\n"
+        f"Fallbacks: {fallback_text}\n"
+        f"Host: {host_text}\n"
+        f"API key env: {settings['api_key_env_var']}\n"
+        f"Timeout: {settings['timeout_seconds']} segundos"
+    )
 
 
 def get_service_proactive_settings() -> dict:
@@ -588,6 +690,7 @@ def update_notification_settings(
                     "timeout_seconds": default_telegram.get("timeout_seconds", 10),
                     "poll_timeout_seconds": default_telegram.get("poll_timeout_seconds", 25),
                     "last_update_id": telegram_last_update_id,
+                    "pending_power_confirmation": default_telegram.get("pending_power_confirmation", {}),
                 },
             }
 

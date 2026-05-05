@@ -3,6 +3,8 @@ import tkinter as tk
 from tkinter import ttk
 
 from memory import (
+    DEFAULT_OLLAMA_API_KEY_ENV_VAR,
+    DEFAULT_OLLAMA_HOST,
     DEFAULT_OLLAMA_MODEL,
     DEFAULT_OLLAMA_TIMEOUT_SECONDS,
     MAX_OLLAMA_TIMEOUT_SECONDS,
@@ -192,6 +194,16 @@ class OllamaSettingsDialog(ThemedDialog):
     def body(self, master):
         self._prepare_body(master)
         model = str(self.initial_settings.get("model", DEFAULT_OLLAMA_MODEL)).strip()
+        fallback_models = self.initial_settings.get("fallback_models", [])
+        if isinstance(fallback_models, list):
+            fallback_models = ", ".join(str(item).strip() for item in fallback_models if str(item).strip())
+        else:
+            fallback_models = str(fallback_models).strip()
+        host = str(self.initial_settings.get("host", DEFAULT_OLLAMA_HOST)).strip()
+        api_key_env_var = (
+            str(self.initial_settings.get("api_key_env_var", DEFAULT_OLLAMA_API_KEY_ENV_VAR)).strip()
+            or DEFAULT_OLLAMA_API_KEY_ENV_VAR
+        )
         timeout_seconds = str(
             self.initial_settings.get(
                 "timeout_seconds",
@@ -204,9 +216,30 @@ class OllamaSettingsDialog(ThemedDialog):
         self.model_entry.grid(row=1, column=0, columnspan=2, sticky="ew", padx=6)
         self.model_entry.insert(0, model or DEFAULT_OLLAMA_MODEL)
 
-        ttk.Label(master, text="Timeout").grid(row=2, column=0, sticky="w", padx=6, pady=(10, 2))
+        ttk.Label(master, text="Fallbacks").grid(row=2, column=0, sticky="w", padx=6, pady=(10, 2))
+        self.fallback_entry = ttk.Entry(master, width=44)
+        self.fallback_entry.grid(row=3, column=0, columnspan=2, sticky="ew", padx=6)
+        self.fallback_entry.insert(0, fallback_models)
+
+        ttk.Label(master, text="Host").grid(row=4, column=0, sticky="w", padx=6, pady=(10, 2))
+        self.host_entry = ttk.Entry(master, width=44)
+        self.host_entry.grid(row=5, column=0, columnspan=2, sticky="ew", padx=6)
+        self.host_entry.insert(0, host)
+        ttk.Label(
+            master,
+            text="Vacio = local. Usa https://ollama.com para Cloud directo.",
+            foreground=self.theme_palette["muted"],
+            wraplength=360,
+        ).grid(row=6, column=0, columnspan=2, sticky="w", padx=6, pady=(3, 0))
+
+        ttk.Label(master, text="API key env").grid(row=7, column=0, sticky="w", padx=6, pady=(10, 2))
+        self.api_key_env_entry = ttk.Entry(master, width=44)
+        self.api_key_env_entry.grid(row=8, column=0, columnspan=2, sticky="ew", padx=6)
+        self.api_key_env_entry.insert(0, api_key_env_var)
+
+        ttk.Label(master, text="Timeout").grid(row=9, column=0, sticky="w", padx=6, pady=(10, 2))
         timeout_row = ttk.Frame(master)
-        timeout_row.grid(row=3, column=0, sticky="w", padx=6, pady=(0, 6))
+        timeout_row.grid(row=10, column=0, sticky="w", padx=6, pady=(0, 6))
         self.timeout_spin = ttk.Spinbox(
             timeout_row,
             from_=MIN_OLLAMA_TIMEOUT_SECONDS,
@@ -220,13 +253,19 @@ class OllamaSettingsDialog(ThemedDialog):
         self.timeout_spin.insert(0, timeout_seconds)
         ttk.Label(timeout_row, text="s").pack(side="left", padx=(6, 0))
 
-        if os.getenv("YARBIS_MODEL") or os.getenv("YARBIS_OLLAMA_TIMEOUT_SECONDS"):
+        if (
+            os.getenv("YARBIS_MODEL")
+            or os.getenv("YARBIS_OLLAMA_TIMEOUT_SECONDS")
+            or os.getenv("YARBIS_OLLAMA_HOST")
+            or os.getenv("YARBIS_OLLAMA_FALLBACK_MODELS")
+            or os.getenv("YARBIS_OLLAMA_API_KEY_ENV_VAR")
+        ):
             ttk.Label(
                 master,
                 text="Hay variables de entorno YARBIS_* activas; esas pueden tener prioridad.",
                 foreground=self.theme_palette["muted"],
                 wraplength=360,
-            ).grid(row=4, column=0, columnspan=2, sticky="w", padx=6, pady=(4, 6))
+            ).grid(row=11, column=0, columnspan=2, sticky="w", padx=6, pady=(4, 6))
 
         master.columnconfigure(0, weight=1)
         return self.model_entry
@@ -234,6 +273,9 @@ class OllamaSettingsDialog(ThemedDialog):
     def apply(self):
         self.result = {
             "model": self.model_entry.get().strip(),
+            "fallback_models": self.fallback_entry.get().strip(),
+            "host": self.host_entry.get().strip(),
+            "api_key_env_var": self.api_key_env_entry.get().strip(),
             "timeout_seconds": self.timeout_spin.get().strip(),
         }
 

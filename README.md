@@ -30,7 +30,7 @@ Yarbis ya funciona como agente personal local:
 - Windows para la app de escritorio, notificaciones nativas y arranque con Windows
 - Python 3.11 o superior
 - .NET SDK 8 para compilar el host nativo del servicio SCM
-- Ollama ejecutandose localmente
+- Ollama ejecutandose localmente, o acceso directo a Ollama Cloud
 - un modelo disponible en Ollama; por defecto se usa `qwen3.5:2b`
 - permisos de administrador para instalar, quitar o reconfigurar el servicio en SCM
 
@@ -46,6 +46,14 @@ python -m venv .venv
 .\.venv\Scripts\activate
 python -m pip install -r requirements.txt
 ```
+
+Tambien puedes preparar una copia nueva con:
+
+```powershell
+.\scripts\setup.ps1
+```
+
+El script crea `.venv` si hace falta, instala dependencias y revisa Ollama y .NET.
 
 ## Uso rapido sin terminal
 
@@ -63,6 +71,7 @@ Tambien puedes iniciarlo desde PowerShell:
 
 La interfaz de escritorio permite:
 
+- completar un primer uso guiado cuando aun no hay objetivo
 - cambiar el objetivo
 - cambiar el modelo de Ollama y el timeout
 - ejecutar un ciclo
@@ -79,6 +88,11 @@ La interfaz de escritorio permite:
 - configurar si el servicio se abre al iniciar Windows
 - configurar el pulso proactivo del servicio
 - quitar el servicio de SCM
+
+Si `state.json` aun no tiene objetivo, la app abre un asistente inicial. Define objetivo,
+modelo local y contexto minimo, y puede ejecutar el primer ciclo al guardar. El panel
+`Preparacion` muestra si falta algo para usar Yarbis ahora, por ejemplo objetivo, modelo
+Ollama o dependencias.
 
 ## Servicio de fondo
 
@@ -108,7 +122,9 @@ Si el servicio se detiene mientras procesa una respuesta del usuario, esa respue
 
 Puedes ajustar el pulso desde la app con `Servicio` -> `Configurar pulso`. Los cambios se guardan en `state.json`; el servicio los lee en caliente para el intervalo y los ciclos. La espera inicial aplica al siguiente arranque del servicio.
 
-El modelo de Ollama y su timeout tambien se pueden cambiar desde la app con `Modelo` -> `Modelo y timeout`. Esos cambios se guardan en `state.json` y se aplican al siguiente ciclo, tanto en la app como en el servicio.
+El modelo de Ollama, host, fallbacks y timeout tambien se pueden cambiar desde la app con `Modelo` -> `Modelo y timeout`. Esos cambios se guardan en `state.json` y se aplican al siguiente ciclo, tanto en la app como en el servicio.
+
+Cuando Yarbis aparece como `Pensando`, el boton `Detener pensando` solicita parar la operacion en curso. Si hay una llamada activa a Ollama, Yarbis cierra el cliente local y el ciclo termina como detenido en cuanto la llamada libera el control.
 
 ## Uso por terminal
 
@@ -173,11 +189,19 @@ Comandos disponibles por Telegram:
 
 - `/start` o `/help`: muestra ayuda
 - `/status`: muestra el estado actual
+- `/stop`: detiene la operacion en curso; tambien funcionan `/detener`, `/parar` y `/cancelar_operacion`
 - `/goal nuevo objetivo`: cambia el objetivo
 - `/objetivo nuevo objetivo`: alias de `/goal`
 - `/run`: ejecuta un ciclo
 - `/auto`: ejecuta modo autonomo con los ciclos por defecto
 - `/auto 3`: ejecuta el numero indicado de ciclos
+- `/modelo llama3.2:3b`: cambia el modelo de Ollama
+- `/timeout 900`: cambia el timeout de Ollama en segundos; tambien acepta valores como `15m`
+- `/ollama llama3.2:3b 900`: cambia modelo y timeout juntos
+- `/ollama local gpt-oss:120b-cloud`: usa el daemon local de Ollama; puede mezclar modelos locales y cloud si hiciste `ollama signin`
+- `/ollama cloud gpt-oss:120b`: usa `https://ollama.com` directo; requiere `OLLAMA_API_KEY`
+- `/ollama host https://ollama.com`: cambia solo el host
+- `/ollama fallback qwen3.5:2b, gpt-oss:120b-cloud`: configura modelos de respaldo en orden
 - `/notas`: lista notas persistentes
 - `/notas personal`: lista notas de una categoria
 - `/nota crear Titulo | contenido | categoria`: guarda una nota
@@ -189,13 +213,18 @@ Comandos disponibles por Telegram:
 - `/reiniciar`: programa el reinicio de esta PC en 60 segundos
 - `/reiniciar ahora`: reinicia esta PC inmediatamente
 - `/reiniciar 5m`: programa el reinicio en 5 minutos
+- `/confirmar_apagado CODIGO`: confirma un apagado solicitado
+- `/confirmar_reinicio CODIGO`: confirma un reinicio solicitado
 - `/cancelar_apagado`: cancela un apagado programado
 - `/cancelar_reinicio`: cancela un reinicio programado
 
-Tambien puedes decir `guarda una nota: Titulo | contenido | categoria`, `ver notas`
+Tambien puedes decir `guarda una nota: Titulo | contenido | categoria`, `ver notas`, `detente`
 o `borra la nota note-123` para gestionar notas con lenguaje natural. Para apagado o reinicio remoto,
 puedes decir `apaga la pc`, `Yarbis, reinicia pc` o `reinicia pc en 5 minutos`
-sin depender del modelo local. Los mensajes de texto sin `/` se procesan como respuesta
+sin depender del modelo local. Por seguridad, las solicitudes de apagado y reinicio no ejecutan
+la accion inmediatamente: Yarbis responde con un codigo y debes confirmar con
+`/confirmar_apagado CODIGO` o `/confirmar_reinicio CODIGO` dentro de 10 minutos.
+Los mensajes de texto sin `/` se procesan como respuesta
 o contexto libre cuando no coinciden con una accion remota explicita. Por ahora Telegram
 solo procesa texto.
 
@@ -244,13 +273,22 @@ Modelo y ejecucion:
 
 ```powershell
 $env:YARBIS_MODEL="qwen3.5:2b"
+$env:YARBIS_OLLAMA_FALLBACK_MODELS="gpt-oss:120b-cloud"
+$env:YARBIS_OLLAMA_HOST=""
+$env:YARBIS_OLLAMA_API_KEY_ENV_VAR="OLLAMA_API_KEY"
+$env:OLLAMA_API_KEY="ollama_cloud_api_key"
 $env:YARBIS_OLLAMA_TIMEOUT_SECONDS="900"
 $env:YARBIS_EMPTY_RESPONSE_RETRIES="1"
 ```
 
 Si aparece `No pude consultar Ollama en este ciclo: timed out`, primero confirma que Ollama este vivo con `ollama list` u `ollama ps`. Si el modelo tarda en cargar, calientalo una vez con `ollama run qwen3.5:2b`, aumenta `YARBIS_OLLAMA_TIMEOUT_SECONDS`, reinicia la app o el servicio para que tome la variable, o cambia temporalmente a un modelo mas ligero con `YARBIS_MODEL="qwen3.5:0.8b"`.
 
-Para uso diario, prefiere el boton `Modelo y timeout` de la app. Las variables `YARBIS_MODEL` y `YARBIS_OLLAMA_TIMEOUT_SECONDS` quedan como override avanzado y, si estan definidas, pueden tener prioridad sobre lo guardado en la interfaz.
+Para usar cloud hay dos rutas:
+
+- Mantener host local vacio, ejecutar `ollama signin` y usar modelos con sufijo cloud, por ejemplo `gpt-oss:120b-cloud`. Esta es la forma mas comoda para mezclar modelo local primario y fallback cloud desde el mismo daemon.
+- Configurar `YARBIS_OLLAMA_HOST="https://ollama.com"` o poner ese host en la app, definir `OLLAMA_API_KEY`, y usar el nombre cloud directo, por ejemplo `gpt-oss:120b`.
+
+Para uso diario, prefiere el boton `Modelo y timeout` de la app o los comandos de Telegram `/modelo`, `/timeout` y `/ollama`. Las variables `YARBIS_MODEL`, `YARBIS_OLLAMA_FALLBACK_MODELS`, `YARBIS_OLLAMA_HOST`, `YARBIS_OLLAMA_API_KEY_ENV_VAR` y `YARBIS_OLLAMA_TIMEOUT_SECONDS` quedan como override avanzado y, si estan definidas, pueden tener prioridad sobre lo guardado en la interfaz o Telegram.
 
 Servicio proactivo, como override avanzado de la configuracion guardada:
 
@@ -351,6 +389,7 @@ Yarbis expone al modelo estas herramientas:
 - `write_text_file`: escritura con checkpoint y diff
 - `list_checkpoints` y `restore_checkpoint`: recuperacion de cambios
 - `run_project_tests`: validacion con `unittest`
+- `run_project_check`: validacion completa con `unittest` y build del host .NET
 - `web_search` y `fetch_web_page`: acceso web publico bajo politica
 
 ## Autoedicion segura
@@ -463,6 +502,7 @@ Validacion completa antes de cerrar cambios:
 ```
 
 El script ejecuta la suite Python con `unittest` y compila `service_host\YarbisServiceHost.csproj` con .NET 8. Tambien puedes usar la tool interna `run_project_tests`, que ejecuta `unittest` dentro del workspace.
+Para una validacion equivalente desde el agente, usa `run_project_check`.
 
 Lint gradual:
 
@@ -476,7 +516,7 @@ Ruff esta configurado solo con reglas seguras iniciales.
 ## Limitaciones actuales
 
 - El servicio usa SCM, pero por defecto corre como `LocalSystem`; algunos recursos de usuario, como notificaciones interactivas de Windows, pueden no comportarse igual que en la app de escritorio.
-- La autonomia depende del modelo local disponible en Ollama y de la calidad del objetivo inicial.
+- La autonomia depende del modelo disponible en Ollama local/cloud y de la calidad del objetivo inicial.
 - La web solo cubre busqueda y lectura de paginas publicas; no hace navegacion completa ni automatizacion de navegador.
 - Telegram procesa mensajes de texto, no adjuntos.
 - Las tools no ejecutan comandos arbitrarios del sistema; solo leen/escriben dentro del workspace y ejecutan tests Python del proyecto.

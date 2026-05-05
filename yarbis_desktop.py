@@ -21,6 +21,7 @@ from session import (
     get_status_text,
     get_ui_theme,
     has_pending_user_question,
+    request_stop_current_operation,
     run_auto_with_output,
     run_cycle_with_output,
     run_startup_self_analysis,
@@ -36,8 +37,10 @@ from session import (
 )
 from service_manager import (
     format_health_status,
+    format_readiness_status,
     get_service_status,
     health_status,
+    readiness_status,
     remove_service,
     set_autostart_enabled,
     start_service,
@@ -45,6 +48,7 @@ from service_manager import (
 )
 from telegram_inbox import start_telegram_polling, stop_telegram_polling
 from ui_dialogs import (
+    FirstRunDialog,
     MultilineTextDialog,
     NoteDialog,
     NotesDialog,
@@ -146,6 +150,7 @@ class YarbisDesktop(tk.Tk):
         self.theme_var = tk.StringVar()
         self.ollama_var = tk.StringVar()
         self.health_var = tk.StringVar()
+        self.readiness_var = tk.StringVar()
         self.status_var = tk.StringVar(value="Listo.")
         self.theme_button_text = tk.StringVar()
         self.service_var = tk.StringVar()
@@ -162,10 +167,12 @@ class YarbisDesktop(tk.Tk):
         self._last_summary_text = ""
         self._last_activity_text = ""
         self._local_telegram_polling = False
+        self._first_run_checked = False
 
         self._build_ui()
         self._apply_theme(self.current_theme_name)
         self.refresh_state_view()
+        self.after(250, self._maybe_show_first_run)
         self.after(150, self._poll_worker_queue)
         self.after(_STATE_SYNC_INTERVAL_MS, self._sync_state_view)
 
@@ -228,9 +235,18 @@ class YarbisDesktop(tk.Tk):
             pady=4,
         )
 
-        ttk.Label(summary, text="Pendiente").grid(row=7, column=0, sticky="nw", padx=10, pady=(4, 10))
-        ttk.Label(summary, textvariable=self.pending_var, wraplength=780).grid(
+        ttk.Label(summary, text="Preparacion").grid(row=7, column=0, sticky="nw", padx=10, pady=4)
+        ttk.Label(summary, textvariable=self.readiness_var, wraplength=780).grid(
             row=7,
+            column=1,
+            sticky="nw",
+            padx=(0, 10),
+            pady=4,
+        )
+
+        ttk.Label(summary, text="Pendiente").grid(row=8, column=0, sticky="nw", padx=10, pady=(4, 10))
+        ttk.Label(summary, textvariable=self.pending_var, wraplength=780).grid(
+            row=8,
             column=1,
             sticky="nw",
             padx=(0, 10),
@@ -272,6 +288,12 @@ class YarbisDesktop(tk.Tk):
             (
                 {"text": "Ejecutar ciclo", "command": self._run_cycle, "style": "Accent.TButton"},
                 {"text": "Modo autonomo", "command": self._run_auto, "style": "Secondary.TButton"},
+                {
+                    "text": "Detener pensando",
+                    "command": self._stop_current_operation,
+                    "style": "Danger.TButton",
+                    "disable_when_busy": False,
+                },
             ),
         )
         self._build_action_group(
@@ -385,7 +407,10 @@ class YarbisDesktop(tk.Tk):
                 button_options["textvariable"] = spec["textvariable"]
             else:
                 button_options["text"] = spec["text"]
-            self._pack_action_button(ttk.Button(group, **button_options))
+            self._pack_action_button(
+                ttk.Button(group, **button_options),
+                disable_when_busy=spec.get("disable_when_busy", True),
+            )
 
     def _build_service_group(self, parent):
         group = ttk.LabelFrame(parent, text="Servicio")
@@ -430,9 +455,10 @@ class YarbisDesktop(tk.Tk):
         )
         self._pack_action_button(self.remove_service_button)
 
-    def _pack_action_button(self, button):
+    def _pack_action_button(self, button, disable_when_busy: bool = True):
         button.pack(fill="x", padx=8, pady=3)
-        self._action_buttons.append(button)
+        if disable_when_busy:
+            self._action_buttons.append(button)
 
     def _on_actions_content_configure(self, _event=None):
         self.actions_canvas.configure(scrollregion=self.actions_canvas.bbox("all"))
@@ -729,7 +755,7 @@ class YarbisDesktop(tk.Tk):
             return True
 
     def _refresh_activity_view(self, force_scroll: bool = False):
-        content = activity.read_activity_log()
+        content = activity.read_activity_history()
         if content == self._last_activity_text:
             return
 
@@ -819,13 +845,19 @@ class YarbisDesktop(tk.Tk):
         self.goal_var.set(state["goal"])
         self.cycles_var.set(str(state["cycle_count"]))
         ollama_settings = state.get("ollama", {})
+        fallback_models = ollama_settings.get("fallback_models", [])
+        fallback_text = f", +{len(fallback_models)} fallback(s)" if fallback_models else ""
+        host_text = ollama_settings.get("host") or "local"
         self.ollama_var.set(
-            f"{ollama_settings.get('model', DEFAULT_OLLAMA_MODEL)} "
+            f"{ollama_settings.get('model', DEFAULT_OLLAMA_MODEL)}{fallback_text} "
+            f"@ {host_text} "
             f"({ollama_settings.get('timeout_seconds', DEFAULT_OLLAMA_TIMEOUT_SECONDS)}s)"
         )
 
         health = health_status()
         self.health_var.set(format_health_status(health))
+        readiness = readiness_status()
+        self.readiness_var.set(format_readiness_status(readiness))
         service_status = health["service"]
         proactive_settings = state["service"]["proactive"]
         pulse_status = "activo" if proactive_settings["enabled"] else "desactivado"
@@ -880,6 +912,59 @@ class YarbisDesktop(tk.Tk):
             self._set_text(self.summary_text, summary_text)
             self._last_summary_text = summary_text
         self._refresh_activity_view()
+
+    def _maybe_show_first_run(self):
+        if self._first_run_checked:
+            return
+
+        state = load_state()
+        if str(state.get("goal", "")).strip():
+            self._first_run_checked = True
+            return
+        if self._busy:
+            self.after(1000, self._maybe_show_first_run)
+            return
+
+        self._first_run_checked = True
+        dialog = FirstRunDialog(self, initial_state=state)
+        if dialog.result is None:
+            self.status_var.set("Define un objetivo para empezar.")
+            return
+
+        self._apply_first_run_setup(dialog.result)
+
+    def _apply_first_run_setup(self, settings: dict):
+        activity_lines = []
+        try:
+            activity_lines.append(update_goal(settings["goal"]))
+            activity_lines.append(update_ollama_settings(
+                settings["model"],
+                settings["timeout_seconds"],
+                host=settings.get("host", ""),
+            ))
+            if settings.get("name") or settings.get("role"):
+                activity_lines.append(update_profile_text(
+                    name=settings.get("name", ""),
+                    role=settings.get("role", ""),
+                ))
+        except ValueError as exc:
+            messagebox.showwarning("Yarbis", str(exc), parent=self)
+            self.refresh_state_view()
+            return
+
+        self._append_activity("Primer uso", "\n\n".join(line for line in activity_lines if line))
+        readiness_status(force=True)
+        self.refresh_state_view()
+
+        if settings.get("open_notifications"):
+            self._edit_notifications()
+
+        if settings.get("install_service"):
+            self._start_background_job("Servicio", start_service)
+            return
+
+        if settings.get("run_first_cycle"):
+            self._start_background_job("Primer ciclo", run_cycle_with_output)
 
     def _sync_state_view(self):
         self.refresh_state_view()
@@ -992,6 +1077,12 @@ class YarbisDesktop(tk.Tk):
             return
         self._start_background_job("Modo autonomo", run_auto_with_output, cycles)
 
+    def _stop_current_operation(self):
+        result = request_stop_current_operation(source="desktop")
+        self._append_activity("Detener", result)
+        self.status_var.set(result)
+        self.refresh_state_view()
+
     def _show_pending_user_question(self) -> bool:
         state = load_state()
         if not has_pending_user_question(state):
@@ -1030,6 +1121,7 @@ class YarbisDesktop(tk.Tk):
             return
 
         self._append_activity("Ollama", result)
+        readiness_status(force=True)
         self.refresh_state_view()
 
     def _edit_notifications(self):
@@ -1044,6 +1136,7 @@ class YarbisDesktop(tk.Tk):
             return
 
         self._append_activity("Notificaciones", result)
+        readiness_status(force=True)
         self.refresh_state_view()
         if (
             dialog.result.get("telegram_enabled")
@@ -1152,6 +1245,7 @@ class YarbisDesktop(tk.Tk):
             return
 
         self._append_activity("Objetivo actualizado", result)
+        readiness_status(force=True)
         self.refresh_state_view()
 
     def _edit_profile(self):
@@ -1224,7 +1318,7 @@ class YarbisDesktop(tk.Tk):
         self._start_background_job("Respuesta", submit_user_reply, reply_text)
 
     def _clear_activity(self):
-        activity.clear_activity_log()
+        activity.clear_activity_history()
         self._last_activity_text = ""
         self._set_text(self.activity_text, "")
 

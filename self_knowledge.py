@@ -9,7 +9,13 @@ import sys
 import time
 from pathlib import Path
 
-from memory import DEFAULT_OLLAMA_MODEL, DEFAULT_OLLAMA_TIMEOUT_SECONDS, load_state
+from memory import (
+    DEFAULT_OLLAMA_API_KEY_ENV_VAR,
+    DEFAULT_OLLAMA_HOST,
+    DEFAULT_OLLAMA_MODEL,
+    DEFAULT_OLLAMA_TIMEOUT_SECONDS,
+    load_state,
+)
 
 WORKSPACE_ROOT = Path(__file__).resolve().parent
 MAX_SOURCE_FILES = 36
@@ -396,6 +402,16 @@ def _render_runtime_environment() -> list[str]:
         or str(ollama.get("model", DEFAULT_OLLAMA_MODEL)).strip()
         or DEFAULT_OLLAMA_MODEL
     )
+    ollama_host = (
+        os.getenv("YARBIS_OLLAMA_HOST", "").strip()
+        or str(ollama.get("host", DEFAULT_OLLAMA_HOST)).strip()
+        or "local"
+    )
+    ollama_api_key_env_var = (
+        os.getenv("YARBIS_OLLAMA_API_KEY_ENV_VAR", "").strip()
+        or str(ollama.get("api_key_env_var", DEFAULT_OLLAMA_API_KEY_ENV_VAR)).strip()
+        or DEFAULT_OLLAMA_API_KEY_ENV_VAR
+    )
     ollama_timeout = (
         os.getenv("YARBIS_OLLAMA_TIMEOUT_SECONDS", "").strip()
         or str(ollama.get("timeout_seconds", DEFAULT_OLLAMA_TIMEOUT_SECONDS)).strip()
@@ -413,7 +429,11 @@ def _render_runtime_environment() -> list[str]:
         f"Disco del workspace: {disk_text}",
         f"Python: {sys.version.split()[0]} ({sys.executable})",
         f"Proceso actual: pid={os.getpid()}, cwd={Path.cwd()}",
-        f"Modelo Ollama configurado: {ollama_model} (timeout {ollama_timeout}s)",
+        (
+            "Ollama configurado: "
+            f"modelo={ollama_model}, host={ollama_host}, "
+            f"timeout={ollama_timeout}s, api_key_env={ollama_api_key_env_var}"
+        ),
     ]
 
     gpus = hardware.get("gpus")
@@ -477,6 +497,9 @@ def render_self_knowledge_summary(refresh: bool = False) -> str:
     now = time.monotonic()
     cached_text = _SELF_KNOWLEDGE_CACHE["text"]
     cache_age = now - float(_SELF_KNOWLEDGE_CACHE["created_at"])
+    if cached_text and not refresh and cache_age < SELF_KNOWLEDGE_CACHE_SECONDS:
+        return cached_text
+
     source_signature = _build_source_signature()
     source_is_unchanged = source_signature == _SELF_KNOWLEDGE_CACHE["source_signature"]
     if (

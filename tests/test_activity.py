@@ -102,6 +102,26 @@ class ActivityTestCase(unittest.TestCase):
         self.assertNotIn("token-123", stored["content"])
         self.assertIn("[redacted]", stored["content"])
 
+    def test_read_activity_history_includes_recent_events(self):
+        log_path = self._unique_path("activity_history.log")
+        events_path = log_path.with_name("events.jsonl")
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+
+        with patch.object(activity, "ACTIVITY_LOG_FILE", log_path):
+            with patch.object(activity, "EVENTS_FILE", events_path):
+                activity.append_activity("Manual", "Entrada visible.", timestamp="2026-05-05 10:00:00")
+                activity.emit_event(
+                    "remote_job_finished",
+                    label="Telegram",
+                    content="Respuesta enviada.",
+                )
+                rendered = activity.read_activity_history()
+
+        self.assertIn("Manual", rendered)
+        self.assertIn("Eventos recientes", rendered)
+        self.assertIn("Telegram remoto finalizado", rendered)
+        self.assertIn("Respuesta enviada.", rendered)
+
 
 if __name__ == "__main__":
     unittest.main()

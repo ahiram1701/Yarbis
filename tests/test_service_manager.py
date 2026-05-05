@@ -267,3 +267,68 @@ class ServiceManagerTestCase(unittest.TestCase):
         self.assertEqual(result["ollama"]["model"], "llama3.2:3b")
         self.assertIn("servicio activo", rendered)
         self.assertIn("Telegram vinculado", rendered)
+
+    def test_readiness_status_reports_ready_with_only_optional_warnings(self):
+        state_path = TEST_RUNTIME_DIR / "service_manager_readiness_state.json"
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+        seeded_state = memory.normalize_state({
+            "goal": "Usar Yarbis hoy",
+            "ollama": {
+                "model": "qwen3.5:2b",
+                "timeout_seconds": 900,
+            },
+            "notifications": {
+                "enabled": True,
+                "channels": ["windows"],
+            },
+        })
+
+        service_manager._READINESS_CACHE["status"] = None
+        service_manager._READINESS_CACHE["created_at"] = 0.0
+        with patch.object(memory, "STATE_FILE", state_path):
+            memory.save_state(seeded_state)
+            with patch.object(service_manager, "_dependency_available", return_value=True):
+                with patch.object(service_manager, "_ollama_model_names", return_value=(["qwen3.5:2b"], "")):
+                    with patch.object(
+                        service_manager,
+                        "_safe_service_status",
+                        return_value=status(installed=False, running=False),
+                    ):
+                        with patch.object(service_manager.shutil, "which", return_value="dotnet"):
+                            result = service_manager.readiness_status(force=True)
+                            rendered = service_manager.format_readiness_status(result)
+
+        self.assertTrue(result["ready"])
+        self.assertIn("Usable ahora", rendered)
+        self.assertGreaterEqual(result["warning_count"], 1)
+
+    def test_readiness_status_accepts_direct_ollama_cloud_with_api_key(self):
+        state_path = TEST_RUNTIME_DIR / "service_manager_cloud_readiness_state.json"
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+        seeded_state = memory.normalize_state({
+            "goal": "Usar Yarbis con cloud",
+            "ollama": {
+                "model": "gpt-oss:120b",
+                "host": "https://ollama.com",
+                "api_key_env_var": "OLLAMA_API_KEY",
+                "timeout_seconds": 900,
+            },
+        })
+
+        service_manager._READINESS_CACHE["status"] = None
+        service_manager._READINESS_CACHE["created_at"] = 0.0
+        with patch.object(memory, "STATE_FILE", state_path):
+            memory.save_state(seeded_state)
+            with patch.object(service_manager, "_dependency_available", return_value=True):
+                with patch.object(
+                    service_manager,
+                    "_safe_service_status",
+                    return_value=status(installed=False, running=False),
+                ):
+                    with patch.object(service_manager.shutil, "which", return_value="dotnet"):
+                        with patch.dict(service_manager.os.environ, {"OLLAMA_API_KEY": "test-key"}, clear=False):
+                            result = service_manager.readiness_status(force=True)
+                            rendered = service_manager.format_readiness_status(result, compact=False)
+
+        self.assertTrue(result["ready"])
+        self.assertIn("Cloud directo", rendered)

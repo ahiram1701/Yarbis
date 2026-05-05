@@ -143,6 +143,23 @@ class ToolsTestCase(unittest.TestCase):
         self.assertIn("[truncado", output)
         self.assertIn("FINAL_RELEVANTE", output)
 
+    def test_run_project_check_runs_tests_and_service_build(self):
+        fake_build = subprocess.CompletedProcess(
+            args=["dotnet", "build"],
+            returncode=0,
+            stdout="Build succeeded",
+            stderr="",
+        )
+
+        with patch.object(tools, "run_project_tests", return_value="Tests OK.\nSalida:\nOK") as tests_mock:
+            with patch.object(tools.subprocess, "run", return_value=fake_build) as run_mock:
+                result = tools.run_project_check()
+
+        tests_mock.assert_called_once()
+        run_mock.assert_called_once()
+        self.assertIn("Validacion completa OK.", result)
+        self.assertIn("Build .NET OK.", result)
+
     def test_list_files_returns_relative_paths(self):
         nested_dir = self.runtime_dir / "docs"
         nested_dir.mkdir(parents=True, exist_ok=True)

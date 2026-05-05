@@ -64,6 +64,38 @@ class AgentTestCase(unittest.TestCase):
         self.assertIn("YARBIS_OLLAMA_TIMEOUT_SECONDS", result["content"])
         self.assertIn(agent.MODEL, state["last_result"])
 
+    def test_run_one_cycle_stops_when_stop_requested(self):
+        state_path = TEST_RUNTIME_DIR / "agent_cancel_state.json"
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+
+        seeded_state = memory.normalize_state({
+            "runtime": {
+                "thinking": {
+                    "active": True,
+                    "label": "Ciclo",
+                    "source": "pid:1234",
+                    "started_at": "2026-05-01T12:00:00+00:00",
+                    "operation_id": "ciclo-demo",
+                },
+                "stop_requested": {
+                    "active": True,
+                    "operation_id": "ciclo-demo",
+                    "requested_at": "2026-05-01T12:00:01+00:00",
+                    "source": "telegram",
+                },
+            },
+        })
+
+        with patch.object(memory, "STATE_FILE", state_path):
+            memory.save_state(seeded_state)
+            with patch.object(agent.client, "chat", side_effect=RuntimeError("no debe consultar")) as chat_mock:
+                result = agent.run_one_cycle(max_steps=1)
+            state = memory.load_state()
+
+        chat_mock.assert_not_called()
+        self.assertEqual(result["status"], "cancelled")
+        self.assertIn("Operacion detenida", state["last_result"])
+
     def test_run_one_cycle_uses_persisted_ollama_model(self):
         state_path = TEST_RUNTIME_DIR / "agent_ollama_model_state.json"
         state_path.parent.mkdir(parents=True, exist_ok=True)
@@ -86,6 +118,48 @@ class AgentTestCase(unittest.TestCase):
 
         self.assertEqual(result["status"], "final")
         self.assertEqual(chat_mock.call_args.kwargs["model"], "llama3.2:3b")
+
+    def test_builds_cloud_ollama_client_with_authorization_header(self):
+        with patch.dict(agent.os.environ, {"OLLAMA_API_KEY": "test-key"}, clear=False):
+            with patch.object(agent, "Client", return_value=object()) as client_cls:
+                agent._build_ollama_client("https://ollama.com/api", 30, "OLLAMA_API_KEY")
+
+        client_cls.assert_called_once_with(
+            timeout=30,
+            host="https://ollama.com",
+            headers={"Authorization": "Bearer test-key"},
+        )
+
+    def test_run_one_cycle_tries_fallback_model_after_primary_failure(self):
+        state_path = TEST_RUNTIME_DIR / "agent_ollama_fallback_state.json"
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+        final_response = SimpleNamespace(
+            message=SimpleNamespace(content="Fallback respondio", tool_calls=[])
+        )
+
+        seeded_state = memory.normalize_state({
+            "ollama": {
+                "model": "modelo-local-roto:latest",
+                "fallback_models": ["gpt-oss:120b-cloud"],
+                "timeout_seconds": agent._client_timeout_seconds,
+            },
+        })
+
+        with patch.object(memory, "STATE_FILE", state_path):
+            memory.save_state(seeded_state)
+            with patch.dict(agent.os.environ, {}, clear=True):
+                with patch.object(
+                    agent.client,
+                    "chat",
+                    side_effect=[RuntimeError("modelo no disponible"), final_response],
+                ) as chat_mock:
+                    result = agent.run_one_cycle(max_steps=1)
+
+        self.assertEqual(result["status"], "final")
+        self.assertEqual(
+            [call.kwargs["model"] for call in chat_mock.call_args_list],
+            ["modelo-local-roto:latest", "gpt-oss:120b-cloud"],
+        )
 
     def test_build_messages_includes_personal_context(self):
         state = memory.normalize_state({
@@ -167,6 +241,7 @@ class AgentTestCase(unittest.TestCase):
         self.assertIn("get_note", agent.available_functions)
         self.assertIn("delete_note", agent.available_functions)
         self.assertIn("update_goal", agent.available_functions)
+        self.assertIn("run_project_check", agent.available_functions)
 
     def test_run_one_cycle_persists_cycle_before_tools(self):
         state_path = TEST_RUNTIME_DIR / "agent_tool_cycle_state.json"
@@ -394,7 +469,7 @@ class AgentTestCase(unittest.TestCase):
             for message in state["messages"]
         ))
 
-    def test_run_one_cycle_retries_unsolicited_intro_and_hardware_without_printing_it(self):
+    def test_run_one_cycle_sanitizes_unsolicited_intro_without_retrying_it(self):
         state_path = TEST_RUNTIME_DIR / "agent_unsolicited_intro_retry_state.json"
         state_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -417,16 +492,13 @@ class AgentTestCase(unittest.TestCase):
                 tool_calls=[],
             )
         )
-        final_response = SimpleNamespace(
-            message=SimpleNamespace(content="Hola. Dime que quieres que haga.", tool_calls=[])
-        )
 
         with patch.object(memory, "STATE_FILE", state_path):
             memory.save_state(seeded_state)
             with patch.object(
                 agent.client,
                 "chat",
-                side_effect=[intro_response, final_response],
+                return_value=intro_response,
             ) as chat_mock:
                 with patch.object(agent, "_print_output") as print_mock:
                     result = agent.run_one_cycle(max_steps=2)
@@ -435,10 +507,10 @@ class AgentTestCase(unittest.TestCase):
         printed_text = "\n".join(call.args[0] for call in print_mock.call_args_list)
 
         self.assertEqual(result["status"], "final")
-        self.assertEqual(chat_mock.call_count, 2)
-        self.assertEqual(result["content"], "Hola. Dime que quieres que haga.")
+        self.assertEqual(chat_mock.call_count, 1)
+        self.assertIn("sin inventar datos del equipo", result["content"])
         self.assertNotIn("Ryzen", printed_text)
-        self.assertTrue(any(
+        self.assertFalse(any(
             agent.NON_ACTIONABLE_RETRY_MESSAGE in message.get("content", "")
             for message in state["messages"]
         ))

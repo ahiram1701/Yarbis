@@ -189,6 +189,9 @@ class MemoryTestCase(unittest.TestCase):
         custom = memory.normalize_state({
             "ollama": {
                 "model": "llama3.2:3b",
+                "fallback_models": "gpt-oss:120b-cloud, qwen3.5:0.8b",
+                "host": "https://ollama.com/api",
+                "api_key_env_var": "OLLAMA_API_KEY",
                 "timeout_seconds": 900,
             },
         })
@@ -199,6 +202,12 @@ class MemoryTestCase(unittest.TestCase):
             memory.MAX_OLLAMA_TIMEOUT_SECONDS,
         )
         self.assertEqual(custom["ollama"]["model"], "llama3.2:3b")
+        self.assertEqual(
+            custom["ollama"]["fallback_models"],
+            ["gpt-oss:120b-cloud", "qwen3.5:0.8b"],
+        )
+        self.assertEqual(custom["ollama"]["host"], "https://ollama.com")
+        self.assertEqual(custom["ollama"]["api_key_env_var"], "OLLAMA_API_KEY")
         self.assertEqual(custom["ollama"]["timeout_seconds"], 900)
 
     def test_normalize_state_sanitizes_runtime_thinking_state(self):
