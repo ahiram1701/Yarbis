@@ -2,6 +2,7 @@ import contextlib
 import io
 import os
 import re
+import shutil
 import threading
 import time
 from datetime import datetime, timezone
@@ -30,8 +31,10 @@ from memory import (
     DEFAULT_OLLAMA_TIMEOUT_SECONDS,
     MAX_OLLAMA_TIMEOUT_SECONDS,
     MIN_OLLAMA_TIMEOUT_SECONDS,
+    default_state,
     load_state,
     render_state_summary,
+    save_state,
     state_transaction,
 )
 from notifications import (
@@ -57,6 +60,16 @@ SESSION_LOCK = threading.RLock()
 OPERATION_LOCK_FILE = Path(__file__).resolve().parent / ".yarbis_runtime" / "session.lock"
 _OPERATION_LOCK_LOCAL = threading.local()
 _OPERATION_LOCK_POLL_SECONDS = 0.25
+FACTORY_RESET_RUNTIME_FILES = (
+    "service.log",
+    "service.stop",
+    "telegram_deferred_replies.json",
+    "telegram_deferred_replies.json.tmp",
+)
+FACTORY_RESET_RUNTIME_DIRS = (
+    "browser",
+    "calendar",
+)
 
 
 class SessionOperationBusy(RuntimeError):
@@ -453,6 +466,42 @@ def get_status_text() -> str:
 
 def get_readiness_text(force: bool = False, compact: bool = False) -> str:
     return format_readiness_status(readiness_status(force=force), compact=compact)
+
+
+def _clear_factory_runtime_artifacts():
+    runtime_dir = activity.RUNTIME_DIR
+    for file_name in FACTORY_RESET_RUNTIME_FILES:
+        try:
+            (runtime_dir / file_name).unlink()
+        except FileNotFoundError:
+            pass
+        except OSError:
+            pass
+
+    for dir_name in FACTORY_RESET_RUNTIME_DIRS:
+        try:
+            shutil.rmtree(runtime_dir / dir_name)
+        except FileNotFoundError:
+            pass
+        except OSError:
+            pass
+
+
+def factory_reset_yarbis() -> str:
+    with SESSION_LOCK:
+        save_state(default_state())
+        activity.clear_activity_history()
+        _clear_factory_runtime_artifacts()
+        try:
+            OPERATION_LOCK_FILE.parent.mkdir(parents=True, exist_ok=True)
+            OPERATION_LOCK_FILE.write_text(" ", encoding="utf-8")
+        except OSError:
+            pass
+
+    return (
+        "Yarbis quedo reiniciado de fabrica. "
+        "Estado, memoria, configuracion local, actividad y temporales fueron limpiados."
+    )
 
 
 def get_ui_theme() -> str:

@@ -186,6 +186,61 @@ class ServicePulseDialog(ThemedDialog):
         }
 
 
+class ServiceInstallDialog(ThemedDialog):
+    def __init__(self, parent, initial_autostart: bool = False):
+        self.initial_autostart = initial_autostart
+        super().__init__(parent, "Instalar servicio")
+
+    @staticmethod
+    def _current_windows_account() -> str:
+        domain = os.getenv("USERDOMAIN", "").strip()
+        user = os.getenv("USERNAME", "").strip()
+        if domain and user:
+            return f"{domain}\\{user}"
+        return user
+
+    def body(self, master):
+        self._prepare_body(master)
+        master.columnconfigure(0, weight=1)
+
+        self.autostart_var = tk.BooleanVar(value=bool(self.initial_autostart))
+        default_account = self._current_windows_account()
+
+        ttk.Checkbutton(
+            master,
+            text="Iniciar con Windows",
+            variable=self.autostart_var,
+        ).grid(row=0, column=0, sticky="w", padx=6, pady=(6, 8))
+
+        ttk.Label(master, text="Cuenta del servicio").grid(row=1, column=0, sticky="w", padx=6, pady=(2, 2))
+        self.account_entry = ttk.Entry(master, width=44)
+        self.account_entry.grid(row=2, column=0, sticky="ew", padx=6)
+        self.account_entry.insert(0, default_account)
+
+        ttk.Label(master, text="Password").grid(row=3, column=0, sticky="w", padx=6, pady=(10, 2))
+        self.password_entry = ttk.Entry(master, width=44, show="*")
+        self.password_entry.grid(row=4, column=0, sticky="ew", padx=6)
+
+        ttk.Label(
+            master,
+            text=(
+                "Usa DOMINIO\\usuario o .\\usuario. Si dejas cuenta y password vacios, "
+                "SCM usara LocalSystem."
+            ),
+            foreground=self.theme_palette["muted"],
+            wraplength=390,
+        ).grid(row=5, column=0, sticky="ew", padx=6, pady=(8, 6))
+
+        return self.password_entry if default_account else self.account_entry
+
+    def apply(self):
+        self.result = {
+            "start_auto": self.autostart_var.get(),
+            "account_name": self.account_entry.get().strip(),
+            "password": self.password_entry.get(),
+        }
+
+
 class OllamaSettingsDialog(ThemedDialog):
     def __init__(self, parent, initial_settings: dict):
         self.initial_settings = initial_settings

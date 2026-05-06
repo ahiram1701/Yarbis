@@ -1,12 +1,20 @@
 import difflib
 import json
+import os
 import re
+import shlex
 import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
 
+from browser_automation import run_browser_automation
+from integrations import (
+    compose_email_draft,
+    create_calendar_event_file,
+    open_system_target as open_system_target_impl,
+)
 from internet import fetch_web_page as fetch_public_web_page
 from internet import search_web as search_public_web
 from memory import (
@@ -28,6 +36,7 @@ MAX_WRITE_BYTES = 64_000
 MAX_WRITE_PREVIEW_CHARS = 600
 MAX_DIFF_LINES = 160
 MAX_TEST_OUTPUT_CHARS = 6_000
+MAX_COMMAND_OUTPUT_CHARS = 12_000
 IGNORED_LISTING_NAMES = {
     ".git",
     ".venv",
@@ -49,23 +58,21 @@ def _resolve_workspace_path(path: str) -> tuple[Path | None, str | None]:
     candidate = Path(path)
     resolved = (WORKSPACE_ROOT / candidate).resolve() if not candidate.is_absolute() else candidate.resolve()
 
-    try:
-        resolved.relative_to(WORKSPACE_ROOT)
-    except ValueError:
-        return None, f"Acceso denegado. Solo puedes usar rutas dentro de: {WORKSPACE_ROOT}"
-
     return resolved, None
 
 
 def _workspace_relative(path: Path) -> str:
-    return path.relative_to(WORKSPACE_ROOT).as_posix()
+    try:
+        return path.relative_to(WORKSPACE_ROOT).as_posix()
+    except ValueError:
+        return str(path)
 
 
 def _validate_write_path(path: Path) -> str | None:
     try:
         relative_path = path.relative_to(WORKSPACE_ROOT)
     except ValueError:
-        return f"Acceso denegado. Solo puedes usar rutas dentro de: {WORKSPACE_ROOT}"
+        return None
 
     if relative_path.as_posix() in PROTECTED_WRITE_PATHS:
         return (
@@ -256,7 +263,7 @@ def list_files(path: str = ".") -> str:
     rendered = []
     for item in items:
         kind = "DIR " if item.is_dir() else "FILE"
-        rendered.append(f"[{kind}] {item.relative_to(WORKSPACE_ROOT).as_posix()}")
+        rendered.append(f"[{kind}] {_workspace_relative(item)}")
 
     return "\n".join(rendered)
 
@@ -498,6 +505,10 @@ def run_project_tests(
         return error
     if not target_path.exists():
         return f"No existe la ruta de tests: {cleaned_target}"
+    try:
+        target_path.relative_to(WORKSPACE_ROOT)
+    except ValueError:
+        return "Solo puedo ejecutar tests del proyecto dentro del workspace."
 
     try:
         normalized_timeout = max(10, min(600, int(timeout_seconds)))
@@ -626,6 +637,228 @@ def run_project_check(timeout_seconds: int = 240) -> str:
         f"Python:\n{test_result}\n\n"
         f"Servicio .NET:\n{build_result}"
     )
+
+
+def run_system_command(
+    command: str,
+    cwd: str = "",
+    timeout_seconds: int = 120,
+    shell: bool = True,
+) -> str:
+    """
+    Ejecuta un comando arbitrario del sistema operativo.
+
+    Args:
+        command (str): Comando completo a ejecutar.
+        cwd (str): Directorio de trabajo opcional; acepta rutas absolutas o relativas al workspace.
+        timeout_seconds (int): Timeout maximo de ejecucion.
+        shell (bool): Si es True, ejecuta mediante el shell del sistema.
+
+    Returns:
+        str: Codigo de salida, comando, directorio y salida acotada.
+    """
+    cleaned_command = str(command).strip()
+    if not cleaned_command:
+        return "Debes indicar el comando del sistema a ejecutar."
+
+    if str(cwd).strip():
+        working_dir, error = _resolve_workspace_path(str(cwd).strip())
+        if error:
+            return error
+    else:
+        working_dir = WORKSPACE_ROOT
+
+    if not working_dir.exists():
+        return f"El directorio de trabajo no existe: {_workspace_relative(working_dir)}"
+    if not working_dir.is_dir():
+        return f"El directorio de trabajo no es una carpeta: {_workspace_relative(working_dir)}"
+
+    try:
+        normalized_timeout = max(1, min(3600, int(timeout_seconds)))
+    except (TypeError, ValueError):
+        normalized_timeout = 120
+
+    use_shell = bool(shell)
+    args = cleaned_command
+    if not use_shell:
+        try:
+            args = shlex.split(cleaned_command, posix=os.name != "nt")
+        except ValueError as exc:
+            return f"Comando invalido: {exc}"
+        if not args:
+            return "Debes indicar el comando del sistema a ejecutar."
+
+    try:
+        completed = subprocess.run(
+            args,
+            cwd=str(working_dir),
+            shell=use_shell,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=normalized_timeout,
+        )
+    except subprocess.TimeoutExpired:
+        return (
+            f"El comando excedio el timeout de {normalized_timeout} segundos.\n"
+            f"Comando: {cleaned_command}"
+        )
+    except OSError as exc:
+        return f"No pude ejecutar el comando del sistema: {exc}"
+
+    combined_output = "\n".join(
+        part.strip()
+        for part in (completed.stdout, completed.stderr)
+        if str(part).strip()
+    )
+    if not combined_output:
+        combined_output = "El comando no produjo salida visible."
+    combined_output = _bounded_text(combined_output, MAX_COMMAND_OUTPUT_CHARS)
+    status_line = (
+        "Comando del sistema completado."
+        if completed.returncode == 0
+        else f"Comando del sistema con fallos (exit={completed.returncode})."
+    )
+    return (
+        f"{status_line}\n"
+        f"Comando: {cleaned_command}\n"
+        f"Directorio: {_workspace_relative(working_dir)}\n"
+        f"Salida:\n{combined_output}"
+    )
+
+
+def browser_automation(
+    start_url: str = "",
+    actions_json: str = "",
+    headless: bool = True,
+    timeout_seconds: int = 30,
+    browser_channel: str = "msedge",
+    storage_state_path: str = "",
+    screenshot_path: str = "",
+) -> str:
+    """
+    Automatiza un navegador real con Playwright.
+
+    Args:
+        start_url (str): URL inicial opcional.
+        actions_json (str): Lista JSON de acciones: goto, click, fill, press, wait, wait_for_selector,
+            select_option, check, uncheck, screenshot, text o evaluate.
+        headless (bool): Ejecutar sin ventana visible.
+        timeout_seconds (int): Timeout general para acciones.
+        browser_channel (str): Canal Chromium/Edge opcional; por defecto msedge.
+        storage_state_path (str): Ruta opcional para leer/guardar cookies y sesion.
+        screenshot_path (str): Captura final opcional.
+
+    Returns:
+        str: Resumen de navegacion, URL final, texto/capturas solicitadas y errores.
+    """
+    try:
+        return run_browser_automation(
+            start_url=start_url,
+            actions_json=actions_json,
+            headless=headless,
+            timeout_seconds=timeout_seconds,
+            browser_channel=browser_channel,
+            storage_state_path=storage_state_path,
+            screenshot_path=screenshot_path,
+            workspace_root=WORKSPACE_ROOT,
+        )
+    except Exception as exc:
+        return f"No pude completar la automatizacion del navegador: {exc}"
+
+
+def create_calendar_event(
+    title: str,
+    start: str,
+    end: str,
+    description: str = "",
+    location: str = "",
+    attendees: str = "",
+    output_path: str = "",
+    open_file: bool = False,
+) -> str:
+    """
+    Crea un archivo .ics compatible con calendarios del sistema.
+
+    Args:
+        title (str): Titulo del evento.
+        start (str): Inicio en formato ISO, por ejemplo 2026-05-06T15:00:00.
+        end (str): Fin en formato ISO.
+        description (str): Descripcion opcional.
+        location (str): Ubicacion opcional.
+        attendees (str): Correos separados por coma, punto y coma o salto de linea.
+        output_path (str): Ruta opcional del .ics.
+        open_file (bool): Si es True, abre el archivo con la app predeterminada.
+
+    Returns:
+        str: Ruta del evento creado.
+    """
+    try:
+        return create_calendar_event_file(
+            title=title,
+            start=start,
+            end=end,
+            description=description,
+            location=location,
+            attendees=attendees,
+            output_path=output_path,
+            open_file=open_file,
+            workspace_root=WORKSPACE_ROOT,
+        )
+    except Exception as exc:
+        return f"No pude crear el evento de calendario: {exc}"
+
+
+def compose_email(
+    to: str,
+    subject: str = "",
+    body: str = "",
+    cc: str = "",
+    bcc: str = "",
+    open_client: bool = True,
+) -> str:
+    """
+    Crea un borrador de correo mediante el cliente predeterminado del sistema.
+
+    Args:
+        to (str): Destinatarios separados por coma, punto y coma o salto de linea.
+        subject (str): Asunto.
+        body (str): Cuerpo.
+        cc (str): Copia.
+        bcc (str): Copia oculta.
+        open_client (bool): Si es True, abre el cliente de correo con mailto.
+
+    Returns:
+        str: Resultado y URI mailto generado.
+    """
+    try:
+        return compose_email_draft(
+            to=to,
+            subject=subject,
+            body=body,
+            cc=cc,
+            bcc=bcc,
+            open_client=open_client,
+        )
+    except Exception as exc:
+        return f"No pude preparar el correo: {exc}"
+
+
+def open_system_target(target: str) -> str:
+    """
+    Abre una ruta, URL o URI usando el manejador predeterminado del sistema.
+
+    Args:
+        target (str): Ruta local, URL o URI del sistema.
+
+    Returns:
+        str: Confirmacion de apertura.
+    """
+    try:
+        return open_system_target_impl(target=target, workspace_root=WORKSPACE_ROOT)
+    except Exception as exc:
+        return f"No pude abrir el objetivo del sistema: {exc}"
 
 
 def _get_internet_settings() -> dict:

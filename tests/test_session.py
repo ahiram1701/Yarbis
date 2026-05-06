@@ -2,6 +2,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+import activity
 import memory
 import session
 
@@ -9,6 +10,60 @@ TEST_RUNTIME_DIR = Path.cwd() / "tests_runtime"
 
 
 class SessionTestCase(unittest.TestCase):
+    def test_factory_reset_yarbis_clears_state_activity_and_operation_lock(self):
+        state_path = TEST_RUNTIME_DIR / "session_factory_reset_state.json"
+        activity_path = TEST_RUNTIME_DIR / "session_factory_reset_activity.log"
+        events_path = TEST_RUNTIME_DIR / "session_factory_reset_events.jsonl"
+        operation_lock_path = TEST_RUNTIME_DIR / "session_factory_reset_session.lock"
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+
+        seeded_state = memory.normalize_state({
+            "goal": "Objetivo viejo",
+            "messages": [{"role": "user", "content": "hola"}],
+            "notes": [{"title": "Dato", "content": "privado"}],
+            "tasks": [{"title": "Pendiente"}],
+            "notifications": {
+                "enabled": True,
+                "channels": ["telegram"],
+                "telegram": {
+                    "bot_token": "bot-123",
+                    "chat_id": "123",
+                    "last_update_id": 99,
+                },
+            },
+            "self_knowledge": {
+                "last_analyzed_at": "2026-05-06T00:00:00+00:00",
+                "summary": "Autoconocimiento viejo",
+            },
+        })
+        activity_path.write_text("actividad previa", encoding="utf-8")
+        events_path.write_text('{"type":"viejo"}\n', encoding="utf-8")
+        operation_lock_path.write_text("pid=123\nlabel=Ciclo\n", encoding="utf-8")
+
+        with patch.object(memory, "STATE_FILE", state_path):
+            with patch.object(activity, "ACTIVITY_LOG_FILE", activity_path):
+                with patch.object(activity, "EVENTS_FILE", events_path):
+                    with patch.object(session, "_clear_factory_runtime_artifacts") as clear_runtime_mock:
+                        with patch.object(session, "OPERATION_LOCK_FILE", operation_lock_path):
+                            memory.save_state(seeded_state)
+                            result = session.factory_reset_yarbis()
+                            state = memory.load_state()
+
+        self.assertIn("reiniciado de fabrica", result)
+        self.assertEqual(state["goal"], "")
+        self.assertEqual(state["messages"], [])
+        self.assertEqual(state["notes"], [])
+        self.assertEqual(state["tasks"], [])
+        self.assertEqual(state["self_knowledge"]["summary"], "")
+        self.assertEqual(state["notifications"]["channels"], ["windows"])
+        self.assertEqual(state["notifications"]["telegram"]["bot_token"], "")
+        self.assertEqual(state["notifications"]["telegram"]["chat_id"], "")
+        self.assertEqual(state["notifications"]["telegram"]["last_update_id"], 0)
+        self.assertEqual(activity_path.read_text(encoding="utf-8"), "")
+        self.assertEqual(events_path.read_text(encoding="utf-8"), "")
+        self.assertEqual(operation_lock_path.read_text(encoding="utf-8"), " ")
+        clear_runtime_mock.assert_called_once_with()
+
     def test_update_goal_resets_operational_context(self):
         state_path = TEST_RUNTIME_DIR / "session_goal_state.json"
         state_path.parent.mkdir(parents=True, exist_ok=True)

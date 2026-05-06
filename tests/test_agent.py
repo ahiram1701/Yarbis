@@ -242,6 +242,11 @@ class AgentTestCase(unittest.TestCase):
         self.assertIn("delete_note", agent.available_functions)
         self.assertIn("update_goal", agent.available_functions)
         self.assertIn("run_project_check", agent.available_functions)
+        self.assertIn("run_system_command", agent.available_functions)
+        self.assertIn("browser_automation", agent.available_functions)
+        self.assertIn("create_calendar_event", agent.available_functions)
+        self.assertIn("compose_email", agent.available_functions)
+        self.assertIn("open_system_target", agent.available_functions)
 
     def test_run_one_cycle_persists_cycle_before_tools(self):
         state_path = TEST_RUNTIME_DIR / "agent_tool_cycle_state.json"

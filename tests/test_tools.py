@@ -1,6 +1,9 @@
 import json
+import shutil
 import subprocess
+import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 from uuid import uuid4
 
@@ -15,6 +18,12 @@ class ToolsTestCase(unittest.TestCase):
         self.runtime_dir = TEST_RUNTIME_ROOT / f"{self._testMethodName}-{uuid4().hex[:8]}"
         self.runtime_dir.mkdir(parents=True, exist_ok=True)
         self.checkpoints_dir = self.runtime_dir / ".yarbis_checkpoints"
+        self.external_dir = Path(tempfile.gettempdir()) / f"yarbis-tools-{self._testMethodName}-{uuid4().hex[:8]}"
+        self.external_dir.mkdir(parents=True, exist_ok=True)
+
+    def tearDown(self):
+        if self.external_dir.exists() and self.external_dir.name.startswith("yarbis-tools-"):
+            shutil.rmtree(self.external_dir, ignore_errors=True)
 
     def test_read_text_file_returns_large_content_complete(self):
         file_path = self.runtime_dir / "large.txt"
@@ -39,10 +48,24 @@ class ToolsTestCase(unittest.TestCase):
         self.assertIn("truncado por max_bytes=50", result)
         self.assertNotEqual(result, content)
 
-    def test_write_text_file_blocks_paths_outside_workspace(self):
-        result = tools.write_text_file("../outside.txt", "hola")
+    def test_write_text_file_allows_paths_outside_workspace(self):
+        file_path = self.external_dir / "outside.txt"
 
-        self.assertIn("Acceso denegado", result)
+        with patch.object(tools, "CHECKPOINTS_DIR", self.checkpoints_dir):
+            result = tools.write_text_file(str(file_path), "hola")
+
+        self.assertIn("Archivo creado", result)
+        self.assertEqual(file_path.read_text(encoding="utf-8"), "hola")
+
+    def test_list_and_read_files_allow_paths_outside_workspace(self):
+        file_path = self.external_dir / "outside-read.txt"
+        file_path.write_text("hola externo", encoding="utf-8")
+
+        listing = tools.list_files(str(self.external_dir))
+        content = tools.read_text_file(str(file_path))
+
+        self.assertIn(str(file_path), listing)
+        self.assertEqual(content, "hola externo")
 
     def test_write_text_file_blocks_protected_state_file(self):
         result = tools.write_text_file("state.json", "{}")
@@ -159,6 +182,57 @@ class ToolsTestCase(unittest.TestCase):
         run_mock.assert_called_once()
         self.assertIn("Validacion completa OK.", result)
         self.assertIn("Build .NET OK.", result)
+
+    def test_run_system_command_executes_in_requested_directory(self):
+        fake_result = subprocess.CompletedProcess(
+            args=["echo", "hola"],
+            returncode=0,
+            stdout="hola\n",
+            stderr="",
+        )
+
+        with patch.object(tools.subprocess, "run", return_value=fake_result) as run_mock:
+            result = tools.run_system_command("echo hola", cwd=str(self.external_dir), timeout_seconds=5)
+
+        self.assertIn("Comando del sistema completado", result)
+        self.assertIn("hola", result)
+        self.assertEqual(run_mock.call_args.kwargs["cwd"], str(self.external_dir.resolve()))
+        self.assertTrue(run_mock.call_args.kwargs["shell"])
+
+    def test_browser_automation_wrapper_passes_workspace(self):
+        with patch.object(tools, "run_browser_automation", return_value="ok navegador") as browser_mock:
+            result = tools.browser_automation(start_url="https://example.com")
+
+        self.assertEqual(result, "ok navegador")
+        browser_mock.assert_called_once()
+        self.assertEqual(browser_mock.call_args.kwargs["workspace_root"], tools.WORKSPACE_ROOT)
+
+    def test_calendar_email_and_open_system_tools(self):
+        event_path = self.external_dir / "evento.ics"
+        calendar_result = tools.create_calendar_event(
+            title="Demo",
+            start="2026-05-06T15:00:00",
+            end="2026-05-06T16:00:00",
+            attendees="a@example.com",
+            output_path=str(event_path),
+        )
+        email_result = tools.compose_email(
+            to="a@example.com",
+            subject="Hola",
+            body="Cuerpo",
+            open_client=False,
+        )
+        target = self.external_dir / "abrir.txt"
+        target.write_text("demo", encoding="utf-8")
+        with patch.object(tools, "open_system_target_impl", return_value="abierto") as open_mock:
+            open_result = tools.open_system_target(str(target))
+
+        self.assertIn("Evento de calendario creado", calendar_result)
+        self.assertIn("SUMMARY:Demo", event_path.read_text(encoding="utf-8"))
+        self.assertIn("Borrador de correo preparado", email_result)
+        self.assertIn("mailto:a@example.com", email_result)
+        self.assertEqual(open_result, "abierto")
+        open_mock.assert_called_once()
 
     def test_list_files_returns_relative_paths(self):
         nested_dir = self.runtime_dir / "docs"

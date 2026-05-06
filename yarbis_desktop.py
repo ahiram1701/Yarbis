@@ -21,6 +21,7 @@ from session import (
     get_status_text,
     get_ui_theme,
     has_pending_user_question,
+    factory_reset_yarbis,
     request_stop_current_operation,
     run_auto_with_output,
     run_cycle_with_output,
@@ -40,8 +41,10 @@ from service_manager import (
     format_readiness_status,
     get_service_status,
     health_status,
+    install_service,
     readiness_status,
     remove_service,
+    service_account_requires_password,
     set_autostart_enabled,
     start_service,
     stop_service,
@@ -58,6 +61,7 @@ from ui_dialogs import (
 from ui_settings_dialogs import (
     NotificationsDialog,
     OllamaSettingsDialog,
+    ServiceInstallDialog,
     ServicePulseDialog,
 )
 from ui_theme import THEMES, style_scrollbar_widget, style_text_widget
@@ -369,8 +373,22 @@ class YarbisDesktop(tk.Tk):
         self.send_button.grid(row=0, column=1, sticky="ns", padx=(0, 8), pady=8)
         self._action_buttons.append(self.send_button)
 
-        status_bar = ttk.Label(self, textvariable=self.status_var, anchor="w")
-        status_bar.grid(row=2, column=0, columnspan=2, sticky="ew", padx=12, pady=(0, 10))
+        status_shell = ttk.Frame(self)
+        status_shell.grid(row=2, column=0, columnspan=2, sticky="ew", padx=12, pady=(0, 10))
+        status_shell.columnconfigure(0, weight=1)
+
+        status_bar = ttk.Label(status_shell, textvariable=self.status_var, anchor="w")
+        status_bar.grid(row=0, column=0, sticky="ew")
+
+        self.factory_reset_button = ttk.Button(
+            status_shell,
+            text="",
+            width=2,
+            command=self._factory_reset,
+            style="Hidden.TButton",
+        )
+        self.factory_reset_button.grid(row=0, column=1, sticky="e", padx=(8, 0))
+        self._action_buttons.append(self.factory_reset_button)
 
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
@@ -581,6 +599,34 @@ class YarbisDesktop(tk.Tk):
             ],
             foreground=[
                 ("disabled", palette["disabled_fg"]),
+            ],
+        )
+        self.style.configure(
+            "Hidden.TButton",
+            background=palette["bg"],
+            foreground=palette["bg"],
+            bordercolor=palette["bg"],
+            lightcolor=palette["bg"],
+            darkcolor=palette["bg"],
+            relief="flat",
+            padding=(0, 0),
+        )
+        self.style.map(
+            "Hidden.TButton",
+            background=[
+                ("active", palette["button_active"]),
+                ("pressed", palette["button_active"]),
+                ("disabled", palette["bg"]),
+            ],
+            foreground=[
+                ("active", palette["button_active"]),
+                ("pressed", palette["button_active"]),
+                ("disabled", palette["bg"]),
+            ],
+            bordercolor=[
+                ("active", palette["button_active"]),
+                ("pressed", palette["button_active"]),
+                ("disabled", palette["bg"]),
             ],
         )
         self.style.configure(
@@ -869,14 +915,26 @@ class YarbisDesktop(tk.Tk):
             self.service_var.set(f"No instalado en SCM. {pulse_text}")
             self.service_button_text.set("Instalar e iniciar")
         elif service_status["running"]:
+            account_text = (
+                f", cuenta={service_status['account_name']}"
+                if service_status.get("account_name")
+                else ""
+            )
             self.service_var.set(
-                f"Activo en SCM (PID {service_status['pid']}, arranque={service_status['start_type']}). "
+                f"Activo en SCM (PID {service_status['pid']}, "
+                f"arranque={service_status['start_type']}{account_text}). "
                 f"{pulse_text}"
             )
             self.service_button_text.set("Detener servicio")
         else:
+            account_text = (
+                f", cuenta={service_status['account_name']}"
+                if service_status.get("account_name")
+                else ""
+            )
             self.service_var.set(
-                f"Instalado en SCM, detenido (arranque={service_status['start_type']}). "
+                f"Instalado en SCM, detenido "
+                f"(arranque={service_status['start_type']}{account_text}). "
                 f"{pulse_text}"
             )
             self.service_button_text.set("Iniciar servicio")
@@ -960,7 +1018,7 @@ class YarbisDesktop(tk.Tk):
             self._edit_notifications()
 
         if settings.get("install_service"):
-            self._start_background_job("Servicio", start_service)
+            self._toggle_service()
             return
 
         if settings.get("run_first_cycle"):
@@ -1156,6 +1214,16 @@ class YarbisDesktop(tk.Tk):
     def _send_test_notification(self):
         self._start_background_job("Prueba de notificacion", send_test_notification)
 
+    @staticmethod
+    def _install_and_start_service(start_auto: bool, account_name: str = "", password: str = "") -> str:
+        install_result = install_service(
+            start_auto=start_auto,
+            account_name=account_name,
+            password=password,
+        )
+        start_result = start_service()
+        return f"{install_result}\n{start_result}"
+
     def _edit_service_pulse(self):
         dialog = ServicePulseDialog(self, initial_settings=get_service_proactive_settings())
         if dialog.result is None:
@@ -1179,6 +1247,38 @@ class YarbisDesktop(tk.Tk):
         if self._local_telegram_polling:
             stop_telegram_polling()
             self._local_telegram_polling = False
+
+        if not service_status["installed"]:
+            dialog = ServiceInstallDialog(
+                self,
+                initial_autostart=bool(self.service_autostart_var.get()),
+            )
+            if dialog.result is None:
+                self.refresh_state_view()
+                return
+            account_name = dialog.result.get("account_name", "")
+            password = dialog.result.get("password", "")
+            if service_account_requires_password(account_name) and not password:
+                messagebox.showwarning(
+                    "Yarbis",
+                    (
+                        "La cuenta indicada necesita password para registrarse en SCM.\n\n"
+                        "Indica password o deja cuenta y password vacios para usar LocalSystem."
+                    ),
+                    parent=self,
+                )
+                self.refresh_state_view()
+                return
+
+            self._start_background_job(
+                "Servicio",
+                self._install_and_start_service,
+                bool(dialog.result.get("start_auto")),
+                account_name,
+                password,
+            )
+            return
+
         self._start_background_job("Servicio", start_service)
 
     def _toggle_service_autostart(self):
@@ -1321,6 +1421,58 @@ class YarbisDesktop(tk.Tk):
         activity.clear_activity_history()
         self._last_activity_text = ""
         self._set_text(self.activity_text, "")
+
+    def _factory_reset(self):
+        state = load_state()
+        thinking_active, thinking_label, _started_at = self._runtime_thinking_from_state(state)
+        if thinking_active:
+            self._sync_runtime_thinking(state)
+            self._show_thinking_blocked_message(thinking_label)
+            return
+
+        if self._busy:
+            messagebox.showinfo("Yarbis", "Ya hay una accion en curso. Espera a que termine.", parent=self)
+            return
+
+        should_reset = messagebox.askyesno(
+            "Reiniciar de fabrica",
+            (
+                "Esto borrara objetivo, perfil, notas, tareas, conversacion, Telegram, "
+                "configuracion local y actividad.\n\n"
+                "No borra el codigo ni desinstala el servicio de Windows.\n\n"
+                "Quieres continuar?"
+            ),
+            parent=self,
+        )
+        if not should_reset:
+            return
+
+        confirmation = simpledialog.askstring(
+            "Confirmar reinicio",
+            "Escribe REINICIAR para dejar Yarbis de fabrica.",
+            parent=self,
+        )
+        if confirmation != "REINICIAR":
+            self.status_var.set("Reinicio de fabrica cancelado.")
+            return
+
+        if self._local_telegram_polling:
+            stop_telegram_polling()
+            self._local_telegram_polling = False
+
+        result = factory_reset_yarbis()
+        self._last_activity_text = ""
+        self._last_summary_text = ""
+        self._view_has_pending_question = False
+        self._first_run_checked = False
+        self.reply_text.delete("1.0", "end")
+        self._set_text(self.activity_text, "")
+        self._apply_theme(get_ui_theme())
+        readiness_status(force=True)
+        self.refresh_state_view()
+        self.status_var.set("Yarbis reiniciado de fabrica.")
+        messagebox.showinfo("Yarbis", result, parent=self)
+        self.after(250, self._maybe_show_first_run)
 
     def _handle_telegram_event(self, message):
         if isinstance(message, dict):

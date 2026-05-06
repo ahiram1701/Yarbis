@@ -30,6 +30,16 @@ SERVICE_HOST_EXE = SERVICE_HOST_OUTPUT_DIR / "YarbisServiceHost.exe"
 SERVICE_NAME = "Yarbis"
 SERVICE_DISPLAY_NAME = "Yarbis"
 SERVICE_DESCRIPTION = "Yarbis local agent background service."
+SERVICE_DEFAULT_ACCOUNT = "LocalSystem"
+BUILTIN_SERVICE_ACCOUNTS = {
+    "localsystem",
+    "local system",
+    r"nt authority\localsystem",
+    r"nt authority\localservice",
+    r"nt authority\networkservice",
+    r"localservice",
+    r"networkservice",
+}
 STARTUP_WAIT_SECONDS = 15.0
 STOP_WAIT_SECONDS = 15.0
 READINESS_CACHE_SECONDS = 15.0
@@ -159,6 +169,16 @@ def _parse_start_type(output: str) -> str:
     ) if parts else "unknown"
 
 
+def _parse_service_account(output: str) -> str:
+    account = _parse_sc_value(
+        output,
+        "SERVICE_START_NAME",
+        "NOMBRE_INICIO_SERVICIO",
+        "NOMBRE_CUENTA",
+    )
+    return account or "unknown"
+
+
 def _service_missing(completed: subprocess.CompletedProcess) -> bool:
     output = _completed_output(completed)
     return completed.returncode != 0 and (
@@ -242,6 +262,7 @@ def get_service_status() -> dict:
         "pid": None,
         "autostart_enabled": False,
         "start_type": "not_installed",
+        "account_name": "",
         "log_file": str(LOG_FILE),
         "service_binary": _service_binary_path(),
     }
@@ -267,6 +288,7 @@ def get_service_status() -> dict:
         "pid": _parse_pid(query.stdout) if running else None,
         "autostart_enabled": start_type == "auto_start",
         "start_type": start_type,
+        "account_name": _parse_service_account(config.stdout),
     })
     return base
 
@@ -284,6 +306,7 @@ def _safe_service_status() -> dict:
             "pid": None,
             "autostart_enabled": False,
             "start_type": "unknown",
+            "account_name": "unknown",
             "log_file": str(LOG_FILE),
             "service_binary": _service_binary_path(),
             "error": str(exc),
@@ -376,9 +399,11 @@ def format_health_status(status: dict | None = None) -> str:
     ollama = status.get("ollama", {})
 
     if service.get("running"):
-        service_text = f"servicio activo (PID {service.get('pid') or '-'})"
+        account_text = f", cuenta {service.get('account_name')}" if service.get("account_name") else ""
+        service_text = f"servicio activo (PID {service.get('pid') or '-'}{account_text})"
     elif service.get("installed"):
-        service_text = f"servicio detenido ({service.get('state', 'unknown')})"
+        account_text = f", cuenta {service.get('account_name')}" if service.get("account_name") else ""
+        service_text = f"servicio detenido ({service.get('state', 'unknown')}{account_text})"
     else:
         service_text = "servicio no instalado"
 
@@ -670,7 +695,36 @@ def is_service_running() -> bool:
     return bool(get_service_status()["running"])
 
 
-def install_service(start_auto: bool = True) -> str:
+def _service_account_args(account_name: str = "", password: str = "") -> list[str]:
+    cleaned_account = str(account_name).strip()
+    if not cleaned_account:
+        return []
+
+    args = ["obj=", cleaned_account]
+    cleaned_password = str(password)
+    if cleaned_password:
+        args.extend(["password=", cleaned_password])
+    return args
+
+
+def service_account_requires_password(account_name: str) -> bool:
+    cleaned_account = str(account_name).strip()
+    if not cleaned_account:
+        return False
+    normalized = cleaned_account.lower()
+    if normalized in BUILTIN_SERVICE_ACCOUNTS:
+        return False
+    return not cleaned_account.endswith("$")
+
+
+def _service_account_result_text(account_name: str = "") -> str:
+    cleaned_account = str(account_name).strip()
+    if cleaned_account:
+        return f" Cuenta: {cleaned_account}."
+    return f" Cuenta: {SERVICE_DEFAULT_ACCOUNT} (predeterminada de SCM)."
+
+
+def install_service(start_auto: bool = True, account_name: str = "", password: str = "") -> str:
     _windows_only()
     _ensure_service_host_built()
     if not SERVICE_SCRIPT.exists():
@@ -678,9 +732,15 @@ def install_service(start_auto: bool = True) -> str:
 
     status = get_service_status()
     start_value = "auto" if start_auto else "demand"
+    if service_account_requires_password(account_name) and not str(password):
+        raise ValueError(
+            "La cuenta indicada para el servicio requiere password. "
+            "Indica password o deja cuenta y password vacios para usar LocalSystem."
+        )
+    account_args = _service_account_args(account_name, password)
 
     if status["installed"]:
-        config = _run_sc([
+        config_args = [
             "config",
             SERVICE_NAME,
             "binPath=",
@@ -689,11 +749,17 @@ def install_service(start_auto: bool = True) -> str:
             start_value,
             "DisplayName=",
             SERVICE_DISPLAY_NAME,
-        ])
+        ]
+        config_args.extend(account_args)
+        config = _run_sc(config_args)
         _ensure_success(config, "actualizar el servicio de Yarbis")
-        return "Servicio de Yarbis ya instalado en SCM. Configuracion actualizada."
+        account_text = _service_account_result_text(account_name) if account_args else " Cuenta sin cambios."
+        return (
+            "Servicio de Yarbis ya instalado en SCM. Configuracion actualizada."
+            + account_text
+        )
 
-    create = _run_sc([
+    create_args = [
         "create",
         SERVICE_NAME,
         "binPath=",
@@ -702,13 +768,15 @@ def install_service(start_auto: bool = True) -> str:
         start_value,
         "DisplayName=",
         SERVICE_DISPLAY_NAME,
-    ])
+    ]
+    create_args.extend(account_args)
+    create = _run_sc(create_args)
     _ensure_success(create, "instalar el servicio de Yarbis")
 
     description = _run_sc(["description", SERVICE_NAME, SERVICE_DESCRIPTION])
     _ensure_success(description, "guardar la descripcion del servicio de Yarbis")
 
-    return "Servicio de Yarbis instalado en SCM."
+    return "Servicio de Yarbis instalado en SCM." + _service_account_result_text(account_name)
 
 
 def remove_service() -> str:
@@ -725,11 +793,14 @@ def remove_service() -> str:
     return "Servicio de Yarbis quitado de SCM."
 
 
-def start_service() -> str:
+def start_service(account_name: str = "", password: str = "") -> str:
     _windows_only()
     status = get_service_status()
     if not status["installed"]:
-        install_service(start_auto=False)
+        if str(account_name).strip() or str(password):
+            install_service(start_auto=False, account_name=account_name, password=password)
+        else:
+            install_service(start_auto=False)
         status = get_service_status()
     else:
         _ensure_service_host_built()

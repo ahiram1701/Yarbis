@@ -25,6 +25,7 @@ def status(installed=True, running=False, pid=None, autostart=False, start_type=
         "pid": pid,
         "autostart_enabled": autostart,
         "start_type": start_type,
+        "account_name": "LocalSystem" if installed else "",
     }
 
 
@@ -56,6 +57,7 @@ class ServiceManagerTestCase(unittest.TestCase):
             stdout=(
                 "[SC] QueryServiceConfig SUCCESS\n"
                 "        START_TYPE         : 2   AUTO_START\n"
+                "        SERVICE_START_NAME : .\\Ahiram\n"
             ),
         )
 
@@ -67,6 +69,7 @@ class ServiceManagerTestCase(unittest.TestCase):
         self.assertEqual(result["pid"], 4321)
         self.assertTrue(result["autostart_enabled"])
         self.assertEqual(result["start_type"], "auto_start")
+        self.assertEqual(result["account_name"], ".\\Ahiram")
 
     def test_get_service_status_parses_localized_spanish_sc_output(self):
         query = completed(
@@ -81,6 +84,7 @@ class ServiceManagerTestCase(unittest.TestCase):
             stdout=(
                 "[SC] QueryServiceConfig CORRECTO\n"
                 "        TIPO_INICIO        : 3   DEMAND_START\n"
+                "        NOMBRE_INICIO_SERVICIO : LocalSystem\n"
             ),
         )
 
@@ -92,6 +96,7 @@ class ServiceManagerTestCase(unittest.TestCase):
         self.assertEqual(result["pid"], 4321)
         self.assertFalse(result["autostart_enabled"])
         self.assertEqual(result["start_type"], "demand_start")
+        self.assertEqual(result["account_name"], "LocalSystem")
 
     def test_install_service_creates_scm_service(self):
         missing = completed(
@@ -112,6 +117,36 @@ class ServiceManagerTestCase(unittest.TestCase):
         self.assertEqual(sc_mock.call_args_list[1].args[0][0], "create")
         self.assertIn("start=", sc_mock.call_args_list[1].args[0])
         self.assertIn("auto", sc_mock.call_args_list[1].args[0])
+
+    def test_install_service_can_set_service_account(self):
+        missing = completed(
+            returncode=1060,
+            stderr="[SC] OpenService FAILED 1060: The specified service does not exist.",
+        )
+
+        with patch.object(service_manager, "_ensure_service_host_built"):
+            with patch.object(
+                service_manager,
+                "_run_sc",
+                side_effect=[missing, completed(), completed()],
+            ) as sc_mock:
+                result = service_manager.install_service(
+                    start_auto=False,
+                    account_name=".\\Ahiram",
+                    password="secret",
+                )
+
+        create_args = sc_mock.call_args_list[1].args[0]
+        self.assertIn("Cuenta: .\\Ahiram", result)
+        self.assertIn("obj=", create_args)
+        self.assertIn(".\\Ahiram", create_args)
+        self.assertIn("password=", create_args)
+        self.assertIn("secret", create_args)
+
+    def test_install_service_requires_password_for_regular_account(self):
+        with patch.object(service_manager, "_ensure_service_host_built"):
+            with self.assertRaises(ValueError):
+                service_manager.install_service(start_auto=False, account_name=".\\Ahiram")
 
     def test_install_service_updates_existing_service(self):
         with patch.object(service_manager, "_ensure_service_host_built"):

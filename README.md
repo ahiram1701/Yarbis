@@ -1,6 +1,6 @@
 # Yarbis
 
-Yarbis es un agente local para convertir un objetivo general en trabajo accionable usando Ollama, memoria persistente, herramientas seguras de workspace, busqueda web controlada y notificaciones opcionales.
+Yarbis es un agente local para convertir un objetivo general en trabajo accionable usando Ollama, memoria persistente, herramientas de filesystem/sistema, busqueda web controlada, navegador automatizable y notificaciones opcionales.
 
 Funciona en tres modos:
 
@@ -19,7 +19,11 @@ Yarbis ya funciona como agente personal local:
 - ejecuta un ciclo controlado o varios ciclos en modo autonomo
 - se detiene cuando necesita una respuesta del usuario, cuando ya no quedan tareas abiertas o cuando el ciclo ya cerro sin seguimiento util
 - puede buscar informacion publica con DuckDuckGo HTML y leer paginas web publicas bajo una politica persistente
-- puede editar archivos dentro del workspace con checkpoint previo, vista previa y diff resumido
+- puede editar archivos dentro del workspace o rutas externas con checkpoint previo, vista previa y diff resumido
+- puede leer/escribir rutas externas al workspace cuando indicas una ruta absoluta
+- puede ejecutar comandos del sistema con timeout y salida acotada
+- puede automatizar un navegador real con Playwright para navegar, hacer clicks, completar formularios, leer texto y tomar capturas
+- puede crear eventos `.ics`, preparar correos `mailto:` y abrir rutas/URLs con manejadores locales
 - puede restaurar checkpoints y ejecutar tests del proyecto
 - ejecuta un autoanalisis de identidad, codigo fuente, sistema operativo y hardware al arrancar
 - puede recibir y responder mensajes por Telegram cuando ese canal esta configurado
@@ -32,12 +36,14 @@ Yarbis ya funciona como agente personal local:
 - .NET SDK 8 para compilar el host nativo del servicio SCM
 - Ollama ejecutandose localmente, o acceso directo a Ollama Cloud
 - un modelo disponible en Ollama; por defecto se usa `qwen3.5:2b`
+- Microsoft Edge/Chrome o Chromium instalado para automatizacion con Playwright
 - permisos de administrador para instalar, quitar o reconfigurar el servicio en SCM
 
 Dependencias Python declaradas:
 
 - `ollama==0.6.1`
 - `win11toast==0.36.3`
+- `playwright>=1.45,<2`
 
 ## Instalacion
 
@@ -45,6 +51,12 @@ Dependencias Python declaradas:
 python -m venv .venv
 .\.venv\Scripts\activate
 python -m pip install -r requirements.txt
+```
+
+Si no quieres usar Edge/Chrome instalado y prefieres el Chromium administrado por Playwright:
+
+```powershell
+python -m playwright install chromium
 ```
 
 Tambien puedes preparar una copia nueva con:
@@ -114,7 +126,7 @@ El boton `Instalar e iniciar` compila el host con `dotnet publish` si hace falta
 
 La casilla `Iniciar con Windows` cambia el tipo de arranque del servicio entre `auto` y `demand` usando SCM. Si el servicio aun no esta instalado, la casilla aparece deshabilitada; primero usa `Instalar e iniciar`.
 
-Estas acciones suelen requerir ejecutar Yarbis como administrador. Por defecto, un servicio creado con `sc.exe create` corre bajo la cuenta `LocalSystem`; si necesitas otro usuario, ajusta la pestana `Iniciar sesion` desde `services.msc`.
+Estas acciones suelen requerir ejecutar Yarbis como administrador. Al instalar desde la app puedes indicar la cuenta SCM del servicio (`DOMINIO\usuario` o `.\usuario`) y su password para que el proceso de fondo corra bajo esa identidad. Si dejas cuenta y password vacios, SCM usa `LocalSystem`.
 
 La proactividad 24/7 del servicio esta activa por defecto. Tras una espera inicial, el servicio agrega un pulso de contexto al historial y ejecuta un ciclo autonomo breve. Si Yarbis necesita una decision, permiso o dato privado, registra una pregunta pendiente y notifica por los canales configurados.
 
@@ -371,7 +383,7 @@ Puedes pedir cambios en lenguaje natural, por ejemplo:
 - "limita internet a docs.python.org"
 - "bloquea wikipedia.org en las busquedas"
 
-Internamente el agente usa `update_internet_settings`, `web_search` y `fetch_web_page`.
+Internamente el agente usa `update_internet_settings`, `web_search`, `fetch_web_page` y, cuando hace falta una sesion real con clicks, formularios o capturas, `browser_automation`.
 
 ## Tools internas
 
@@ -385,16 +397,21 @@ Yarbis expone al modelo estas herramientas:
 - `save_note` y `list_notes`: memoria persistente
 - `add_task`, `list_tasks` y `update_task_status`: backlog de trabajo
 - `set_plan`: plan actual
-- `list_files` y `read_text_file`: lectura dentro del workspace
+- `list_files` y `read_text_file`: lectura de rutas del workspace o del filesystem local
 - `write_text_file`: escritura con checkpoint y diff
 - `list_checkpoints` y `restore_checkpoint`: recuperacion de cambios
 - `run_project_tests`: validacion con `unittest`
 - `run_project_check`: validacion completa con `unittest` y build del host .NET
 - `web_search` y `fetch_web_page`: acceso web publico bajo politica
+- `browser_automation`: navegacion real con Playwright para abrir paginas, hacer clicks, llenar formularios, leer texto y tomar capturas
+- `run_system_command`: comandos arbitrarios del sistema con timeout y salida acotada
+- `create_calendar_event`: genera archivos `.ics` y puede abrirlos con la app de calendario predeterminada
+- `compose_email`: abre o prepara borradores `mailto:` con el cliente de correo predeterminado
+- `open_system_target`: abre rutas, URLs o URIs con el manejador predeterminado del sistema
 
 ## Autoedicion segura
 
-Las tools de archivos trabajan solo dentro del workspace.
+Las tools de archivos pueden trabajar dentro del workspace o con rutas absolutas externas. Las escrituras mantienen checkpoint previo en `.yarbis_checkpoints/`.
 
 Limites de salida actuales:
 
@@ -403,11 +420,12 @@ Limites de salida actuales:
 - vista previa de escritura: 600 caracteres
 - diff resumido: 160 lineas
 - salida de tests: 6,000 caracteres
+- salida de comandos del sistema: 12,000 caracteres
 - listado de archivos: 200 elementos
 
 Antes de escribir, `write_text_file` crea un checkpoint en `.yarbis_checkpoints/`. Si un cambio sale mal, `restore_checkpoint` puede recuperar el estado previo.
 
-Rutas protegidas contra escritura desde tools:
+Rutas del workspace protegidas contra escritura desde tools:
 
 - `.git`
 - `.venv`
@@ -515,9 +533,7 @@ Ruff esta configurado solo con reglas seguras iniciales.
 
 ## Limitaciones actuales
 
-- El servicio usa SCM, pero por defecto corre como `LocalSystem`; algunos recursos de usuario, como notificaciones interactivas de Windows, pueden no comportarse igual que en la app de escritorio.
 - La autonomia depende del modelo disponible en Ollama local/cloud y de la calidad del objetivo inicial.
-- La web solo cubre busqueda y lectura de paginas publicas; no hace navegacion completa ni automatizacion de navegador.
 - Telegram procesa mensajes de texto, no adjuntos.
-- Las tools no ejecutan comandos arbitrarios del sistema; solo leen/escriben dentro del workspace y ejecutan tests Python del proyecto.
-- No integra aun calendario, correo, filesystem externo al workspace ni acciones del sistema fuera del alcance documentado.
+- La automatizacion de navegador requiere Playwright y un navegador Chromium/Edge disponible.
+- Calendario y correo se integran con archivos `.ics`, `mailto:` y manejadores locales; no leen buzones ni calendarios cloud por OAuth.

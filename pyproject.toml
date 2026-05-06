@@ -11,6 +11,7 @@ requires-python = ">=3.11"
 dependencies = [
   "ollama==0.6.1",
   "win11toast==0.36.3",
+  "playwright>=1.45,<2",
 ]
 
 [project.optional-dependencies]
@@ -39,6 +40,8 @@ select = ["E4", "E7", "E9", "F"]
 py-modules = [
   "activity",
   "agent",
+  "browser_automation",
+  "integrations",
   "intent_text",
   "internet",
   "main",

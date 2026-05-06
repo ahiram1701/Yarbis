@@ -27,6 +27,9 @@ from self_knowledge import render_self_knowledge_summary
 from tools import (
     add_task,
     agent_overview,
+    browser_automation,
+    compose_email,
+    create_calendar_event,
     delete_note,
     fetch_web_page,
     get_note,
@@ -34,11 +37,13 @@ from tools import (
     list_checkpoints,
     list_notes,
     list_tasks,
+    open_system_target,
     read_text_file,
     request_user_input,
     restore_checkpoint,
     run_project_check,
     run_project_tests,
+    run_system_command,
     save_note,
     set_plan,
     self_overview,
@@ -177,8 +182,13 @@ tool_definitions = [
     restore_checkpoint,
     run_project_tests,
     run_project_check,
+    run_system_command,
     web_search,
     fetch_web_page,
+    browser_automation,
+    create_calendar_event,
+    compose_email,
+    open_system_target,
     self_overview,
 ]
 
@@ -203,8 +213,13 @@ available_functions = {
     "restore_checkpoint": restore_checkpoint,
     "run_project_tests": run_project_tests,
     "run_project_check": run_project_check,
+    "run_system_command": run_system_command,
     "web_search": web_search,
     "fetch_web_page": fetch_web_page,
+    "browser_automation": browser_automation,
+    "create_calendar_event": create_calendar_event,
+    "compose_email": compose_email,
+    "open_system_target": open_system_target,
     "self_overview": self_overview,
 }
 
@@ -222,13 +237,21 @@ ACTION_PROOF_TOOL_NAMES = {
     "restore_checkpoint",
     "run_project_tests",
     "run_project_check",
+    "run_system_command",
+    "browser_automation",
+    "create_calendar_event",
+    "compose_email",
+    "open_system_target",
 }
 
 TOOL_FAILURE_PREFIXES = (
     "acceso denegado",
     "argumentos de tool",
+    "comando del sistema con fallos",
+    "comando invalido",
     "contenido demasiado grande",
     "debes indicar",
+    "el comando excedio",
     "error ",
     "error:",
     "la ruta no existe",
@@ -438,6 +461,7 @@ Reglas:
 - Si detectas un siguiente paso util, conviertelo en plan, tarea o accion concreta. No crees tareas duplicadas.
 - Persigue mejora continua: revisa tu autoconocimiento, identifica limitaciones reales y propone o ejecuta mejoras pequenas cuando ayuden al objetivo.
 - No prometas capacidades que no tienes. Tu autonomia depende de Ollama, del servicio activo, permisos, herramientas disponibles, politica de internet y contexto del usuario.
+- Puedes usar herramientas de filesystem fuera del workspace, comandos del sistema, navegador real, calendario y correo cuando la tarea lo requiera. Hazlo con rutas/comandos concretos y reporta la evidencia devuelta por la tool.
 - Si la mejor salida del ciclo es texto util para el usuario, entregalo directamente en este ciclo.
 - No cortes respuestas con marcadores como "truncado". Si hay demasiado material para responder bien, resume con criterio: conserva conclusiones, decisiones, pasos accionables y detalles que el usuario necesita; indica que estas resumiendo por volumen y donde queda el detalle completo cuando exista.
 - Una respuesta resumida debe seguir siendo completa para su proposito: no dejes ideas partidas, datos clave fuera ni preguntas pendientes escondidas.
@@ -449,7 +473,7 @@ Reglas:
 - Si el usuario pide cambiar o reemplazar el objetivo principal de forma explicita, usa `update_goal`. No cambies el objetivo por iniciativa propia durante un pulso proactivo; si no es claro, pide confirmacion.
 - Si el usuario pide mejorar tu rendimiento o velocidad, empieza con acciones verificables: revisa estado/autoconocimiento, crea plan/tareas, inspecciona codigo o configuracion relevante y corre tests seguros cuando aplique.
 - Si falta un dato clave para avanzar bien (por ejemplo nicho, audiencia, tono, archivo exacto, formato o criterio de exito), no lo inventes.
-- Si falta informacion publica, verificable o reciente, prioriza `web_search` y luego `fetch_web_page` antes de preguntarle al usuario.
+- Si falta informacion publica, verificable o reciente, prioriza `web_search`, `fetch_web_page` o `browser_automation` segun haga falta antes de preguntarle al usuario.
 - Usa `request_user_input` solo cuando falte contexto privado, preferencias, decisiones, archivos concretos o criterios que el usuario debe definir.
 - Respeta la politica de internet visible en el estado. Si el usuario pide cambiarla, usa `update_internet_settings`.
 - Cuando necesites una respuesta del usuario, usa `request_user_input` con una sola pregunta clara y concreta, explica brevemente por que falta ese dato y detente. No sigas produciendo contenido que dependa de esa respuesta.
@@ -463,7 +487,8 @@ Reglas:
 - Antes de actuar a ciegas, revisa el estado con `agent_overview`, `list_tasks` o `list_notes`.
 - Antes de razonar sobre tu propio codigo con detalle, usa `self_overview`, `list_files` o `read_text_file` segun haga falta.
 - Antes de editar archivos de codigo, lee primero el archivo actual con `read_text_file`.
-- `write_text_file` crea un checkpoint automatico y devuelve un diff. Usalo para cambios pequenos, enfocados y bien entendidos.
+- `write_text_file` crea un checkpoint automatico y devuelve un diff. Puede trabajar fuera del workspace; manten los cambios pequenos, enfocados y bien entendidos.
+- Usa `run_system_command` para comandos arbitrarios del sistema cuando una tarea lo necesite. Usa `open_system_target`, `compose_email` y `create_calendar_event` para integraciones locales con apps del sistema.
 - Despues de modificar codigo o tests, ejecuta `run_project_tests`; antes de cerrar cambios grandes, usa `run_project_check` para tests Python y build .NET.
 - Si un cambio rompe algo, revisa `list_checkpoints` y usa `restore_checkpoint` para volver al estado anterior.
 - Despues de cada accion, evalua el siguiente mejor paso.

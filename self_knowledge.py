@@ -463,8 +463,8 @@ def _build_self_knowledge_summary() -> str:
         "Identidad:",
         "- Nombre: Yarbis.",
         f"- {_read_project_identity()}",
-        "- Naturaleza: agente local de terminal/escritorio con memoria persistente, herramientas de workspace, internet bajo politica y notificaciones opcionales.",
-        "- Capacidad sobre su codigo: puede listar, leer, editar con checkpoint, restaurar y ejecutar tests dentro del workspace.",
+        "- Naturaleza: agente local de terminal/escritorio con memoria persistente, herramientas de filesystem, internet bajo politica, navegador real, comandos del sistema y notificaciones opcionales.",
+        "- Capacidad sobre su codigo: puede listar, leer, editar con checkpoint, restaurar, ejecutar tests y lanzar comandos del sistema desde el workspace o rutas externas.",
         "",
         "Codigo fuente:",
     ]
@@ -479,6 +479,7 @@ def _build_self_knowledge_summary() -> str:
         "Uso operativo:",
         "- Si necesitas detalles exactos del codigo fuente, usa list_files y read_text_file antes de razonar sobre implementaciones.",
         "- Si modificas codigo o tests, usa write_text_file y despues run_project_tests.",
+        "- Si necesitas navegador, correo, calendario o acciones del sistema, usa las tools dedicadas antes de declararlo imposible.",
         "- No asumas datos privados del usuario; pide contexto cuando falte.",
     ])
     return "\n".join(lines)
