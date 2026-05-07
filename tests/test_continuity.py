@@ -60,7 +60,10 @@ class SharedMemoryContinuityTestCase(unittest.TestCase):
                     return_value="Modo autonomo ejecutado por 1 ciclo(s).",
                 ) as auto_mock:
                     with patch.object(yarbis_service, "send_telegram_message", return_value=True):
-                        result = yarbis_service.run_proactive_pulse()
+                        result = yarbis_service._run_proactive_pulse_inline(
+                            {"cycles": 1},
+                            "2026-05-06T12:00:00+00:00",
+                        )
 
             state = memory.load_state()
 

@@ -379,3 +379,4 @@ class NotificationsTestCase(unittest.TestCase):
         self.assertTrue(linked)
         telegram_mock.assert_called_once()
         self.assertEqual(state["notifications"]["telegram"]["chat_id"], "456")
+        self.assertEqual(state["notifications"]["telegram"]["last_update_id"], 11)

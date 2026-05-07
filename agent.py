@@ -223,6 +223,21 @@ available_functions = {
     "self_overview": self_overview,
 }
 
+PROACTIVE_SAFE_TOOL_NAMES = {
+    "agent_overview",
+    "update_profile",
+    "request_user_input",
+    "save_note",
+    "list_notes",
+    "get_note",
+    "delete_note",
+    "add_task",
+    "list_tasks",
+    "update_task_status",
+    "set_plan",
+    "self_overview",
+}
+
 ACTION_PROOF_TOOL_NAMES = {
     "update_profile",
     "update_internet_settings",
@@ -264,6 +279,25 @@ TOOL_FAILURE_PREFIXES = (
     "solo puedo",
     "tool no encontrada",
 )
+
+
+def _proactive_safe_mode() -> bool:
+    return os.getenv("YARBIS_PROACTIVE_SAFE_MODE", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
+def _current_tool_definitions() -> list:
+    if not _proactive_safe_mode():
+        return tool_definitions
+    return [
+        tool
+        for tool in tool_definitions
+        if getattr(tool, "__name__", "") in PROACTIVE_SAFE_TOOL_NAMES
+    ]
 
 
 def _normalize_timeout_seconds(value, default: int = DEFAULT_OLLAMA_TIMEOUT_SECONDS) -> int:
@@ -355,7 +389,7 @@ def _tool_call_proves_action(tool_name: str, output) -> bool:
     )
 
 
-def _resolve_ollama_runtime_settings(state=None) -> dict:
+def _resolve_ollama_runtime_settings(state=None, model_override: str | None = None) -> dict:
     if state is None:
         state = load_state()
 
@@ -398,6 +432,10 @@ def _resolve_ollama_runtime_settings(state=None) -> dict:
     if env_timeout:
         timeout_seconds = _normalize_timeout_seconds(env_timeout, timeout_seconds)
 
+    cleaned_model_override = str(model_override or "").strip()
+    if cleaned_model_override:
+        model = cleaned_model_override
+
     model_candidates = []
     for candidate in [model, *fallback_models]:
         if candidate and candidate not in model_candidates:
@@ -413,11 +451,11 @@ def _resolve_ollama_runtime_settings(state=None) -> dict:
     }
 
 
-def _apply_ollama_runtime_settings(state=None):
+def _apply_ollama_runtime_settings(state=None, model_override: str | None = None):
     global MODEL, OLLAMA_FALLBACK_MODELS, OLLAMA_HOST, OLLAMA_API_KEY_ENV_VAR
     global OLLAMA_TIMEOUT_SECONDS, client, _client_signature, _client_timeout_seconds
 
-    settings = _resolve_ollama_runtime_settings(state)
+    settings = _resolve_ollama_runtime_settings(state, model_override=model_override)
     MODEL = settings["model"]
     OLLAMA_FALLBACK_MODELS = settings["fallback_models"]
     OLLAMA_HOST = settings["host"]
@@ -483,6 +521,8 @@ Reglas:
 - Si una tarea queda frenada por falta de informacion del usuario, marcalo con `update_task_status(..., status="blocked", result="...")`.
 - Para consultar o eliminar notas persistentes, usa `list_notes`, `get_note` y `delete_note`.
 - Tienes autoconocimiento local: identidad, mapa de codigo fuente, sistema operativo y hardware actual. Si necesitas refrescarlo o verlo completo, usa `self_overview`.
+- El pulso proactivo puede incluir un snapshot de contexto local de la PC: presencia/idle, proceso en primer plano si esta permitido, salud del sistema y cambios recientes del workspace. Usalo solo como senal auxiliar; no lo trates como certeza absoluta ni reveles detalles sensibles si no aportan.
+- Por defecto no tienes permiso para capturar pantalla, teclado, clipboard, URLs ni contenido privado de ventanas. Si una accion depende de ese tipo de dato, pide confirmacion o contexto al usuario.
 - El servicio administrado por SCM solo inicia, detiene o registra el proceso de fondo. No digas que SCM impide usar herramientas, ver notas, actualizar tareas o ejecutar ciclos; esas acciones dependen del servicio activo, permisos del proceso y herramientas disponibles. Instalar, quitar o reconfigurar el servicio puede requerir administrador.
 - Antes de actuar a ciegas, revisa el estado con `agent_overview`, `list_tasks` o `list_notes`.
 - Antes de razonar sobre tu propio codigo con detalle, usa `self_overview`, `list_files` o `read_text_file` segun haga falta.
@@ -520,6 +560,7 @@ def build_messages(state):
         "- Cuando saludes, no uses Yarbis como nombre del usuario salvo que el perfil lo diga explicitamente.\n"
         "- Interfaz, Telegram y pulso proactivo leen y escriben la misma memoria persistente en state.json.\n"
         "- El pulso proactivo ejecuta las mismas herramientas del agente para notas, tareas, plan y objetivo cuando hay instruccion explicita del usuario.\n"
+        "- El contexto local observado de la PC vive en un snapshot separado y solo debe usarse como senal prudente para sugerencias o siguientes pasos.\n"
         "- El estado guarda respuestas completas; cuando haya demasiado volumen, resume con criterio en la respuesta en vez de cortar texto.\n"
         "- Todo aprendizaje estable debe guardarse en perfil, notas, tareas o plan con herramientas.\n"
         "- Antes de asumir que olvidaste algo, revisa perfil, notas, tareas, plan y autoconocimiento."
@@ -1216,7 +1257,7 @@ def _extract_user_input_request(text: str) -> str:
     return ""
 
 
-def run_one_cycle(max_steps=None):
+def run_one_cycle(max_steps=None, model_override: str | None = None):
     state = load_state()
     if _stop_requested_for_operation(state):
         return _handle_stop_requested(state)
@@ -1236,7 +1277,10 @@ def run_one_cycle(max_steps=None):
     if max_steps is None:
         max_steps = state["autonomy"]["max_steps_per_cycle"]
 
-    ollama_settings, ollama_client = _apply_ollama_runtime_settings(state)
+    ollama_settings, ollama_client = _apply_ollama_runtime_settings(
+        state,
+        model_override=model_override,
+    )
     model_candidates = ollama_settings["models"]
     operation_id = _current_runtime_operation_id(state)
 
@@ -1259,7 +1303,7 @@ def run_one_cycle(max_steps=None):
                 operation_id=operation_id,
                 model_candidates=model_candidates,
                 messages=build_messages(state),
-                tools=tool_definitions,
+                tools=_current_tool_definitions(),
                 think=False,
             )
         except Exception as exc:
@@ -1319,7 +1363,12 @@ def run_one_cycle(max_steps=None):
                 print(f"> Argumentos: {raw_tool_args}")
 
                 function_to_call = available_functions.get(tool_name)
-                if not function_to_call:
+                if _proactive_safe_mode() and tool_name not in PROACTIVE_SAFE_TOOL_NAMES:
+                    tool_output = (
+                        "Tool no permitida durante el pulso proactivo seguro: "
+                        f"{tool_name}. Registra una tarea o pide confirmacion para ejecutarla fuera del pulso."
+                    )
+                elif not function_to_call:
                     tool_output = f"Tool no encontrada: {tool_name}"
                 elif tool_args_error:
                     tool_output = tool_args_error
@@ -1459,7 +1508,7 @@ def run_one_cycle(max_steps=None):
     }
 
 
-def run_autonomous_session(cycles=None):
+def run_autonomous_session(cycles=None, model_override: str | None = None):
     state = load_state()
     if cycles is None:
         cycles = state["autonomy"]["auto_cycles_default"]
@@ -1478,7 +1527,7 @@ def run_autonomous_session(cycles=None):
             print(f"Pregunta pendiente: {current_state['awaiting_user_input']['question']}")
             break
 
-        cycle_result = run_one_cycle()
+        cycle_result = run_one_cycle(model_override=model_override)
         if not isinstance(cycle_result, dict):
             cycle_result = {
                 "status": "error",

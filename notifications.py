@@ -310,7 +310,13 @@ def try_link_telegram_chat(settings: dict | None = None) -> bool:
         return False
 
     latest_private_chat_id = ""
+    latest_update_id = 0
     for update in reversed(updates):
+        try:
+            latest_update_id = max(latest_update_id, int(update.get("update_id", 0)))
+        except (TypeError, ValueError):
+            pass
+
         message = update.get("message")
         if not isinstance(message, dict):
             continue
@@ -335,6 +341,15 @@ def try_link_telegram_chat(settings: dict | None = None) -> bool:
             notifications_state = state.setdefault("notifications", {})
             telegram_state = notifications_state.setdefault("telegram", {})
             telegram_state["chat_id"] = latest_private_chat_id
+            if latest_update_id > 0:
+                try:
+                    current_last_update_id = int(telegram_state.get("last_update_id", 0) or 0)
+                except (TypeError, ValueError):
+                    current_last_update_id = 0
+                telegram_state["last_update_id"] = max(
+                    current_last_update_id,
+                    latest_update_id,
+                )
 
         state_transaction("try_link_telegram_chat", mutate)
     except Exception:

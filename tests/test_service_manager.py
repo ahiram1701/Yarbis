@@ -18,14 +18,21 @@ def completed(args=None, returncode=0, stdout="", stderr=""):
     )
 
 
-def status(installed=True, running=False, pid=None, autostart=False, start_type="demand_start"):
+def status(
+    installed=True,
+    running=False,
+    pid=None,
+    autostart=False,
+    start_type="demand_start",
+    account_name=None,
+):
     return {
         "installed": installed,
         "running": running,
         "pid": pid,
         "autostart_enabled": autostart,
         "start_type": start_type,
-        "account_name": "LocalSystem" if installed else "",
+        "account_name": account_name if account_name is not None else ("LocalSystem" if installed else ""),
     }
 
 
@@ -177,6 +184,61 @@ class ServiceManagerTestCase(unittest.TestCase):
         sc_mock.assert_called_once_with(["start", service_manager.SERVICE_NAME], timeout_seconds=45)
         self.assertIn("PID 777", result)
 
+    def test_start_service_recovers_from_stale_scm_logon_credentials(self):
+        logon_failure = completed(
+            returncode=1069,
+            stderr=(
+                "[SC] StartService ERROR 1069:\n\n"
+                "No se puede iniciar el servicio debido a un error en el inicio de sesion."
+            ),
+        )
+
+        with patch.object(
+            service_manager,
+            "get_service_status",
+            side_effect=[
+                status(installed=True, running=False, autostart=True, account_name=".\\Ahiram"),
+                status(installed=True, running=True, pid=777, autostart=True),
+            ],
+        ):
+            with patch.object(
+                service_manager,
+                "install_service",
+                return_value="Servicio de Yarbis ya instalado en SCM. Configuracion actualizada. Cuenta: LocalSystem.",
+            ) as install_mock:
+                with patch.object(
+                    service_manager,
+                    "_run_sc",
+                    side_effect=[logon_failure, completed()],
+                ) as sc_mock:
+                    result = service_manager.start_service()
+
+        install_mock.assert_called_once_with(
+            start_auto=True,
+            account_name=service_manager.SERVICE_DEFAULT_ACCOUNT,
+        )
+        self.assertEqual(sc_mock.call_count, 2)
+        self.assertIn("LocalSystem", result)
+        self.assertIn("PID 777", result)
+
+    def test_start_service_keeps_explicit_account_logon_errors_visible(self):
+        logon_failure = completed(
+            returncode=1069,
+            stderr="[SC] StartService ERROR 1069: logon failure",
+        )
+
+        with patch.object(
+            service_manager,
+            "get_service_status",
+            return_value=status(installed=True, running=False, account_name=".\\Ahiram"),
+        ):
+            with patch.object(service_manager, "_run_sc", return_value=logon_failure):
+                with patch.object(service_manager, "install_service") as install_mock:
+                    with self.assertRaises(service_manager.ServiceLogonFailure):
+                        service_manager.start_service(account_name=".\\Ahiram", password="bad")
+
+        install_mock.assert_not_called()
+
     def test_stop_service_stops_running_service(self):
         with patch.object(
             service_manager,
@@ -269,6 +331,7 @@ class ServiceManagerTestCase(unittest.TestCase):
             "service": {
                 "proactive": {
                     "enabled": True,
+                    "model": "qwen3.5:0.8b",
                     "last_pulse_at": "2026-05-03T10:00:00+00:00",
                 },
             },
@@ -298,6 +361,7 @@ class ServiceManagerTestCase(unittest.TestCase):
 
         self.assertTrue(result["service"]["running"])
         self.assertTrue(result["telegram"]["linked"])
+        self.assertEqual(result["proactive"]["model"], "qwen3.5:0.8b")
         self.assertEqual(result["operation"]["operation_id"], "ciclo-123")
         self.assertEqual(result["ollama"]["model"], "llama3.2:3b")
         self.assertIn("servicio activo", rendered)

@@ -49,6 +49,10 @@ _READINESS_CACHE = {
 }
 
 
+class ServiceLogonFailure(RuntimeError):
+    pass
+
+
 def _windows_only():
     if os.name != "nt":
         raise RuntimeError("Los servicios administrados por SCM solo estan disponibles en Windows.")
@@ -98,6 +102,17 @@ def _completed_output(completed: subprocess.CompletedProcess) -> str:
     )
 
 
+def _is_logon_failure_output(output: str) -> bool:
+    normalized = str(output).lower()
+    return (
+        "1069" in normalized
+        or "logon failure" in normalized
+        or "error en el inicio de sesi" in normalized
+        or "error de inicio de sesi" in normalized
+        or "no se puede iniciar el servicio debido a un error" in normalized
+    )
+
+
 def _ensure_success(completed: subprocess.CompletedProcess, action: str):
     if completed.returncode == 0:
         return
@@ -106,6 +121,12 @@ def _ensure_success(completed: subprocess.CompletedProcess, action: str):
     if "Access is denied" in output or "Acceso denegado" in output:
         raise PermissionError(
             f"No tengo permisos para {action}. Abre Yarbis como administrador e intenta de nuevo."
+        )
+
+    if _is_logon_failure_output(output):
+        raise ServiceLogonFailure(
+            f"No pude {action} porque Windows rechazo la cuenta configurada del servicio (SCM 1069).\n"
+            f"{output or f'exit={completed.returncode}'}"
         )
 
     raise RuntimeError(f"No pude {action}.\n{output or f'exit={completed.returncode}'}")
@@ -365,6 +386,7 @@ def health_status() -> dict:
             "enabled": bool(proactive.get("enabled")),
             "interval_seconds": proactive.get("interval_seconds"),
             "cycles": proactive.get("cycles"),
+            "model": str(proactive.get("model", "")).strip(),
             "last_pulse_at": str(proactive.get("last_pulse_at", "")).strip(),
         },
         "operation": {
@@ -413,6 +435,8 @@ def format_health_status(status: dict | None = None) -> str:
         telegram_text = "Telegram desactivado"
 
     pulse_text = "pulso activo" if proactive.get("enabled") else "pulso desactivado"
+    pulse_model = str(proactive.get("model", "")).strip()
+    pulse_text += f", modelo {pulse_model or 'principal'}"
     if proactive.get("last_pulse_at"):
         pulse_text += f", ultimo {proactive['last_pulse_at']}"
 
@@ -808,17 +832,35 @@ def start_service(account_name: str = "", password: str = "") -> str:
     if status["running"]:
         return f"El servicio de Yarbis ya esta activo en SCM (PID {status['pid']})."
 
-    start = _run_sc(["start", SERVICE_NAME], timeout_seconds=45)
-    _ensure_success(start, "iniciar el servicio de Yarbis")
+    def start_once() -> str:
+        start = _run_sc(["start", SERVICE_NAME], timeout_seconds=45)
+        _ensure_success(start, "iniciar el servicio de Yarbis")
 
-    deadline = time.monotonic() + STARTUP_WAIT_SECONDS
-    while time.monotonic() < deadline:
-        refreshed = get_service_status()
-        if refreshed["running"]:
-            return f"Servicio de Yarbis iniciado por SCM (PID {refreshed['pid']})."
-        time.sleep(0.5)
+        deadline = time.monotonic() + STARTUP_WAIT_SECONDS
+        while time.monotonic() < deadline:
+            refreshed = get_service_status()
+            if refreshed["running"]:
+                return f"Servicio de Yarbis iniciado por SCM (PID {refreshed['pid']})."
+            time.sleep(0.5)
 
-    return "SCM recibio la orden de inicio, pero no pude confirmar que Yarbis quedara activo."
+        return "SCM recibio la orden de inicio, pero no pude confirmar que Yarbis quedara activo."
+
+    try:
+        return start_once()
+    except ServiceLogonFailure:
+        if str(account_name).strip() or str(password):
+            raise
+
+        repair_result = install_service(
+            start_auto=bool(status.get("autostart_enabled")),
+            account_name=SERVICE_DEFAULT_ACCOUNT,
+        )
+        started_result = start_once()
+        return (
+            f"{repair_result}\n"
+            "Cuenta del servicio restablecida a LocalSystem tras el error SCM 1069.\n"
+            f"{started_result}"
+        )
 
 
 def stop_service(timeout_seconds: float = STOP_WAIT_SECONDS) -> str:

@@ -1,9 +1,11 @@
 import ctypes
+import subprocess
 import sys
 import queue
 import threading
 import tkinter as tk
 from datetime import datetime
+from pathlib import Path
 from tkinter import messagebox, simpledialog, ttk
 
 import activity
@@ -13,8 +15,11 @@ from memory import (
     load_state,
     render_state_summary,
 )
+from pc_context import local_context_enabled
 from session import (
     add_task_text,
+    clear_activity_for_first_run_if_needed,
+    get_local_context_settings,
     get_notification_settings,
     get_ollama_settings,
     get_service_proactive_settings,
@@ -29,6 +34,7 @@ from session import (
     save_note_text,
     send_test_notification,
     submit_user_reply,
+    update_local_context_settings,
     update_notification_settings,
     update_goal,
     update_ollama_settings,
@@ -59,6 +65,7 @@ from ui_dialogs import (
     TaskDialog,
 )
 from ui_settings_dialogs import (
+    LocalContextDialog,
     NotificationsDialog,
     OllamaSettingsDialog,
     ServiceInstallDialog,
@@ -134,6 +141,7 @@ def _show_already_running_message():
 
 
 _STATE_SYNC_INTERVAL_MS = 1000
+_LOCAL_CONTEXT_WORKER_SYNC_MS = 10000
 
 
 class YarbisDesktop(tk.Tk):
@@ -171,6 +179,8 @@ class YarbisDesktop(tk.Tk):
         self._last_summary_text = ""
         self._last_activity_text = ""
         self._local_telegram_polling = False
+        self._local_context_worker_process = None
+        self._closing = False
         self._first_run_checked = False
 
         self._build_ui()
@@ -178,6 +188,7 @@ class YarbisDesktop(tk.Tk):
         self.refresh_state_view()
         self.after(250, self._maybe_show_first_run)
         self.after(150, self._poll_worker_queue)
+        self.after(750, self._ensure_local_context_worker)
         self.after(_STATE_SYNC_INTERVAL_MS, self._sync_state_view)
 
     def _build_ui(self):
@@ -464,6 +475,13 @@ class YarbisDesktop(tk.Tk):
             command=self._edit_service_pulse,
         )
         self._pack_action_button(self.service_pulse_button)
+
+        self.local_context_button = ttk.Button(
+            group,
+            text="Contexto local",
+            command=self._edit_local_context,
+        )
+        self._pack_action_button(self.local_context_button)
 
         self.remove_service_button = ttk.Button(
             group,
@@ -907,12 +925,20 @@ class YarbisDesktop(tk.Tk):
         service_status = health["service"]
         proactive_settings = state["service"]["proactive"]
         pulse_status = "activo" if proactive_settings["enabled"] else "desactivado"
+        pulse_model = str(proactive_settings.get("model", "")).strip()
+        pulse_model_text = f", modelo {pulse_model}" if pulse_model else ", modelo principal"
         pulse_text = (
             f"Pulso {pulse_status}: {proactive_settings['cycles']} ciclo(s) cada "
-            f"{proactive_settings['interval_seconds']}s."
+            f"{proactive_settings['interval_seconds']}s{pulse_model_text}."
+        )
+        local_context_settings = state.get("local_context", {})
+        local_context_status = "activo" if local_context_enabled(local_context_settings) else "desactivado"
+        local_context_text = (
+            f"Contexto local {local_context_status} "
+            f"(modo={local_context_settings.get('mode', 'safe')})."
         )
         if not service_status["installed"]:
-            self.service_var.set(f"No instalado en SCM. {pulse_text}")
+            self.service_var.set(f"No instalado en SCM. {pulse_text} {local_context_text}")
             self.service_button_text.set("Instalar e iniciar")
         elif service_status["running"]:
             account_text = (
@@ -923,7 +949,7 @@ class YarbisDesktop(tk.Tk):
             self.service_var.set(
                 f"Activo en SCM (PID {service_status['pid']}, "
                 f"arranque={service_status['start_type']}{account_text}). "
-                f"{pulse_text}"
+                f"{pulse_text} {local_context_text}"
             )
             self.service_button_text.set("Detener servicio")
         else:
@@ -935,7 +961,7 @@ class YarbisDesktop(tk.Tk):
             self.service_var.set(
                 f"Instalado en SCM, detenido "
                 f"(arranque={service_status['start_type']}{account_text}). "
-                f"{pulse_text}"
+                f"{pulse_text} {local_context_text}"
             )
             self.service_button_text.set("Iniciar servicio")
         autostart_enabled = bool(service_status["autostart_enabled"])
@@ -1041,6 +1067,62 @@ class YarbisDesktop(tk.Tk):
         if not self._local_telegram_polling:
             start_telegram_polling(event_callback=self._handle_telegram_event)
             self._local_telegram_polling = True
+
+    def _sync_local_context_worker_once(self):
+        try:
+            settings = get_local_context_settings()
+        except Exception:
+            return
+
+        if local_context_enabled(settings):
+            self._start_local_context_worker()
+        else:
+            self._stop_local_context_worker()
+
+    def _ensure_local_context_worker(self):
+        if self._closing:
+            return
+
+        self._sync_local_context_worker_once()
+        self.after(_LOCAL_CONTEXT_WORKER_SYNC_MS, self._ensure_local_context_worker)
+
+    def _start_local_context_worker(self):
+        process = self._local_context_worker_process
+        if process is not None and process.poll() is None:
+            return
+
+        script_path = Path(__file__).resolve().with_name("pc_context_worker.py")
+        if not script_path.exists():
+            return
+
+        creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if sys.platform == "win32" else 0
+        try:
+            self._local_context_worker_process = subprocess.Popen(
+                [sys.executable, str(script_path)],
+                cwd=str(script_path.parent),
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                creationflags=creationflags,
+            )
+        except Exception as exc:
+            self._local_context_worker_process = None
+            self._append_activity("Contexto local", f"No pude iniciar el observador local: {exc}")
+
+    def _stop_local_context_worker(self):
+        process = self._local_context_worker_process
+        self._local_context_worker_process = None
+        if process is None or process.poll() is not None:
+            return
+
+        try:
+            process.terminate()
+            process.wait(timeout=2)
+        except Exception:
+            try:
+                process.kill()
+            except Exception:
+                pass
 
     def _set_busy(self, busy: bool, status_text: str = "", source: str = "local"):
         if busy:
@@ -1236,6 +1318,21 @@ class YarbisDesktop(tk.Tk):
             return
 
         self._append_activity("Pulso proactivo", result)
+        self.refresh_state_view()
+
+    def _edit_local_context(self):
+        dialog = LocalContextDialog(self, initial_settings=get_local_context_settings())
+        if dialog.result is None:
+            return
+
+        try:
+            result = update_local_context_settings(**dialog.result)
+        except ValueError as exc:
+            messagebox.showwarning("Yarbis", str(exc), parent=self)
+            return
+
+        self._append_activity("Contexto local", result)
+        self._sync_local_context_worker_once()
         self.refresh_state_view()
 
     def _toggle_service(self):
@@ -1510,6 +1607,8 @@ class YarbisDesktop(tk.Tk):
             )
             if not should_close:
                 return
+        self._closing = True
+        self._stop_local_context_worker()
         stop_telegram_polling()
         self.destroy()
 
@@ -1520,6 +1619,7 @@ def main():
         return
 
     try:
+        clear_activity_for_first_run_if_needed()
         startup_message = run_startup_self_analysis()
         app = YarbisDesktop()
         app._append_activity("Autoanalisis inicial", startup_message)

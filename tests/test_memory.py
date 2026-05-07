@@ -244,6 +244,7 @@ class MemoryTestCase(unittest.TestCase):
                     "interval_seconds": 10,
                     "cycles": 99,
                     "start_delay_seconds": -20,
+                    "model": "qwen3.5:0.8b",
                 }
             }
         })
@@ -254,6 +255,40 @@ class MemoryTestCase(unittest.TestCase):
         self.assertEqual(proactive["interval_seconds"], 60)
         self.assertEqual(proactive["cycles"], 5)
         self.assertEqual(proactive["start_delay_seconds"], 0)
+        self.assertEqual(proactive["model"], "qwen3.5:0.8b")
+
+    def test_normalize_state_sanitizes_local_context_settings(self):
+        normalized = memory.normalize_state({
+            "local_context": {
+                "enabled": True,
+                "mode": "DETAILED",
+                "sample_interval_seconds": 1,
+                "max_snapshot_age_seconds": 999_999,
+                "include_window_title": True,
+                "include_process_name": False,
+                "include_workspace_changes": False,
+                "include_system_health": True,
+            }
+        })
+        off_state = memory.normalize_state({
+            "local_context": {
+                "enabled": True,
+                "mode": "off",
+                "include_window_title": True,
+            }
+        })
+
+        settings = normalized["local_context"]
+        self.assertTrue(settings["enabled"])
+        self.assertEqual(settings["mode"], "detailed")
+        self.assertEqual(settings["sample_interval_seconds"], 5)
+        self.assertEqual(settings["max_snapshot_age_seconds"], 24 * 60 * 60)
+        self.assertTrue(settings["include_window_title"])
+        self.assertFalse(settings["include_process_name"])
+        self.assertFalse(settings["include_workspace_changes"])
+        self.assertTrue(settings["include_system_health"])
+        self.assertFalse(off_state["local_context"]["enabled"])
+        self.assertFalse(off_state["local_context"]["include_window_title"])
 
     def test_normalize_state_sanitizes_internet_settings(self):
         normalized = memory.normalize_state({

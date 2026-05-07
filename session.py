@@ -1,4 +1,5 @@
 import contextlib
+import ctypes
 import io
 import os
 import re
@@ -29,6 +30,8 @@ from memory import (
     DEFAULT_OLLAMA_HOST,
     DEFAULT_OLLAMA_MODEL,
     DEFAULT_OLLAMA_TIMEOUT_SECONDS,
+    MAX_OLLAMA_MODEL_CHARS,
+    VALID_LOCAL_CONTEXT_MODES,
     MAX_OLLAMA_TIMEOUT_SECONDS,
     MIN_OLLAMA_TIMEOUT_SECONDS,
     default_state,
@@ -60,6 +63,8 @@ SESSION_LOCK = threading.RLock()
 OPERATION_LOCK_FILE = Path(__file__).resolve().parent / ".yarbis_runtime" / "session.lock"
 _OPERATION_LOCK_LOCAL = threading.local()
 _OPERATION_LOCK_POLL_SECONDS = 0.25
+_WINDOWS_SYNCHRONIZE = 0x00100000
+_WINDOWS_STILL_ACTIVE = 259
 FACTORY_RESET_RUNTIME_FILES = (
     "service.log",
     "service.stop",
@@ -156,6 +161,84 @@ def _release_operation_file_lock(handle):
         _unlock_operation_handle(handle)
     finally:
         handle.close()
+
+
+def _runtime_operation_source_pid(source: object) -> int | None:
+    rendered = str(source or "").strip()
+    if not rendered.startswith("pid:"):
+        return None
+
+    try:
+        pid = int(rendered.split(":", 1)[1])
+    except (TypeError, ValueError):
+        return None
+    return pid if pid > 0 else None
+
+
+def _pid_is_running(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    if pid == os.getpid():
+        return True
+
+    if os.name == "nt":
+        try:
+            handle = ctypes.windll.kernel32.OpenProcess(_WINDOWS_SYNCHRONIZE, False, pid)
+        except Exception:
+            return True
+
+        if not handle:
+            return False
+
+        try:
+            exit_code = ctypes.c_ulong()
+            if not ctypes.windll.kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code)):
+                return True
+            return exit_code.value == _WINDOWS_STILL_ACTIVE
+        finally:
+            try:
+                ctypes.windll.kernel32.CloseHandle(handle)
+            except Exception:
+                pass
+
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+
+
+def clear_abandoned_runtime_operation() -> bool:
+    def mutate(state):
+        runtime = state.get("runtime", {})
+        if not isinstance(runtime, dict):
+            return False
+
+        thinking = runtime.get("thinking", {})
+        if not isinstance(thinking, dict):
+            thinking = {}
+
+        stop_requested = runtime.get("stop_requested", {})
+        if not isinstance(stop_requested, dict):
+            stop_requested = {}
+
+        source_pid = _runtime_operation_source_pid(thinking.get("source", ""))
+        operation_active = bool(thinking.get("active") and str(thinking.get("label", "")).strip())
+        should_clear = bool(
+            (operation_active and source_pid and not _pid_is_running(source_pid))
+            or (stop_requested.get("active") and not operation_active)
+        )
+        if not should_clear:
+            return False
+
+        state["runtime"] = default_state()["runtime"]
+        return True
+
+    return bool(state_transaction("runtime_abandoned_operation_clear", mutate))
 
 
 def _set_runtime_thinking(label: str, operation_id: str):
@@ -487,6 +570,39 @@ def _clear_factory_runtime_artifacts():
             pass
 
 
+def should_clear_activity_for_first_run(state: dict | None = None) -> bool:
+    state = load_state() if state is None else state
+    if str(state.get("goal", "")).strip():
+        return False
+
+    try:
+        cycle_count = int(state.get("cycle_count", 0) or 0)
+    except (TypeError, ValueError):
+        cycle_count = 0
+
+    awaiting_user_input = state.get("awaiting_user_input", {})
+    if not isinstance(awaiting_user_input, dict):
+        awaiting_user_input = {}
+
+    return not any((
+        cycle_count,
+        str(state.get("last_result", "")).strip(),
+        state.get("messages", []),
+        state.get("notes", []),
+        state.get("tasks", []),
+        state.get("current_plan", []),
+        awaiting_user_input.get("pending"),
+    ))
+
+
+def clear_activity_for_first_run_if_needed() -> bool:
+    with SESSION_LOCK:
+        if not should_clear_activity_for_first_run(load_state()):
+            return False
+        activity.clear_activity_history()
+        return True
+
+
 def factory_reset_yarbis() -> str:
     with SESSION_LOCK:
         save_state(default_state())
@@ -622,6 +738,7 @@ def update_service_proactive_settings(
     interval_seconds: int,
     cycles: int,
     start_delay_seconds: int,
+    model: str | None = None,
 ) -> str:
     with SESSION_LOCK:
         try:
@@ -646,25 +763,104 @@ def update_service_proactive_settings(
         if not 0 <= cleaned_start_delay <= 24 * 60 * 60:
             raise ValueError("La espera inicial debe estar entre 0 y 86400 segundos.")
 
+        current_settings = get_service_proactive_settings()
+        cleaned_model = (
+            str(model).strip()
+            if model is not None
+            else str(current_settings.get("model", "")).strip()
+        )
+        if len(cleaned_model) > MAX_OLLAMA_MODEL_CHARS:
+            raise ValueError(f"El modelo del pulso no puede exceder {MAX_OLLAMA_MODEL_CHARS} caracteres.")
+
         def mutate(state):
-            state.setdefault("service", {})
-            state["service"]["proactive"] = {
+            service_state = state.setdefault("service", {})
+            proactive_state = service_state.setdefault("proactive", {})
+            proactive_state.update({
                 "enabled": bool(enabled),
                 "interval_seconds": cleaned_interval,
                 "cycles": cleaned_cycles,
                 "start_delay_seconds": cleaned_start_delay,
-            }
+                "model": cleaned_model,
+            })
 
         state_transaction("update_service_proactive_settings", mutate)
         settings = load_state()["service"]["proactive"]
 
         status = "activo" if settings["enabled"] else "desactivado"
+        model_text = settings.get("model") or "Ollama principal"
         return (
             "Pulso proactivo actualizado.\n"
             f"Estado: {status}\n"
             f"Intervalo: {settings['interval_seconds']} segundos\n"
             f"Ciclos por pulso: {settings['cycles']}\n"
-            f"Espera inicial: {settings['start_delay_seconds']} segundos"
+            f"Espera inicial: {settings['start_delay_seconds']} segundos\n"
+            f"Modelo: {model_text}"
+        )
+
+
+def get_local_context_settings() -> dict:
+    with SESSION_LOCK:
+        return load_state().get("local_context", {})
+
+
+def update_local_context_settings(
+    enabled: bool,
+    mode: str,
+    sample_interval_seconds: int,
+    max_snapshot_age_seconds: int,
+    include_window_title: bool = False,
+    include_process_name: bool = True,
+    include_workspace_changes: bool = True,
+    include_system_health: bool = True,
+) -> str:
+    with SESSION_LOCK:
+        cleaned_mode = str(mode).strip().lower() or "safe"
+        if cleaned_mode not in VALID_LOCAL_CONTEXT_MODES:
+            raise ValueError("Modo de contexto local invalido. Usa off, safe o detailed.")
+
+        try:
+            cleaned_sample_interval = int(sample_interval_seconds)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("El intervalo de contexto local debe ser un numero de segundos.") from exc
+
+        try:
+            cleaned_max_age = int(max_snapshot_age_seconds)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("La vigencia del snapshot debe ser un numero de segundos.") from exc
+
+        if not 5 <= cleaned_sample_interval <= 24 * 60 * 60:
+            raise ValueError("El intervalo de contexto local debe estar entre 5 y 86400 segundos.")
+        if not 15 <= cleaned_max_age <= 24 * 60 * 60:
+            raise ValueError("La vigencia del snapshot debe estar entre 15 y 86400 segundos.")
+
+        cleaned_enabled = bool(enabled) and cleaned_mode != "off"
+        cleaned_include_window_title = bool(include_window_title) and cleaned_mode == "detailed"
+
+        def mutate(state):
+            state["local_context"] = {
+                "enabled": cleaned_enabled,
+                "mode": cleaned_mode,
+                "sample_interval_seconds": cleaned_sample_interval,
+                "max_snapshot_age_seconds": cleaned_max_age,
+                "include_window_title": cleaned_include_window_title,
+                "include_process_name": bool(include_process_name),
+                "include_workspace_changes": bool(include_workspace_changes),
+                "include_system_health": bool(include_system_health),
+            }
+
+        state_transaction("update_local_context_settings", mutate)
+        settings = load_state()["local_context"]
+        status = "activo" if settings["enabled"] else "desactivado"
+        return (
+            "Contexto local actualizado.\n"
+            f"Estado: {status}\n"
+            f"Modo: {settings['mode']}\n"
+            f"Intervalo: {settings['sample_interval_seconds']} segundos\n"
+            f"Vigencia: {settings['max_snapshot_age_seconds']} segundos\n"
+            f"Proceso en primer plano: {'si' if settings['include_process_name'] else 'no'}\n"
+            f"Titulos de ventana: {'si' if settings['include_window_title'] else 'no'}\n"
+            f"Workspace: {'si' if settings['include_workspace_changes'] else 'no'}\n"
+            f"Salud del sistema: {'si' if settings['include_system_health'] else 'no'}"
         )
 
 
@@ -1135,11 +1331,15 @@ def run_auto_with_output(
     cycles=None,
     emit_notifications: bool = True,
     mirror_telegram: bool = True,
+    model_override: str | None = None,
 ) -> str:
     with session_operation_lock("Modo autonomo"):
+        capture_kwargs = {"cycles": cycles}
+        if str(model_override or "").strip():
+            capture_kwargs["model_override"] = str(model_override).strip()
         output, executed_cycles = _capture_operation_output(
             run_autonomous_session,
-            cycles=cycles,
+            **capture_kwargs,
         )
         state = load_state()
 

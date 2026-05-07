@@ -28,6 +28,7 @@ Yarbis ya funciona como agente personal local:
 - ejecuta un autoanalisis de identidad, codigo fuente, sistema operativo y hardware al arrancar
 - puede recibir y responder mensajes por Telegram cuando ese canal esta configurado
 - puede ejecutarse como Windows Service y arrancar con Windows desde SCM
+- puede observar senales locales seguras de la PC para enriquecer el pulso proactivo: presencia/idle, proceso en primer plano si esta permitido, salud del sistema y cambios recientes del workspace
 
 ## Requisitos
 
@@ -99,6 +100,7 @@ La interfaz de escritorio permite:
 - activar o desactivar el servicio de fondo
 - configurar si el servicio se abre al iniciar Windows
 - configurar el pulso proactivo del servicio
+- configurar el contexto local que alimenta el pulso proactivo
 - quitar el servicio de SCM
 
 Si `state.json` aun no tiene objetivo, la app abre un asistente inicial. Define objetivo,
@@ -119,6 +121,7 @@ Cuando esta activo:
 - publica actividad visible para la interfaz en `.yarbis_runtime/activity.log`
 - mantiene activo el inbox de Telegram si Telegram esta configurado
 - ejecuta un pulso proactivo periodico para avanzar el objetivo actual sin que tengas que abrir la app
+- consume el snapshot de contexto local si la app de escritorio esta capturando senales recientes
 - recupera al arrancar respuestas del usuario que hayan quedado guardadas pero sin ciclo completado
 - evita que la app de escritorio o la terminal inicien un segundo lector de Telegram
 
@@ -130,9 +133,11 @@ Estas acciones suelen requerir ejecutar Yarbis como administrador. Al instalar d
 
 La proactividad 24/7 del servicio esta activa por defecto. Tras una espera inicial, el servicio agrega un pulso de contexto al historial y ejecuta un ciclo autonomo breve. Si Yarbis necesita una decision, permiso o dato privado, registra una pregunta pendiente y notifica por los canales configurados.
 
+El contexto local de la PC se captura desde la sesion interactiva de la app de escritorio, no desde SCM. Esto evita depender de que el servicio vea ventanas de usuario desde Session 0. En modo seguro, Yarbis registra solo senales resumidas: presencia/idle, proceso en primer plano, salud de energia/memoria/disco y cambios recientes del workspace. Los titulos de ventana estan desactivados por defecto y solo se incluyen en modo detallado. Yarbis no captura pantalla, teclado, clipboard, URLs ni contenido privado de ventanas.
+
 Si el servicio se detiene mientras procesa una respuesta del usuario, esa respuesta queda en el historial. En el siguiente arranque o pulso, Yarbis detecta si el ultimo mensaje del usuario no tiene respuesta del asistente y ejecuta primero ese ciclo pendiente antes de agregar trabajo proactivo nuevo.
 
-Puedes ajustar el pulso desde la app con `Servicio` -> `Configurar pulso`. Los cambios se guardan en `state.json`; el servicio los lee en caliente para el intervalo y los ciclos. La espera inicial aplica al siguiente arranque del servicio.
+Puedes ajustar el pulso desde la app con `Servicio` -> `Configurar pulso`. Los cambios se guardan en `state.json`; el servicio los lee en caliente para el intervalo y los ciclos. La espera inicial aplica al siguiente arranque del servicio. Tambien puedes ajustar las senales locales desde `Servicio` -> `Contexto local`; el observador se activa o detiene mientras la app de escritorio esta abierta.
 
 El modelo de Ollama, host, fallbacks y timeout tambien se pueden cambiar desde la app con `Modelo` -> `Modelo y timeout`. Esos cambios se guardan en `state.json` y se aplican al siguiente ciclo, tanto en la app como en el servicio.
 

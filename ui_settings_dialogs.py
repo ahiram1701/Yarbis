@@ -7,10 +7,210 @@ from memory import (
     DEFAULT_OLLAMA_HOST,
     DEFAULT_OLLAMA_MODEL,
     DEFAULT_OLLAMA_TIMEOUT_SECONDS,
+    DEFAULT_SERVICE_PROACTIVE_MODEL,
     MAX_OLLAMA_TIMEOUT_SECONDS,
     MIN_OLLAMA_TIMEOUT_SECONDS,
 )
 from ui_dialogs import ThemedDialog
+
+
+class LocalContextDialog(ThemedDialog):
+    def __init__(self, parent, initial_settings: dict):
+        self.initial_settings = initial_settings
+        super().__init__(parent, "Contexto local")
+
+    def body(self, master):
+        self._prepare_body(master)
+        initial_mode = str(self.initial_settings.get("mode", "safe") or "safe").strip().lower()
+        initial_enabled = bool(self.initial_settings.get("enabled", True))
+        if initial_mode == "off":
+            initial_enabled = False
+            initial_mode = "safe"
+        self.enabled_var = tk.BooleanVar(value=initial_enabled)
+        self.mode_var = tk.StringVar(value=initial_mode)
+        self.sample_interval_var = tk.StringVar(
+            value=str(self.initial_settings.get("sample_interval_seconds", 30))
+        )
+        self.max_age_var = tk.StringVar(
+            value=str(self.initial_settings.get("max_snapshot_age_seconds", 180))
+        )
+        self.process_var = tk.BooleanVar(value=bool(self.initial_settings.get("include_process_name", True)))
+        self.title_var = tk.BooleanVar(value=bool(self.initial_settings.get("include_window_title", False)))
+        self.workspace_var = tk.BooleanVar(value=bool(self.initial_settings.get("include_workspace_changes", True)))
+        self.system_var = tk.BooleanVar(value=bool(self.initial_settings.get("include_system_health", True)))
+        self.preview_var = tk.StringVar()
+        self._controlled_widgets = []
+
+        container = ttk.Frame(master)
+        container.grid(row=0, column=0, sticky="nsew", padx=6, pady=6)
+        container.columnconfigure(0, weight=1)
+        master.columnconfigure(0, weight=1)
+
+        header = ttk.Frame(container)
+        header.grid(row=0, column=0, sticky="ew", pady=(0, 10))
+        header.columnconfigure(0, weight=1)
+
+        ttk.Label(
+            header,
+            text="Contexto local",
+            font=("Segoe UI", 12, "bold"),
+        ).grid(row=0, column=0, sticky="w")
+
+        self.enabled_check = ttk.Checkbutton(
+            header,
+            text="Activo",
+            variable=self.enabled_var,
+            command=self._sync_enabled_state,
+        )
+        self.enabled_check.grid(row=0, column=1, sticky="e", padx=(12, 0))
+
+        ttk.Label(
+            header,
+            textvariable=self.preview_var,
+            foreground=self.theme_palette["muted"],
+            wraplength=430,
+        ).grid(row=1, column=0, columnspan=2, sticky="ew", pady=(4, 0))
+
+        mode_frame = ttk.LabelFrame(container, text="Privacidad")
+        mode_frame.grid(row=1, column=0, sticky="ew", pady=(0, 10))
+        mode_frame.columnconfigure(1, weight=1)
+
+        ttk.Label(mode_frame, text="Modo").grid(row=0, column=0, sticky="w", padx=10, pady=(10, 6))
+        self.mode_combo = ttk.Combobox(
+            mode_frame,
+            textvariable=self.mode_var,
+            values=("safe", "detailed"),
+            state="readonly",
+            width=14,
+        )
+        self.mode_combo.grid(row=0, column=1, sticky="w", padx=(0, 10), pady=(10, 6))
+        self.mode_combo.bind("<<ComboboxSelected>>", lambda _event: self._sync_enabled_state())
+
+        self.process_check = ttk.Checkbutton(
+            mode_frame,
+            text="Incluir proceso en primer plano",
+            variable=self.process_var,
+            command=self._refresh_preview,
+        )
+        self.process_check.grid(row=1, column=0, columnspan=2, sticky="w", padx=10, pady=2)
+
+        self.title_check = ttk.Checkbutton(
+            mode_frame,
+            text="Incluir titulo de ventana",
+            variable=self.title_var,
+            command=self._refresh_preview,
+        )
+        self.title_check.grid(row=2, column=0, columnspan=2, sticky="w", padx=10, pady=(2, 10))
+
+        cadence = ttk.LabelFrame(container, text="Cadencia")
+        cadence.grid(row=2, column=0, sticky="ew", pady=(0, 10))
+        cadence.columnconfigure(0, weight=1)
+        cadence.columnconfigure(1, weight=1)
+
+        ttk.Label(cadence, text="Muestra cada").grid(row=0, column=0, sticky="w", padx=10, pady=(10, 2))
+        sample_row = ttk.Frame(cadence)
+        sample_row.grid(row=1, column=0, sticky="w", padx=10, pady=(0, 10))
+        self.sample_spin = ttk.Spinbox(
+            sample_row,
+            from_=5,
+            to=86400,
+            increment=5,
+            width=8,
+            textvariable=self.sample_interval_var,
+            style="Yarbis.TSpinbox",
+        )
+        self.sample_spin.pack(side="left")
+        ttk.Label(sample_row, text="s").pack(side="left", padx=(6, 0))
+
+        ttk.Label(cadence, text="Snapshot vigente").grid(row=0, column=1, sticky="w", padx=10, pady=(10, 2))
+        age_row = ttk.Frame(cadence)
+        age_row.grid(row=1, column=1, sticky="w", padx=10, pady=(0, 10))
+        self.max_age_spin = ttk.Spinbox(
+            age_row,
+            from_=15,
+            to=86400,
+            increment=15,
+            width=8,
+            textvariable=self.max_age_var,
+            style="Yarbis.TSpinbox",
+        )
+        self.max_age_spin.pack(side="left")
+        ttk.Label(age_row, text="s").pack(side="left", padx=(6, 0))
+
+        signals = ttk.LabelFrame(container, text="Senales")
+        signals.grid(row=3, column=0, sticky="ew")
+
+        self.workspace_check = ttk.Checkbutton(
+            signals,
+            text="Cambios del workspace",
+            variable=self.workspace_var,
+            command=self._refresh_preview,
+        )
+        self.workspace_check.grid(row=0, column=0, sticky="w", padx=10, pady=(10, 2))
+
+        self.system_check = ttk.Checkbutton(
+            signals,
+            text="Salud del sistema",
+            variable=self.system_var,
+            command=self._refresh_preview,
+        )
+        self.system_check.grid(row=1, column=0, sticky="w", padx=10, pady=(2, 10))
+
+        self._controlled_widgets = [
+            self.mode_combo,
+            self.sample_spin,
+            self.max_age_spin,
+            self.process_check,
+            self.title_check,
+            self.workspace_check,
+            self.system_check,
+        ]
+        for variable in (self.sample_interval_var, self.max_age_var):
+            variable.trace_add("write", lambda *_args: self._refresh_preview())
+
+        self._sync_enabled_state()
+        return self.mode_combo
+
+    @staticmethod
+    def _safe_int(value, default: int) -> int:
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return default
+
+    def _refresh_preview(self):
+        status = "Activo" if self.enabled_var.get() else "Desactivado"
+        mode = str(self.mode_var.get() or "safe").strip().lower()
+        sample = max(5, self._safe_int(self.sample_interval_var.get(), 30))
+        max_age = max(15, self._safe_int(self.max_age_var.get(), 180))
+        title_text = "titulos si" if self.title_var.get() and mode == "detailed" else "titulos no"
+        self.preview_var.set(
+            f"{status} | modo {mode} | cada {sample}s | vigente {max_age}s | {title_text}"
+        )
+
+    def _sync_enabled_state(self):
+        widget_state = "normal" if self.enabled_var.get() else "disabled"
+        for widget in getattr(self, "_controlled_widgets", []):
+            widget.configure(state=widget_state)
+
+        if self.enabled_var.get():
+            self.mode_combo.configure(state="readonly")
+            if str(self.mode_var.get()).strip().lower() != "detailed":
+                self.title_var.set(False)
+                self.title_check.configure(state="disabled")
+        self._refresh_preview()
+
+    def apply(self):
+        self.result = {
+            "enabled": self.enabled_var.get(),
+            "mode": self.mode_var.get().strip().lower() or "safe",
+            "sample_interval_seconds": self.sample_interval_var.get().strip(),
+            "max_snapshot_age_seconds": self.max_age_var.get().strip(),
+            "include_window_title": self.title_var.get(),
+            "include_process_name": self.process_var.get(),
+            "include_workspace_changes": self.workspace_var.get(),
+            "include_system_health": self.system_var.get(),
+        }
 
 
 class ServicePulseDialog(ThemedDialog):
@@ -29,6 +229,9 @@ class ServicePulseDialog(ThemedDialog):
         self.interval_minutes_var = tk.StringVar(value=str(interval_minutes))
         self.cycles_var = tk.StringVar(value=str(self.initial_settings.get("cycles", 1)))
         self.start_delay_var = tk.StringVar(value=str(self.initial_settings.get("start_delay_seconds", 60)))
+        self.model_var = tk.StringVar(
+            value=str(self.initial_settings.get("model", DEFAULT_SERVICE_PROACTIVE_MODEL) or "").strip()
+        )
         self.preview_var = tk.StringVar()
         self._controlled_widgets = []
 
@@ -108,7 +311,7 @@ class ServicePulseDialog(ThemedDialog):
         self.cycles_spin.grid(row=1, column=1, sticky="w", padx=10)
 
         startup = ttk.LabelFrame(container, text="Arranque")
-        startup.grid(row=2, column=0, sticky="ew")
+        startup.grid(row=2, column=0, sticky="ew", pady=(0, 10))
         startup.columnconfigure(0, weight=1)
 
         ttk.Label(startup, text="Espera inicial").grid(row=0, column=0, sticky="w", padx=10, pady=(10, 2))
@@ -126,13 +329,34 @@ class ServicePulseDialog(ThemedDialog):
         self.start_delay_spin.pack(side="left")
         ttk.Label(delay_row, text="s").pack(side="left", padx=(6, 0))
 
+        model_frame = ttk.LabelFrame(container, text="Modelo")
+        model_frame.grid(row=3, column=0, sticky="ew")
+        model_frame.columnconfigure(0, weight=1)
+
+        ttk.Label(model_frame, text="Modelo del pulso").grid(
+            row=0,
+            column=0,
+            sticky="w",
+            padx=10,
+            pady=(10, 2),
+        )
+        self.model_entry = ttk.Entry(model_frame, textvariable=self.model_var, width=44)
+        self.model_entry.grid(row=1, column=0, sticky="ew", padx=10)
+        ttk.Label(
+            model_frame,
+            text="Vacio = usa el modelo principal de Ollama.",
+            foreground=self.theme_palette["muted"],
+            wraplength=430,
+        ).grid(row=2, column=0, sticky="ew", padx=10, pady=(3, 10))
+
         self._controlled_widgets = [
             self.interval_spin,
             self.cycles_spin,
             self.start_delay_spin,
+            self.model_entry,
             *self.preset_buttons,
         ]
-        for variable in (self.interval_minutes_var, self.cycles_var, self.start_delay_var):
+        for variable in (self.interval_minutes_var, self.cycles_var, self.start_delay_var, self.model_var):
             variable.trace_add("write", lambda *_args: self._refresh_preview())
 
         self._sync_enabled_state()
@@ -164,10 +388,12 @@ class ServicePulseDialog(ThemedDialog):
         cycles = max(1, min(5, self._safe_int(self.cycles_var.get(), 1)))
         start_delay = max(0, self._safe_int(self.start_delay_var.get(), 60))
         status = "Activo" if self.enabled_var.get() else "Desactivado"
+        model_text = str(self.model_var.get() or "").strip() or "modelo principal"
         self.preview_var.set(
             f"{status} | {cycles} ciclo(s) cada "
             f"{self._format_duration(interval_seconds)} | "
-            f"arranque {self._format_duration(start_delay)}"
+            f"arranque {self._format_duration(start_delay)} | "
+            f"{model_text}"
         )
 
     def _sync_enabled_state(self):
@@ -183,6 +409,7 @@ class ServicePulseDialog(ThemedDialog):
             "interval_seconds": str(max(1, interval_minutes) * 60),
             "cycles": self.cycles_var.get().strip(),
             "start_delay_seconds": self.start_delay_var.get().strip(),
+            "model": self.model_var.get().strip(),
         }
 
 

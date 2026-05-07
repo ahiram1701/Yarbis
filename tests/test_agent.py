@@ -119,6 +119,29 @@ class AgentTestCase(unittest.TestCase):
         self.assertEqual(result["status"], "final")
         self.assertEqual(chat_mock.call_args.kwargs["model"], "llama3.2:3b")
 
+    def test_run_one_cycle_can_override_model_for_single_operation(self):
+        state_path = TEST_RUNTIME_DIR / "agent_model_override_state.json"
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+        final_response = SimpleNamespace(
+            message=SimpleNamespace(content="Resultado proactivo", tool_calls=[])
+        )
+
+        seeded_state = memory.normalize_state({
+            "ollama": {
+                "model": "llama3.2:3b",
+                "timeout_seconds": agent._client_timeout_seconds,
+            },
+        })
+
+        with patch.object(memory, "STATE_FILE", state_path):
+            memory.save_state(seeded_state)
+            with patch.dict(agent.os.environ, {}, clear=True):
+                with patch.object(agent.client, "chat", return_value=final_response) as chat_mock:
+                    result = agent.run_one_cycle(max_steps=1, model_override="qwen3.5:0.8b")
+
+        self.assertEqual(result["status"], "final")
+        self.assertEqual(chat_mock.call_args.kwargs["model"], "qwen3.5:0.8b")
+
     def test_builds_cloud_ollama_client_with_authorization_header(self):
         with patch.dict(agent.os.environ, {"OLLAMA_API_KEY": "test-key"}, clear=False):
             with patch.object(agent, "Client", return_value=object()) as client_cls:

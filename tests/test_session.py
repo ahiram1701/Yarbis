@@ -64,6 +64,47 @@ class SessionTestCase(unittest.TestCase):
         self.assertEqual(operation_lock_path.read_text(encoding="utf-8"), " ")
         clear_runtime_mock.assert_called_once_with()
 
+    def test_first_run_clean_slate_clears_stale_activity(self):
+        state_path = TEST_RUNTIME_DIR / "session_first_run_clean_state.json"
+        activity_path = TEST_RUNTIME_DIR / "session_first_run_activity.log"
+        events_path = TEST_RUNTIME_DIR / "session_first_run_events.jsonl"
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+        activity_path.write_text("actividad vieja", encoding="utf-8")
+        events_path.write_text('{"type":"telegram_event"}\n', encoding="utf-8")
+
+        with patch.object(memory, "STATE_FILE", state_path):
+            with patch.object(activity, "ACTIVITY_LOG_FILE", activity_path):
+                with patch.object(activity, "EVENTS_FILE", events_path):
+                    memory.save_state(memory.default_state())
+                    result = session.clear_activity_for_first_run_if_needed()
+
+        self.assertTrue(result)
+        self.assertEqual(activity_path.read_text(encoding="utf-8"), "")
+        self.assertEqual(events_path.read_text(encoding="utf-8"), "")
+
+    def test_first_run_activity_cleanup_keeps_existing_work_history(self):
+        state_path = TEST_RUNTIME_DIR / "session_first_run_keep_state.json"
+        activity_path = TEST_RUNTIME_DIR / "session_first_run_keep_activity.log"
+        events_path = TEST_RUNTIME_DIR / "session_first_run_keep_events.jsonl"
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+        activity_path.write_text("actividad importante", encoding="utf-8")
+        events_path.write_text('{"type":"telegram_event"}\n', encoding="utf-8")
+
+        seeded_state = memory.normalize_state({
+            "goal": "Objetivo activo",
+            "messages": [{"role": "user", "content": "hola"}],
+        })
+
+        with patch.object(memory, "STATE_FILE", state_path):
+            with patch.object(activity, "ACTIVITY_LOG_FILE", activity_path):
+                with patch.object(activity, "EVENTS_FILE", events_path):
+                    memory.save_state(seeded_state)
+                    result = session.clear_activity_for_first_run_if_needed()
+
+        self.assertFalse(result)
+        self.assertEqual(activity_path.read_text(encoding="utf-8"), "actividad importante")
+        self.assertEqual(events_path.read_text(encoding="utf-8"), '{"type":"telegram_event"}\n')
+
     def test_update_goal_resets_operational_context(self):
         state_path = TEST_RUNTIME_DIR / "session_goal_state.json"
         state_path.parent.mkdir(parents=True, exist_ok=True)
@@ -420,6 +461,58 @@ class SessionTestCase(unittest.TestCase):
 
         self.assertFalse(state["runtime"]["thinking"]["active"])
 
+    def test_clear_abandoned_runtime_operation_clears_dead_pid(self):
+        state_path = TEST_RUNTIME_DIR / "session_abandoned_runtime_state.json"
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+        seeded_state = memory.normalize_state({
+            "runtime": {
+                "thinking": {
+                    "active": True,
+                    "label": "Pulso proactivo",
+                    "source": "pid:999999",
+                    "started_at": "2026-05-06T12:00:00+00:00",
+                    "operation_id": "pulso-demo",
+                },
+                "stop_requested": {
+                    "active": True,
+                    "operation_id": "pulso-demo",
+                },
+            },
+        })
+
+        with patch.object(memory, "STATE_FILE", state_path):
+            memory.save_state(seeded_state)
+            with patch.object(session, "_pid_is_running", return_value=False):
+                result = session.clear_abandoned_runtime_operation()
+            state = memory.load_state()
+
+        self.assertTrue(result)
+        self.assertFalse(state["runtime"]["thinking"]["active"])
+        self.assertFalse(state["runtime"]["stop_requested"]["active"])
+
+    def test_clear_abandoned_runtime_operation_keeps_live_pid(self):
+        state_path = TEST_RUNTIME_DIR / "session_live_runtime_state.json"
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+        seeded_state = memory.normalize_state({
+            "runtime": {
+                "thinking": {
+                    "active": True,
+                    "label": "Ciclo",
+                    "source": "pid:1234",
+                    "operation_id": "ciclo-demo",
+                },
+            },
+        })
+
+        with patch.object(memory, "STATE_FILE", state_path):
+            memory.save_state(seeded_state)
+            with patch.object(session, "_pid_is_running", return_value=True):
+                result = session.clear_abandoned_runtime_operation()
+            state = memory.load_state()
+
+        self.assertFalse(result)
+        self.assertTrue(state["runtime"]["thinking"]["active"])
+
     def test_request_stop_current_operation_marks_runtime_and_cancels_ollama(self):
         state_path = TEST_RUNTIME_DIR / "session_stop_state.json"
         state_path.parent.mkdir(parents=True, exist_ok=True)
@@ -531,6 +624,7 @@ class SessionTestCase(unittest.TestCase):
                 interval_seconds=900,
                 cycles=2,
                 start_delay_seconds=30,
+                model="qwen3.5:0.8b",
             )
             settings = session.get_service_proactive_settings()
 
@@ -539,6 +633,7 @@ class SessionTestCase(unittest.TestCase):
         self.assertEqual(settings["interval_seconds"], 900)
         self.assertEqual(settings["cycles"], 2)
         self.assertEqual(settings["start_delay_seconds"], 30)
+        self.assertEqual(settings["model"], "qwen3.5:0.8b")
 
     def test_update_service_proactive_settings_rejects_invalid_values(self):
         state_path = TEST_RUNTIME_DIR / "session_service_pulse_invalid_state.json"
@@ -552,6 +647,48 @@ class SessionTestCase(unittest.TestCase):
                     interval_seconds=10,
                     cycles=1,
                     start_delay_seconds=60,
+                )
+
+    def test_update_local_context_settings_persists_configuration(self):
+        state_path = TEST_RUNTIME_DIR / "session_local_context_state.json"
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+
+        with patch.object(memory, "STATE_FILE", state_path):
+            memory.save_state(memory.default_state())
+            result = session.update_local_context_settings(
+                enabled=True,
+                mode="detailed",
+                sample_interval_seconds=15,
+                max_snapshot_age_seconds=120,
+                include_window_title=True,
+                include_process_name=False,
+                include_workspace_changes=True,
+                include_system_health=False,
+            )
+            settings = session.get_local_context_settings()
+
+        self.assertIn("Contexto local actualizado", result)
+        self.assertTrue(settings["enabled"])
+        self.assertEqual(settings["mode"], "detailed")
+        self.assertEqual(settings["sample_interval_seconds"], 15)
+        self.assertEqual(settings["max_snapshot_age_seconds"], 120)
+        self.assertTrue(settings["include_window_title"])
+        self.assertFalse(settings["include_process_name"])
+        self.assertTrue(settings["include_workspace_changes"])
+        self.assertFalse(settings["include_system_health"])
+
+    def test_update_local_context_settings_rejects_invalid_values(self):
+        state_path = TEST_RUNTIME_DIR / "session_local_context_invalid_state.json"
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+
+        with patch.object(memory, "STATE_FILE", state_path):
+            memory.save_state(memory.default_state())
+            with self.assertRaises(ValueError):
+                session.update_local_context_settings(
+                    enabled=True,
+                    mode="unknown",
+                    sample_interval_seconds=30,
+                    max_snapshot_age_seconds=180,
                 )
 
     def test_update_notification_settings_persists_ntfy_channel(self):

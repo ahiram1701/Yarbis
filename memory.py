@@ -49,6 +49,7 @@ DEFAULT_SERVICE_PROACTIVE_ENABLED = True
 DEFAULT_SERVICE_PROACTIVE_INTERVAL_SECONDS = 30 * 60
 DEFAULT_SERVICE_PROACTIVE_CYCLES = 1
 DEFAULT_SERVICE_PROACTIVE_START_DELAY_SECONDS = 60
+DEFAULT_SERVICE_PROACTIVE_MODEL = ""
 DEFAULT_OLLAMA_MODEL = "qwen3.5:2b"
 DEFAULT_OLLAMA_HOST = ""
 DEFAULT_OLLAMA_CLOUD_HOST = "https://ollama.com"
@@ -57,6 +58,7 @@ DEFAULT_OLLAMA_TIMEOUT_SECONDS = 900
 MIN_OLLAMA_TIMEOUT_SECONDS = 1
 MAX_OLLAMA_TIMEOUT_SECONDS = 24 * 60 * 60
 MAX_OLLAMA_MODEL_CHARS = 120
+MAX_SERVICE_PROACTIVE_MODEL_CHARS = MAX_OLLAMA_MODEL_CHARS
 MAX_OLLAMA_HOST_CHARS = 240
 MAX_OLLAMA_API_KEY_ENV_VAR_CHARS = 80
 MAX_OLLAMA_FALLBACK_MODELS = 8
@@ -86,6 +88,11 @@ MAX_RUNTIME_OPERATION_SOURCE_CHARS = 40
 MAX_RUNTIME_TIMESTAMP_CHARS = 80
 MAX_RUNTIME_OPERATION_ID_CHARS = 80
 MAX_RUNTIME_STOP_REASON_CHARS = 240
+DEFAULT_LOCAL_CONTEXT_MODE = "safe"
+VALID_LOCAL_CONTEXT_MODES = {"off", "safe", "detailed"}
+DEFAULT_LOCAL_CONTEXT_SAMPLE_INTERVAL_SECONDS = 30
+DEFAULT_LOCAL_CONTEXT_MAX_SNAPSHOT_AGE_SECONDS = 180
+MAX_LOCAL_CONTEXT_MODE_CHARS = 20
 
 
 def default_state():
@@ -126,6 +133,7 @@ def default_state():
                 "interval_seconds": DEFAULT_SERVICE_PROACTIVE_INTERVAL_SECONDS,
                 "cycles": DEFAULT_SERVICE_PROACTIVE_CYCLES,
                 "start_delay_seconds": DEFAULT_SERVICE_PROACTIVE_START_DELAY_SECONDS,
+                "model": DEFAULT_SERVICE_PROACTIVE_MODEL,
                 "last_pulse_at": "",
             },
         },
@@ -147,6 +155,16 @@ def default_state():
                 "source": "",
                 "reason": "",
             },
+        },
+        "local_context": {
+            "enabled": True,
+            "mode": DEFAULT_LOCAL_CONTEXT_MODE,
+            "sample_interval_seconds": DEFAULT_LOCAL_CONTEXT_SAMPLE_INTERVAL_SECONDS,
+            "max_snapshot_age_seconds": DEFAULT_LOCAL_CONTEXT_MAX_SNAPSHOT_AGE_SECONDS,
+            "include_window_title": False,
+            "include_process_name": True,
+            "include_workspace_changes": True,
+            "include_system_health": True,
         },
         "internet": {
             "mode": DEFAULT_INTERNET_MODE,
@@ -560,6 +578,13 @@ def _normalize_service(service):
             "interval_seconds": interval_seconds,
             "cycles": cycles,
             "start_delay_seconds": start_delay_seconds,
+            "model": _coerce_text(
+                proactive.get(
+                    "model",
+                    proactive_defaults.get("model", DEFAULT_SERVICE_PROACTIVE_MODEL),
+                ),
+                MAX_SERVICE_PROACTIVE_MODEL_CHARS,
+            ).strip(),
             "last_pulse_at": _coerce_text(
                 proactive.get("last_pulse_at", proactive_defaults.get("last_pulse_at", "")),
                 MAX_RUNTIME_TIMESTAMP_CHARS,
@@ -681,6 +706,77 @@ def _normalize_runtime(runtime):
         }
 
     return normalized
+
+
+def _normalize_local_context(local_context):
+    defaults = default_state()["local_context"]
+    if not isinstance(local_context, dict):
+        local_context = {}
+
+    mode = _coerce_text(
+        local_context.get("mode", defaults["mode"]),
+        MAX_LOCAL_CONTEXT_MODE_CHARS,
+    ).strip().lower()
+    if mode not in VALID_LOCAL_CONTEXT_MODES:
+        mode = defaults["mode"]
+
+    try:
+        sample_interval_seconds = max(
+            5,
+            min(
+                24 * 60 * 60,
+                int(local_context.get(
+                    "sample_interval_seconds",
+                    defaults["sample_interval_seconds"],
+                )),
+            ),
+        )
+    except (TypeError, ValueError):
+        sample_interval_seconds = defaults["sample_interval_seconds"]
+
+    try:
+        max_snapshot_age_seconds = max(
+            15,
+            min(
+                24 * 60 * 60,
+                int(local_context.get(
+                    "max_snapshot_age_seconds",
+                    defaults["max_snapshot_age_seconds"],
+                )),
+            ),
+        )
+    except (TypeError, ValueError):
+        max_snapshot_age_seconds = defaults["max_snapshot_age_seconds"]
+
+    enabled = _normalize_bool(local_context.get("enabled", defaults["enabled"]), defaults["enabled"])
+    if mode == "off":
+        enabled = False
+
+    return {
+        "enabled": enabled,
+        "mode": mode,
+        "sample_interval_seconds": sample_interval_seconds,
+        "max_snapshot_age_seconds": max_snapshot_age_seconds,
+        "include_window_title": (
+            mode == "detailed"
+            and _normalize_bool(
+                local_context.get("include_window_title", defaults["include_window_title"]),
+                defaults["include_window_title"],
+            )
+        ),
+        "include_process_name": _normalize_bool(
+            local_context.get("include_process_name", defaults["include_process_name"]),
+            defaults["include_process_name"],
+        ),
+        "include_workspace_changes": _normalize_bool(
+            local_context.get("include_workspace_changes", defaults["include_workspace_changes"]),
+            defaults["include_workspace_changes"],
+        ),
+        "include_system_health": _normalize_bool(
+            local_context.get("include_system_health", defaults["include_system_health"]),
+            defaults["include_system_health"],
+        ),
+    }
 
 
 def _normalize_domain_list(value) -> list[str]:
@@ -935,6 +1031,7 @@ def normalize_state(state):
     normalized["service"] = _normalize_service(state.get("service", {}))
     normalized["ui"] = _normalize_ui(state.get("ui", {}))
     normalized["runtime"] = _normalize_runtime(state.get("runtime", {}))
+    normalized["local_context"] = _normalize_local_context(state.get("local_context", {}))
     normalized["internet"] = _normalize_internet(state.get("internet", {}))
     normalized["self_knowledge"] = _normalize_self_knowledge(state.get("self_knowledge", {}))
     normalized["notifications"] = _normalize_notifications(state.get("notifications", {}))
@@ -1001,11 +1098,25 @@ def render_state_summary(
         (
             "Pulso proactivo: "
             f"{'activo' if normalized['service']['proactive']['enabled'] else 'desactivado'}, "
+            f"modelo={normalized['service']['proactive']['model'] or 'Ollama principal'}, "
             f"{normalized['service']['proactive']['cycles']} ciclo(s) cada "
             f"{normalized['service']['proactive']['interval_seconds']}s, "
             f"espera inicial {normalized['service']['proactive']['start_delay_seconds']}s"
         ),
     ]
+
+    local_context = normalized["local_context"]
+    local_context_status = "activo" if local_context["enabled"] else "desactivado"
+    lines.append(
+        "Contexto local: "
+        f"{local_context_status}, modo={local_context['mode']}, "
+        f"muestra cada {local_context['sample_interval_seconds']}s, "
+        f"vigencia {local_context['max_snapshot_age_seconds']}s, "
+        f"proceso={'si' if local_context['include_process_name'] else 'no'}, "
+        f"titulos={'si' if local_context['include_window_title'] else 'no'}, "
+        f"workspace={'si' if local_context['include_workspace_changes'] else 'no'}, "
+        f"sistema={'si' if local_context['include_system_health'] else 'no'}"
+    )
 
     if include_last_result:
         lines.append(
