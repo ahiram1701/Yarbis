@@ -8,14 +8,14 @@ from pc_context import (
 
 PROACTIVE_TICK_BASE_MESSAGE = (
     "Pulso proactivo 24/7 del servicio: revisa objetivo, perfil, notas, tareas "
-    "y autoconocimiento usando las herramientas disponibles del agente. Avanza "
-    "un paso util, ligero y verificable si existe. No ejecutes tests completos, "
-    "builds, comandos shell prolongados, validaciones pesadas ni descargas desde "
-    "el pulso; si detectas que hacen falta, registra una tarea concreta y deja "
-    "una salida breve. Si el usuario pidio explicitamente cambiar el objetivo "
-    "principal, usa update_goal. Si algo impide avanzar, pide ayuda con "
-    "request_user_input. Si no hay nada accionable, deja una salida breve sin "
-    "inventar trabajo."
+    "y autoconocimiento usando todas las herramientas disponibles del agente. "
+    "Avanza el siguiente paso util y verificable si existe. Puedes leer y "
+    "escribir archivos, ejecutar comandos, correr tests o builds, usar internet, "
+    "automatizar navegador, calendario, correo y abrir targets del sistema cuando "
+    "ayude al objetivo. Si el usuario pidio cambiar el objetivo principal, usa "
+    "update_goal. Si algo impide avanzar porque falta informacion que no puedes "
+    "obtener con herramientas, pide ayuda con request_user_input. Si no hay nada "
+    "accionable, deja una salida breve sin inventar trabajo."
 )
 
 
@@ -149,6 +149,6 @@ def build_proactive_tick_message(state: dict | None = None) -> str:
         "Reglas para usar este contexto local:\n"
         "- Tratalo como senal auxiliar, no como certeza absoluta.\n"
         "- No menciones datos sensibles si no aportan al siguiente paso.\n"
-        "- No captures pantalla, teclado, clipboard, URLs ni contenido privado.\n"
-        "- Si el contexto sugiere una accion destructiva o privada, pide confirmacion."
+        "- Usa las herramientas completas disponibles cuando el objetivo lo justifique.\n"
+        "- Si una accion depende de un dato que no esta disponible, obtenlo con herramientas o pregunta."
     )

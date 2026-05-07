@@ -133,11 +133,11 @@ La casilla `Iniciar con Windows` cambia el tipo de arranque del servicio entre `
 
 Estas acciones suelen requerir ejecutar Yarbis como administrador. Al instalar desde la app puedes indicar la cuenta SCM del servicio (`DOMINIO\usuario` o `.\usuario`) y su password para que el proceso de fondo corra bajo esa identidad. Si dejas cuenta y password vacios, SCM usa `LocalSystem`.
 
-La proactividad 24/7 del servicio esta activa por defecto. Tras una espera inicial, el servicio agrega un pulso de contexto al historial y ejecuta un ciclo autonomo breve. Si Yarbis necesita una decision, permiso o dato privado, registra una pregunta pendiente y notifica por los canales configurados.
+La proactividad 24/7 del servicio esta activa por defecto. Tras una espera inicial, el servicio agrega un pulso de contexto al historial y ejecuta un ciclo autonomo con acceso completo a las herramientas del agente: archivos, comandos, tests/builds, internet, navegador, calendario, correo y aperturas del sistema. Si Yarbis necesita un dato que no puede obtener con herramientas, registra una pregunta pendiente y notifica por los canales configurados.
 
 El contexto local de la PC se captura desde un helper de bandeja en la sesion interactiva del usuario, no desde SCM. Al instalar o iniciar el servicio desde la app, Yarbis crea/actualiza la tarea programada `YarbisLocalContext` para lanzar `.venv\Scripts\pythonw.exe pc_context_tray.py` al iniciar sesion. El helper sigue vivo aunque cierres la app de escritorio y solo captura cuando el servicio `Yarbis` esta activo y el contexto local esta habilitado. Si cierras sesion de Windows, el contexto interactivo se suspende hasta el siguiente inicio de sesion.
 
-En modo seguro, Yarbis registra solo senales resumidas: presencia/idle, proceso en primer plano, salud de energia/memoria/disco y cambios recientes del workspace. Los titulos de ventana estan desactivados por defecto y solo se incluyen en modo detallado. Yarbis no captura pantalla, teclado, clipboard, URLs ni contenido privado de ventanas.
+El contexto local tiene su propia configuracion. En modo seguro, Yarbis registra solo senales resumidas: presencia/idle, proceso en primer plano, salud de energia/memoria/disco y cambios recientes del workspace. Los titulos de ventana estan desactivados por defecto y solo se incluyen en modo detallado. Este modo controla el snapshot observado, no limita las herramientas disponibles para el pulso proactivo.
 
 Si el servicio se detiene mientras procesa una respuesta del usuario, esa respuesta queda en el historial. En el siguiente arranque o pulso, Yarbis detecta si el ultimo mensaje del usuario no tiene respuesta del asistente y ejecuta primero ese ciclo pendiente antes de agregar trabajo proactivo nuevo.
 
@@ -318,9 +318,11 @@ $env:YARBIS_SERVICE_PROACTIVE="1"
 $env:YARBIS_SERVICE_PROACTIVE_INTERVAL_SECONDS="1800"
 $env:YARBIS_SERVICE_PROACTIVE_CYCLES="1"
 $env:YARBIS_SERVICE_PROACTIVE_START_DELAY_SECONDS="60"
+$env:YARBIS_SERVICE_PROACTIVE_MAX_RUNTIME_SECONDS="60"
 ```
 
 Usa `YARBIS_SERVICE_PROACTIVE="0"` para dejar el servicio solo como inbox remoto y desactivar los ciclos autonomos periodicos.
+Si quieres volver temporalmente a la whitelist segura antigua, define `YARBIS_PROACTIVE_SAFE_MODE="1"` en el entorno del servicio.
 
 Notificaciones:
 

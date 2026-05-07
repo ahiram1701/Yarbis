@@ -59,7 +59,7 @@ ENV_SERVICE_PROACTIVE_MODEL = "YARBIS_SERVICE_PROACTIVE_MODEL"
 SERVICE_LOOP_SLEEP_SECONDS = 1.0
 DEFAULT_SERVICE_PROACTIVE_MAX_RUNTIME_SECONDS = 60
 MAX_PROACTIVE_OUTPUT_CHARS = 12_000
-PROACTIVE_TICK_PREFIX = "Pulso proactivo 24/7 del servicio:"
+PROACTIVE_TICK_PREFIX = PROACTIVE_TICK_BASE_MESSAGE.split(":", 1)[0] + ":"
 
 
 def _timestamp() -> str:
@@ -486,7 +486,6 @@ def _run_proactive_pulse_with_timeout(settings: dict, last_pulse_at: str) -> str
     child_env = os.environ.copy()
     child_env["YARBIS_PROACTIVE_SETTINGS_JSON"] = json.dumps(settings)
     child_env["YARBIS_PROACTIVE_LAST_PULSE_AT"] = last_pulse_at
-    child_env["YARBIS_PROACTIVE_SAFE_MODE"] = "1"
     child_env["YARBIS_OLLAMA_TIMEOUT_SECONDS"] = str(
         max(15, min(60, timeout_seconds - 5))
     )

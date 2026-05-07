@@ -103,6 +103,8 @@ class PcContextTestCase(unittest.TestCase):
         self.assertIn("Bateria baja", message)
         self.assertIn("Usuario ausente", message)
         self.assertIn("Workspace con 3 cambio(s)", message)
+        self.assertIn("todas las herramientas disponibles", message)
+        self.assertNotIn("No ejecutes tests completos", message)
 
     def test_proactive_tick_reports_disabled_context(self):
         message = proactive_context.build_proactive_tick_message({

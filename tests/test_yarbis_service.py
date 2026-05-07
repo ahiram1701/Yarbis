@@ -304,6 +304,25 @@ class YarbisServiceTestCase(unittest.TestCase):
         wrapper_mock.assert_called_once()
         self.assertEqual(wrapper_mock.call_args.args[0]["max_runtime_seconds"], 45)
 
+    def test_timeout_wrapper_uses_full_tool_access_by_default(self):
+        class FakeProcess:
+            pid = 1234
+            returncode = 0
+
+            def communicate(self, timeout=None):
+                return "Pulso completo.", ""
+
+        with patch.dict(yarbis_service.os.environ, {}, clear=True):
+            with patch.object(yarbis_service.subprocess, "Popen", return_value=FakeProcess()) as popen_mock:
+                result = yarbis_service._run_proactive_pulse_with_timeout(
+                    {"cycles": 1, "max_runtime_seconds": 15},
+                    "2026-05-06T12:00:00+00:00",
+                )
+
+        child_env = popen_mock.call_args.kwargs["env"]
+        self.assertIn("Pulso completo.", result)
+        self.assertNotIn("YARBIS_PROACTIVE_SAFE_MODE", child_env)
+
     def test_timeout_wrapper_cleans_abandoned_proactive_tick(self):
         state_path = TEST_RUNTIME_DIR / "service_timeout_state.json"
         state_path.parent.mkdir(parents=True, exist_ok=True)
