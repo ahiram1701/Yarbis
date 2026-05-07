@@ -47,6 +47,7 @@ _READINESS_CACHE = {
     "created_at": 0.0,
     "status": None,
 }
+RUNTIME_DEPENDENCY_MODULES = ("ollama", "win11toast", "pystray", "PIL")
 
 
 class ServiceLogonFailure(RuntimeError):
@@ -557,16 +558,12 @@ def readiness_status(force: bool = False) -> dict:
         ".\\scripts\\setup.ps1 puede crearlo." if not venv_ok else "",
     ))
 
-    missing_modules = [
-        module_name
-        for module_name in ("ollama", "win11toast")
-        if not _dependency_available(module_name)
-    ]
+    missing_modules = [module_name for module_name in RUNTIME_DEPENDENCY_MODULES if not _dependency_available(module_name)]
     items.append(_readiness_item(
         "dependencies",
         "Dependencias Python",
         "ok" if not missing_modules else "missing",
-        "ollama y win11toast disponibles." if not missing_modules else "Faltan: " + ", ".join(missing_modules),
+        "Dependencias Python disponibles." if not missing_modules else "Faltan: " + ", ".join(missing_modules),
         ".\\.venv\\Scripts\\python.exe -m pip install -r requirements.txt" if missing_modules else "",
     ))
 

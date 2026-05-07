@@ -18,6 +18,8 @@ EVENTS_FILE = RUNTIME_DIR / "pc_context_events.jsonl"
 
 SNAPSHOT_SCHEMA_VERSION = 1
 MAX_TEXT_CHARS = 180
+MAX_EVENTS_FILE_BYTES = 512 * 1024
+KEEP_EVENTS_FILE_BYTES = 256 * 1024
 MAX_GIT_CHANGES = 12
 MAX_RECENT_FILES = 12
 RECENT_FILE_SECONDS = 60 * 60
@@ -496,8 +498,23 @@ def append_snapshot_event(snapshot: dict) -> None:
     }
     try:
         RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
+        _trim_snapshot_events_file()
         with open(EVENTS_FILE, "a", encoding="utf-8") as file:
             file.write(json.dumps(event, ensure_ascii=False, sort_keys=True) + "\n")
+    except OSError:
+        pass
+
+
+def _trim_snapshot_events_file() -> None:
+    try:
+        if not EVENTS_FILE.exists() or EVENTS_FILE.stat().st_size <= MAX_EVENTS_FILE_BYTES:
+            return
+        with open(EVENTS_FILE, "rb") as file:
+            file.seek(max(0, EVENTS_FILE.stat().st_size - KEEP_EVENTS_FILE_BYTES))
+            data = file.read()
+        if b"\n" in data:
+            data = data.split(b"\n", 1)[1]
+        EVENTS_FILE.write_bytes(data)
     except OSError:
         pass
 

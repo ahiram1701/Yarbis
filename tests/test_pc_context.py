@@ -114,6 +114,20 @@ class PcContextTestCase(unittest.TestCase):
 
         self.assertIn("Desactivado por configuracion", message)
 
+    def test_proactive_tick_reports_missing_context_when_enabled(self):
+        state = {
+            "local_context": {
+                "enabled": True,
+                "mode": "safe",
+                "max_snapshot_age_seconds": 180,
+            }
+        }
+
+        with patch.object(proactive_context, "load_latest_snapshot", return_value=None):
+            message = proactive_context.build_proactive_tick_message(state)
+
+        self.assertIn("No hay snapshot fresco", message)
+
 
 if __name__ == "__main__":
     unittest.main()

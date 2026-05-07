@@ -45,6 +45,8 @@ Dependencias Python declaradas:
 - `ollama==0.6.1`
 - `win11toast==0.36.3`
 - `playwright>=1.45,<2`
+- `pystray>=0.19`
+- `Pillow>=10`
 
 ## Instalacion
 
@@ -100,7 +102,7 @@ La interfaz de escritorio permite:
 - activar o desactivar el servicio de fondo
 - configurar si el servicio se abre al iniciar Windows
 - configurar el pulso proactivo del servicio
-- configurar el contexto local que alimenta el pulso proactivo
+- configurar el contexto local persistente que alimenta el pulso proactivo
 - quitar el servicio de SCM
 
 Si `state.json` aun no tiene objetivo, la app abre un asistente inicial. Define objetivo,
@@ -133,7 +135,9 @@ Estas acciones suelen requerir ejecutar Yarbis como administrador. Al instalar d
 
 La proactividad 24/7 del servicio esta activa por defecto. Tras una espera inicial, el servicio agrega un pulso de contexto al historial y ejecuta un ciclo autonomo breve. Si Yarbis necesita una decision, permiso o dato privado, registra una pregunta pendiente y notifica por los canales configurados.
 
-El contexto local de la PC se captura desde la sesion interactiva de la app de escritorio, no desde SCM. Esto evita depender de que el servicio vea ventanas de usuario desde Session 0. En modo seguro, Yarbis registra solo senales resumidas: presencia/idle, proceso en primer plano, salud de energia/memoria/disco y cambios recientes del workspace. Los titulos de ventana estan desactivados por defecto y solo se incluyen en modo detallado. Yarbis no captura pantalla, teclado, clipboard, URLs ni contenido privado de ventanas.
+El contexto local de la PC se captura desde un helper de bandeja en la sesion interactiva del usuario, no desde SCM. Al instalar o iniciar el servicio desde la app, Yarbis crea/actualiza la tarea programada `YarbisLocalContext` para lanzar `.venv\Scripts\pythonw.exe pc_context_tray.py` al iniciar sesion. El helper sigue vivo aunque cierres la app de escritorio y solo captura cuando el servicio `Yarbis` esta activo y el contexto local esta habilitado. Si cierras sesion de Windows, el contexto interactivo se suspende hasta el siguiente inicio de sesion.
+
+En modo seguro, Yarbis registra solo senales resumidas: presencia/idle, proceso en primer plano, salud de energia/memoria/disco y cambios recientes del workspace. Los titulos de ventana estan desactivados por defecto y solo se incluyen en modo detallado. Yarbis no captura pantalla, teclado, clipboard, URLs ni contenido privado de ventanas.
 
 Si el servicio se detiene mientras procesa una respuesta del usuario, esa respuesta queda en el historial. En el siguiente arranque o pulso, Yarbis detecta si el ultimo mensaje del usuario no tiene respuesta del asistente y ejecuta primero ese ciclo pendiente antes de agregar trabajo proactivo nuevo.
 
@@ -476,6 +480,9 @@ Archivos no versionados:
 - `state.json.tmp`
 - `.yarbis_checkpoints/`
 - `.yarbis_runtime/`
+- `.yarbis_runtime/pc_context_helper.pid`
+- `.yarbis_runtime/pc_context_helper.stop`
+- `.yarbis_runtime/pc_context_helper.status.json`
 - `tests_runtime/`
 - `__pycache__/`
 - `.venv/`
@@ -492,6 +499,7 @@ El servicio usa `.yarbis_runtime/` para PID y log. La marca `.yarbis_runtime/ser
 - `yarbis_service.py`: loop Python de fondo ejecutado por el host del servicio
 - `service_manager.py`: inicio, parada, estado, autostart y health del servicio
 - `service_host/`: host nativo .NET que se registra ante SCM y controla el proceso Python
+- `pc_context.py`, `pc_context_tray.py`, `pc_context_runtime.py`: captura local interactiva, helper de bandeja y tarea programada
 - `memory.py`: estado persistente, defaults, normalizacion y transacciones
 - `tools.py`: herramientas internas del agente
 - `internet.py`: busqueda y lectura web segura

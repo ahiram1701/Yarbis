@@ -23,7 +23,7 @@ try {
     Write-Host "Validando imports basicos..."
     @'
 import importlib
-for name in ("ollama", "win11toast", "tkinter"):
+for name in ("ollama", "win11toast", "tkinter", "pystray", "PIL"):
     importlib.import_module(name)
 print("Dependencias Python OK.")
 '@ | & $VenvPython -

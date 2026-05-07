@@ -1,3 +1,5 @@
 ollama==0.6.1
 win11toast==0.36.3
 playwright>=1.45,<2
+pystray>=0.19
+Pillow>=10

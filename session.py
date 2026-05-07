@@ -70,6 +70,13 @@ FACTORY_RESET_RUNTIME_FILES = (
     "service.stop",
     "telegram_deferred_replies.json",
     "telegram_deferred_replies.json.tmp",
+    "pc_context_latest.json",
+    "pc_context_latest.json.tmp",
+    "pc_context_events.jsonl",
+    "pc_context_helper.pid",
+    "pc_context_helper.stop",
+    "pc_context_helper.status.json",
+    "pc_context_helper.status.json.tmp",
 )
 FACTORY_RESET_RUNTIME_DIRS = (
     "browser",

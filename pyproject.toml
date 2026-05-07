@@ -12,6 +12,8 @@ dependencies = [
   "ollama==0.6.1",
   "win11toast==0.36.3",
   "playwright>=1.45,<2",
+  "pystray>=0.19",
+  "Pillow>=10",
 ]
 
 [project.optional-dependencies]
@@ -48,6 +50,8 @@ py-modules = [
   "memory",
   "notifications",
   "pc_context",
+  "pc_context_runtime",
+  "pc_context_tray",
   "pc_context_worker",
   "power",
   "proactive_context",
