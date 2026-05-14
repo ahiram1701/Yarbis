@@ -70,6 +70,106 @@ Tambien puedes preparar una copia nueva con:
 
 El script crea `.venv` si hace falta, instala dependencias y revisa Ollama y .NET.
 
+## Actualizacion
+
+La forma recomendada de actualizar una instalacion existente es desde la app:
+
+1. Abre Yarbis.
+2. Usa `Mantenimiento` -> `Actualizar Yarbis`.
+3. Confirma el cierre de la ventana actual.
+4. Espera la ventana externa de PowerShell. Si el servicio SCM esta instalado, Windows pedira permisos de administrador.
+5. Cuando el script termine bien, Yarbis se abre de nuevo automaticamente.
+
+Tambien puedes actualizar manualmente desde PowerShell, en la carpeta del proyecto:
+
+```powershell
+.\scripts\update.ps1
+```
+
+Por defecto el actualizador usa `origin/main` y solo acepta fast-forward, para evitar merges inesperados:
+
+```powershell
+.\scripts\update.ps1 -Remote origin -Branch main
+```
+
+Si necesitas salir de una emergencia y ya validaste el cambio por otro camino, puedes omitir los checks:
+
+```powershell
+.\scripts\update.ps1 -SkipChecks
+```
+
+El boton de la app usa internamente:
+
+```powershell
+.\scripts\update.ps1 -RestartDesktop
+```
+
+Requisitos previos:
+
+- Git disponible en `PATH` y acceso al remote configurado.
+- Python disponible si `.venv` no existe todavia.
+- `.venv` creado o permiso para que el actualizador lo cree.
+- Permisos de administrador cuando el servicio SCM `Yarbis` esta instalado, porque debe detenerlo, reconfigurarlo y volverlo a iniciar.
+- .NET SDK 8 si quieres validar o recompilar el host nativo del servicio.
+
+Que conserva:
+
+- `state.json`: objetivo, historial reciente, perfil, notas, tareas, Telegram, notificaciones, modelo y configuracion local.
+- `.yarbis_runtime/`: logs, actividad, eventos y archivos operativos no versionados.
+- `.yarbis_checkpoints/`: checkpoints de autoedicion.
+- La configuracion del servicio SCM, incluida la cuenta existente; el actualizador solo refresca `binPath`, arranque automatico/manual y el host publicado.
+
+Que puede cambiar:
+
+- Codigo fuente versionado.
+- Dependencias Python instaladas en `.venv`.
+- Documentacion.
+- Host nativo publicado en `.yarbis_runtime/service_host/`.
+
+Si detecta cambios locales versionados o no versionados, el actualizador los guarda temporalmente con `git stash --include-untracked`, trae la actualizacion y luego intenta reaplicarlos con `git stash pop --index`. No descarta trabajo local automaticamente. Si al reaplicar hay conflictos, deja el arbol de Git en estado conflictivo, conserva el stash y no reinicia el servicio hasta que resuelvas los conflictos.
+
+Flujo interno del actualizador:
+
+1. Valida que la carpeta sea un repo Git.
+2. Si hay cambios locales, los guarda en un stash con nombre `yarbis-update-AAAAMMDD-HHMMSS`.
+3. Lee si el servicio SCM y el helper de contexto local estan activos.
+4. Copia `state.json` a `.yarbis_runtime/updates/state-AAAAMMDD-HHMMSS.json` si existe.
+5. Detiene el servicio y el helper si estaban corriendo.
+6. Ejecuta `git fetch` y `git merge --ff-only FETCH_HEAD`.
+7. Instala dependencias con `.venv\Scripts\python.exe -m pip install -r requirements.txt`.
+8. Ejecuta `.\scripts\check.ps1`, salvo que uses `-SkipChecks`.
+9. Reaplica el stash local con `git stash pop --index`.
+10. Si no hay conflictos, recompila/reconfigura el servicio SCM y reinicia lo que estaba activo.
+11. Imprime un resumen con commit anterior, commit remoto, commit actual, checks, dependencias, cambios locales, servicio y respaldo de estado.
+
+Recuperacion si algo falla:
+
+- Lee el error completo en la ventana de PowerShell; normalmente indica si faltan permisos, Git, Python, .NET o si hay cambios locales.
+- Si fallo por dependencias, ejecuta `.\scripts\setup.ps1` y luego repite `.\scripts\update.ps1`.
+- Si fallo al reaplicar cambios locales, revisa `git status`, resuelve conflictos y despues inicia Yarbis o el servicio de nuevo.
+- Para inspeccionar el respaldo temporal usa `git stash list`, `git stash show --stat 'stash@{N}'` y, si necesitas reaplicarlo manualmente, `git stash pop 'stash@{N}'`.
+- Si el servicio quedo detenido tras una falla posterior al cambio de codigo, abre Yarbis como administrador y usa `Servicio` -> `Iniciar servicio`, o ejecuta de nuevo el update cuando el problema este corregido.
+- Si `state.json` quedara danado, cierra Yarbis y restaura el respaldo mas reciente desde `.yarbis_runtime/updates/`.
+
+Ejemplos comunes:
+
+```powershell
+# Servicio detenido o no instalado
+.\scripts\update.ps1
+
+# Servicio instalado o activo: abre PowerShell como administrador
+.\scripts\update.ps1
+
+# Actualizar y reabrir la app al terminar
+.\scripts\update.ps1 -RestartDesktop
+
+# Actualizar desde otra rama remota
+.\scripts\update.ps1 -Remote origin -Branch feature-x
+
+# Saltar checks solo si ya sabes por que lo necesitas
+.\scripts\update.ps1 -SkipChecks
+```
+
 ## Uso rapido sin terminal
 
 Si ya tienes `.venv` y dependencias listas, puedes abrir Yarbis con doble clic:
@@ -104,6 +204,7 @@ La interfaz de escritorio permite:
 - configurar el pulso proactivo del servicio
 - configurar el contexto local persistente que alimenta el pulso proactivo
 - quitar el servicio de SCM
+- actualizar Yarbis desde GitHub con un actualizador externo seguro
 
 Si `state.json` aun no tiene objetivo, la app abre un asistente inicial. Define objetivo,
 modelo local y contexto minimo, y puede ejecutar el primer ciclo al guardar. El panel

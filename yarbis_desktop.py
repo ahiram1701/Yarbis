@@ -1,9 +1,11 @@
 import ctypes
 import sys
 import queue
+import subprocess
 import threading
 import tkinter as tk
 from datetime import datetime
+from pathlib import Path
 from tkinter import messagebox, simpledialog, ttk
 
 import activity
@@ -148,6 +150,51 @@ def _show_already_running_message():
 
 _STATE_SYNC_INTERVAL_MS = 1000
 _CONTEXT_HELPER_SYNC_MS = 10000
+_WORKSPACE_ROOT = Path(__file__).resolve().parent
+_UPDATE_SCRIPT = _WORKSPACE_ROOT / "scripts" / "update.ps1"
+
+
+def _powershell_single_quote(value: str | Path) -> str:
+    return "'" + str(value).replace("'", "''") + "'"
+
+
+def _launch_update_process(needs_admin: bool) -> None:
+    if not _UPDATE_SCRIPT.exists():
+        raise RuntimeError("No encontre scripts/update.ps1.")
+
+    update_args = [
+        "-NoExit",
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        str(_UPDATE_SCRIPT),
+        "-RestartDesktop",
+    ]
+    argument_list = "@(" + ", ".join(_powershell_single_quote(arg) for arg in update_args) + ")"
+    command = (
+        "Start-Process -FilePath 'powershell.exe' "
+        f"-ArgumentList {argument_list} "
+        f"-WorkingDirectory {_powershell_single_quote(_WORKSPACE_ROOT)}"
+    )
+    if needs_admin:
+        command += " -Verb RunAs"
+
+    subprocess.Popen(
+        [
+            "powershell.exe",
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+            command,
+        ],
+        cwd=str(_WORKSPACE_ROOT),
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+    )
 
 
 class YarbisDesktop(tk.Tk):
@@ -342,6 +389,13 @@ class YarbisDesktop(tk.Tk):
             ),
         )
         self._build_service_group(actions)
+        self._build_action_group(
+            actions,
+            "Mantenimiento",
+            (
+                {"text": "Actualizar Yarbis", "command": self._update_yarbis, "style": "Secondary.TButton"},
+            ),
+        )
         self._build_action_group(
             actions,
             "Vista",
@@ -1418,6 +1472,58 @@ class YarbisDesktop(tk.Tk):
             return
 
         self._start_background_job("Quitar servicio", self._remove_service_with_context_helper)
+
+    def _update_yarbis(self):
+        state = load_state()
+        thinking_active, thinking_label, _started_at = self._runtime_thinking_from_state(state)
+        if thinking_active:
+            self._sync_runtime_thinking(state)
+            self._show_thinking_blocked_message(thinking_label)
+            return
+
+        if self._busy:
+            messagebox.showinfo("Yarbis", "Ya hay una accion en curso. Espera a que termine.", parent=self)
+            return
+
+        try:
+            service_status = get_service_status()
+        except Exception as exc:
+            messagebox.showwarning("Yarbis", f"No pude revisar el servicio: {exc}", parent=self)
+            return
+
+        needs_admin = bool(service_status.get("installed"))
+        admin_text = (
+            "\n\nComo el servicio SCM esta instalado, Windows pedira permisos de administrador."
+            if needs_admin
+            else ""
+        )
+        should_update = messagebox.askyesno(
+            "Actualizar Yarbis",
+            (
+                "Voy a abrir una ventana externa de PowerShell para actualizar Yarbis. "
+                "Esta ventana se cerrara para que el actualizador pueda cambiar codigo y dependencias.\n\n"
+                "Si hay cambios locales, el actualizador los guardara con git stash y los reaplicara despues."
+                f"{admin_text}\n\nQuieres continuar?"
+            ),
+            parent=self,
+        )
+        if not should_update:
+            return
+
+        try:
+            _launch_update_process(needs_admin=needs_admin)
+        except Exception as exc:
+            messagebox.showwarning("Yarbis", f"No pude abrir el actualizador: {exc}", parent=self)
+            return
+
+        self.status_var.set("Actualizador iniciado en ventana externa.")
+        self._append_activity(
+            "Actualizacion",
+            "Actualizador externo iniciado. Esta ventana se cerrara y Yarbis se reabrira si termina bien.",
+        )
+        self._closing = True
+        stop_telegram_polling()
+        self.destroy()
 
     def _change_goal(self):
         dialog = MultilineTextDialog(
