@@ -10,6 +10,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from browser_automation import run_browser_automation
+from credential_store import CredentialStoreError, load_secret, save_secret
 from integrations import (
     compose_email_draft,
     create_calendar_event_file,
@@ -21,6 +22,7 @@ import memory_transfer
 from memory import (
     VALID_INTERNET_MODES,
     VALID_SEARCH_PROVIDERS,
+    VALID_SOCIAL_PLATFORMS,
     VALID_TASK_PRIORITY,
     VALID_TASK_STATUS,
     load_state,
@@ -28,6 +30,8 @@ from memory import (
     state_transaction,
 )
 from self_knowledge import render_self_knowledge_summary
+from social_oauth import SocialOAuthError, connect_social_account
+from social_publishing import SocialPublishError, facebook_assisted_url, publish_publication
 
 WORKSPACE_ROOT = Path(__file__).resolve().parent
 CHECKPOINTS_DIR = WORKSPACE_ROOT / ".yarbis_checkpoints"
@@ -1702,3 +1706,699 @@ def set_plan(plan_text: str = "") -> str:
         f"{index}. {item}" for index, item in enumerate(plan_items, start=1)
     )
     return f"Plan actualizado.\n{rendered_items}"
+
+
+def _social_settings(state: dict) -> dict:
+    return state.get("social", {}).get("settings", {})
+
+
+def _social_account_key(account: dict) -> tuple[str, str, str]:
+    return (
+        str(account.get("platform", "")).strip().lower(),
+        str(account.get("account_type", "")).strip().lower(),
+        str(account.get("external_id", "")).strip(),
+    )
+
+
+def _find_social_account(state: dict, account_id: str) -> dict | None:
+    cleaned = str(account_id).strip().lower()
+    if not cleaned:
+        return None
+    accounts = state.get("social", {}).get("accounts", [])
+    for account in accounts:
+        if str(account.get("id", "")).lower() == cleaned:
+            return account
+    matches = [
+        account for account in accounts
+        if str(account.get("id", "")).lower().startswith(cleaned)
+    ]
+    return matches[0] if len(matches) == 1 else None
+
+
+def _find_social_draft(state: dict, draft_id: str) -> dict | None:
+    cleaned = str(draft_id).strip().lower()
+    if not cleaned:
+        return None
+    drafts = state.get("social", {}).get("drafts", [])
+    for draft in drafts:
+        if str(draft.get("id", "")).lower() == cleaned:
+            return draft
+    matches = [
+        draft for draft in drafts
+        if str(draft.get("id", "")).lower().startswith(cleaned)
+    ]
+    return matches[0] if len(matches) == 1 else None
+
+
+def _find_social_publication(state: dict, publication_id: str) -> dict | None:
+    cleaned = str(publication_id).strip().lower()
+    if not cleaned:
+        return None
+    publications = state.get("social", {}).get("pending_publications", [])
+    for publication in publications:
+        if str(publication.get("id", "")).lower() == cleaned:
+            return publication
+    matches = [
+        publication for publication in publications
+        if str(publication.get("id", "")).lower().startswith(cleaned)
+    ]
+    return matches[0] if len(matches) == 1 else None
+
+
+def _body_with_hashtags(publication: dict) -> str:
+    body = str(publication.get("body", "")).strip()
+    tags = []
+    for tag in publication.get("hashtags", []):
+        cleaned = str(tag).strip()
+        if not cleaned:
+            continue
+        tags.append(cleaned if cleaned.startswith("#") else f"#{cleaned}")
+    if tags:
+        body = f"{body}\n\n{' '.join(tags)}".strip()
+    return body
+
+
+def _copy_text_to_clipboard(text: str) -> str:
+    rendered = str(text)
+    if not rendered:
+        return "No habia texto para copiar al portapapeles."
+
+    try:
+        import tkinter as tk
+
+        root = tk.Tk()
+        root.withdraw()
+        root.clipboard_clear()
+        root.clipboard_append(rendered)
+        root.update()
+        root.destroy()
+        return "Texto copiado al portapapeles."
+    except Exception:
+        if sys.platform == "win32":
+            try:
+                subprocess.run(
+                    ["clip"],
+                    input=rendered,
+                    text=True,
+                    check=True,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    timeout=5,
+                )
+                return "Texto copiado al portapapeles."
+            except Exception as exc:
+                return f"No pude copiar al portapapeles: {exc}"
+        return "No pude copiar al portapapeles en este entorno."
+
+
+def _render_social_publication_preview(publication: dict) -> str:
+    text = _body_with_hashtags(publication)
+    lines = [
+        f"[{publication['id']}] {publication['title']}",
+        f"Plataforma: {publication['platform']}",
+        f"Destino: {publication.get('target_label') or publication.get('target_account_id') or 'sin destino'}",
+        f"Estado: {publication['status']}",
+        f"Confirmacion: {publication['confirmation_phrase']}",
+    ]
+    if publication.get("scheduled_for"):
+        lines.append(f"Programado para: {publication['scheduled_for']}")
+    if publication.get("link_url"):
+        lines.append(f"Link: {publication['link_url']}")
+    if publication.get("media_url"):
+        lines.append(f"Media URL: {publication['media_url']}")
+    if publication.get("media_path"):
+        lines.append(f"Media local: {publication['media_path']}")
+    lines.append("Copy:")
+    lines.append(_preview_text(text, 1_200))
+    return "\n".join(lines)
+
+
+def social_accounts_overview() -> str:
+    """
+    Muestra cuentas sociales conectadas, drafts y publicaciones pendientes.
+
+    Returns:
+        str: Resumen de cuentas, drafts y pendientes de redes sociales.
+    """
+    state = load_state()
+    social = state.get("social", {})
+    accounts = social.get("accounts", [])
+    drafts = social.get("drafts", [])
+    pending = social.get("pending_publications", [])
+
+    lines = [
+        "Redes sociales:",
+        f"Cuentas conectadas: {len(accounts)}",
+        f"Drafts: {len(drafts)}",
+        f"Publicaciones pendientes: {len(pending)}",
+    ]
+    if accounts:
+        lines.append("Cuentas:")
+        for account in accounts:
+            mode = "asistido" if account.get("platform") == "facebook_personal" else "API"
+            lines.append(
+                f"- [{account['id']}] {account['display_name']} "
+                f"({account['account_type']}, {mode})"
+            )
+    if pending:
+        lines.append("Pendientes:")
+        for publication in pending[:10]:
+            lines.append(
+                f"- [{publication['id']}] {publication['platform']} -> "
+                f"{publication.get('target_label') or publication.get('target_account_id') or 'sin destino'}; "
+                f"confirmar con {publication['confirmation_phrase']}"
+            )
+    return "\n".join(lines)
+
+
+def start_social_oauth(
+    provider: str,
+    client_id: str,
+    client_secret: str,
+    redirect_uri: str = "",
+    scopes: str = "",
+    authorization_response_url: str = "",
+    open_browser: bool = True,
+    timeout_seconds: int = 180,
+) -> str:
+    """
+    Conecta cuentas Meta o LinkedIn mediante OAuth local.
+
+    Args:
+        provider (str): meta o linkedin.
+        client_id (str): Client/App ID de la app del proveedor.
+        client_secret (str): Client/App Secret de la app del proveedor.
+        redirect_uri (str): Callback registrado. Si se omite usa loopback local.
+        scopes (str): Scopes opcionales separados por espacios o comas.
+        authorization_response_url (str): URL de callback pegada manualmente para completar OAuth.
+        open_browser (bool): Si debe abrir el navegador local para autorizar.
+        timeout_seconds (int): Segundos para esperar el callback local.
+
+    Returns:
+        str: Resumen de conexion o instrucciones para completar OAuth.
+    """
+    state = load_state()
+    settings = _social_settings(state)
+    try:
+        result = connect_social_account(
+            provider=provider,
+            client_id=client_id,
+            client_secret=client_secret,
+            redirect_uri=redirect_uri,
+            scopes=scopes,
+            authorization_response_url=authorization_response_url,
+            open_browser=bool(open_browser),
+            timeout_seconds=int(timeout_seconds),
+            meta_graph_version=settings.get("meta_graph_version", "v24.0"),
+            linkedin_version=settings.get("linkedin_version", "202604"),
+        )
+    except (SocialOAuthError, ValueError) as exc:
+        return f"No pude conectar la cuenta social: {exc}"
+
+    if result.get("status") == "authorization_required":
+        return (
+            "Autorizacion social pendiente.\n"
+            f"URL: {result.get('authorization_url')}\n"
+            "Despues de autorizar, ejecuta de nuevo start_social_oauth con authorization_response_url."
+        )
+
+    discovered_accounts = result.get("accounts", [])
+    stored_accounts = []
+    for discovered in discovered_accounts:
+        token = str(discovered.pop("token", "")).strip()
+        token_ref = ""
+        if token:
+            try:
+                token_ref = save_secret(
+                    token,
+                    kind=f"social-{discovered.get('platform', 'account')}",
+                    metadata={
+                        "provider": str(provider).strip().lower(),
+                        "account_type": discovered.get("account_type", ""),
+                        "external_id": discovered.get("external_id", ""),
+                    },
+                )
+            except CredentialStoreError as exc:
+                return f"No pude guardar la credencial social: {exc}"
+        stored_accounts.append({
+            "id": _new_id("social-account"),
+            "platform": discovered.get("platform", ""),
+            "account_type": discovered.get("account_type", ""),
+            "display_name": discovered.get("display_name", ""),
+            "external_id": discovered.get("external_id", ""),
+            "token_ref": token_ref,
+            "scopes": discovered.get("scopes", []),
+            "connected_at": datetime.now(timezone.utc).isoformat(),
+            "expires_at": discovered.get("expires_at", ""),
+            "metadata": discovered.get("metadata", {}),
+        })
+
+    def mutate(current_state):
+        social = current_state.setdefault("social", {})
+        accounts = social.setdefault("accounts", [])
+        existing_by_key = {_social_account_key(account): account for account in accounts}
+        added = 0
+        updated = 0
+        for account in stored_accounts:
+            key = _social_account_key(account)
+            existing = existing_by_key.get(key)
+            if existing:
+                account["id"] = existing["id"]
+                existing.update(account)
+                updated += 1
+            else:
+                accounts.append(account)
+                existing_by_key[key] = account
+                added += 1
+        return added, updated
+
+    added, updated = state_transaction("start_social_oauth", mutate)
+    lines = [
+        "Cuentas sociales conectadas.",
+        f"Nuevas: {added}",
+        f"Actualizadas: {updated}",
+    ]
+    for account in stored_accounts:
+        lines.append(
+            f"- {account['display_name']} ({account['account_type']}, "
+            f"{'asistido' if account['platform'] == 'facebook_personal' else 'API'})"
+        )
+    return "\n".join(lines)
+
+
+def save_social_draft(
+    title: str,
+    platform: str,
+    body: str,
+    target_account_id: str = "",
+    link_url: str = "",
+    media_url: str = "",
+    media_path: str = "",
+    media_type: str = "",
+    alt_text: str = "",
+    hashtags: str = "",
+    scheduled_for: str = "",
+) -> str:
+    """
+    Guarda un draft de contenido para redes sociales.
+
+    Args:
+        title (str): Titulo interno del draft.
+        platform (str): facebook_page, facebook_personal, instagram o linkedin.
+        body (str): Copy principal.
+        target_account_id (str): Cuenta destino opcional.
+        link_url (str): Link asociado.
+        media_url (str): URL publica de imagen/video.
+        media_path (str): Ruta local de media cuando el proveedor lo soporte.
+        media_type (str): image, video, reel o story.
+        alt_text (str): Texto alternativo.
+        hashtags (str): Hashtags separados por coma, punto y coma o salto de linea.
+        scheduled_for (str): Fecha/hora deseada en texto ISO o natural.
+
+    Returns:
+        str: Confirmacion del draft guardado.
+    """
+    cleaned_platform = str(platform).strip().lower()
+    if cleaned_platform not in VALID_SOCIAL_PLATFORMS:
+        return "Plataforma social invalida. Usa facebook_page, facebook_personal, instagram o linkedin."
+    if not str(body).strip() and not str(link_url).strip() and not str(media_url).strip() and not str(media_path).strip():
+        return "El draft necesita copy, link o media."
+
+    draft = {
+        "id": _new_id("draft"),
+        "title": str(title).strip() or "Draft social",
+        "platform": cleaned_platform,
+        "target_account_id": str(target_account_id).strip(),
+        "body": str(body).strip(),
+        "link_url": str(link_url).strip(),
+        "media_url": str(media_url).strip(),
+        "media_path": str(media_path).strip(),
+        "media_type": str(media_type).strip().lower(),
+        "alt_text": str(alt_text).strip(),
+        "hashtags": _split_text_items(str(hashtags)),
+        "status": "draft",
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "scheduled_for": str(scheduled_for).strip(),
+        "metadata": {},
+    }
+    state_transaction("save_social_draft", lambda state: state.setdefault("social", {}).setdefault("drafts", []).append(draft))
+    return f"Draft social guardado con id {draft['id']}: {draft['title']} ({draft['platform']})"
+
+
+def list_social_drafts(status: str = "all", limit: int = 10) -> str:
+    """
+    Lista drafts sociales guardados.
+
+    Args:
+        status (str): all, draft, pending, published, failed o archived.
+        limit (int): Maximo de drafts a mostrar.
+
+    Returns:
+        str: Lista resumida de drafts.
+    """
+    state = load_state()
+    drafts = state.get("social", {}).get("drafts", [])
+    cleaned_status = str(status).strip().lower() or "all"
+    if cleaned_status != "all":
+        drafts = [draft for draft in drafts if draft.get("status") == cleaned_status]
+    if not drafts:
+        return "No hay drafts sociales que coincidan."
+    try:
+        normalized_limit = max(1, min(30, int(limit)))
+    except (TypeError, ValueError):
+        normalized_limit = 10
+    lines = []
+    for draft in reversed(drafts[-normalized_limit:]):
+        preview = _preview_text(_body_with_hashtags(draft), 220).replace("\n", " ")
+        lines.append(
+            f"[{draft['id']}] {draft['title']} "
+            f"({draft['platform']}, estado={draft['status']}): {preview}"
+        )
+    return "\n".join(lines)
+
+
+def list_social_publications(status: str = "all", limit: int = 10) -> str:
+    """
+    Lista publicaciones sociales pendientes o historicas.
+
+    Args:
+        status (str): all, pending_confirmation, published, failed o assisted_opened.
+        limit (int): Maximo de publicaciones a mostrar.
+
+    Returns:
+        str: Lista resumida de publicaciones.
+    """
+    state = load_state()
+    social = state.get("social", {})
+    publications = list(social.get("pending_publications", [])) + list(social.get("history", []))
+    cleaned_status = str(status).strip().lower() or "all"
+    if cleaned_status != "all":
+        publications = [publication for publication in publications if publication.get("status") == cleaned_status]
+    if not publications:
+        return "No hay publicaciones sociales que coincidan."
+    try:
+        normalized_limit = max(1, min(30, int(limit)))
+    except (TypeError, ValueError):
+        normalized_limit = 10
+    lines = []
+    for publication in reversed(publications[-normalized_limit:]):
+        lines.append(
+            f"[{publication['id']}] {publication['title']} "
+            f"({publication['platform']}, estado={publication['status']}) "
+            f"confirmacion={publication['confirmation_phrase']}"
+        )
+    return "\n".join(lines)
+
+
+def prepare_social_publication(
+    draft_id: str = "",
+    platform: str = "",
+    target_account_id: str = "",
+    body: str = "",
+    title: str = "",
+    link_url: str = "",
+    media_url: str = "",
+    media_path: str = "",
+    media_type: str = "",
+    alt_text: str = "",
+    hashtags: str = "",
+    scheduled_for: str = "",
+) -> str:
+    """
+    Prepara una publicacion social y deja una confirmacion pendiente.
+
+    Args:
+        draft_id (str): Draft existente opcional.
+        platform (str): Plataforma si no se usa draft.
+        target_account_id (str): Cuenta destino para publicacion por API.
+        body (str): Copy si no se usa draft.
+        title (str): Titulo interno.
+        link_url (str): Link asociado.
+        media_url (str): URL publica de media.
+        media_path (str): Ruta local de media.
+        media_type (str): image, video, reel o story.
+        alt_text (str): Texto alternativo.
+        hashtags (str): Hashtags separados por coma, punto y coma o salto de linea.
+        scheduled_for (str): Fecha/hora deseada.
+
+    Returns:
+        str: Preview y frase exacta de confirmacion.
+    """
+    state = load_state()
+    draft = _find_social_draft(state, draft_id) if str(draft_id).strip() else None
+    if str(draft_id).strip() and not draft:
+        return f"No encontre un draft social con id o prefijo: {draft_id}"
+
+    source = draft or {
+        "title": title,
+        "platform": platform,
+        "target_account_id": target_account_id,
+        "body": body,
+        "link_url": link_url,
+        "media_url": media_url,
+        "media_path": media_path,
+        "media_type": media_type,
+        "alt_text": alt_text,
+        "hashtags": _split_text_items(str(hashtags)),
+        "scheduled_for": scheduled_for,
+    }
+    cleaned_platform = str(source.get("platform", "")).strip().lower()
+    if cleaned_platform not in VALID_SOCIAL_PLATFORMS:
+        return "Plataforma social invalida. Usa facebook_page, facebook_personal, instagram o linkedin."
+
+    account = None
+    cleaned_target = str(target_account_id or source.get("target_account_id", "")).strip()
+    if cleaned_platform != "facebook_personal":
+        account = _find_social_account(state, cleaned_target)
+        if not account:
+            return "Para publicar por API necesitas indicar target_account_id de una cuenta conectada."
+        if str(account.get("platform", "")).strip().lower() != cleaned_platform:
+            return "La cuenta destino no coincide con la plataforma del draft."
+    elif cleaned_target:
+        account = _find_social_account(state, cleaned_target)
+
+    publication_id = _new_id("pub")
+    target_label = (
+        str(account.get("display_name", "")).strip()
+        if account
+        else "Facebook personal (asistido)"
+    )
+    publication = {
+        "id": publication_id,
+        "draft_id": str(draft.get("id", "") if draft else "").strip(),
+        "title": str(source.get("title", "")).strip() or "Publicacion social",
+        "platform": cleaned_platform,
+        "target_account_id": str(account.get("id", "") if account else "").strip(),
+        "target_label": target_label,
+        "body": str(source.get("body", "")).strip(),
+        "link_url": str(source.get("link_url", "")).strip(),
+        "media_url": str(source.get("media_url", "")).strip(),
+        "media_path": str(source.get("media_path", "")).strip(),
+        "media_type": str(source.get("media_type", "")).strip().lower(),
+        "alt_text": str(source.get("alt_text", "")).strip(),
+        "hashtags": list(source.get("hashtags", [])),
+        "status": "pending_confirmation",
+        "confirmation_phrase": f"PUBLICAR {publication_id}",
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "scheduled_for": str(source.get("scheduled_for", "")).strip(),
+        "published_at": "",
+        "external_post_id": "",
+        "last_error": "",
+        "metadata": {"confirmation_required": True},
+    }
+
+    if not _body_with_hashtags(publication) and not publication["link_url"] and not publication["media_url"] and not publication["media_path"]:
+        return "La publicacion necesita copy, link o media."
+
+    def mutate(current_state):
+        social = current_state.setdefault("social", {})
+        social.setdefault("pending_publications", []).append(publication)
+        if publication["draft_id"]:
+            existing_draft = _find_social_draft(current_state, publication["draft_id"])
+            if existing_draft:
+                existing_draft["status"] = "pending"
+
+    state_transaction("prepare_social_publication", mutate)
+    return (
+        "Publicacion social preparada. No se publicara sin confirmacion exacta.\n\n"
+        f"{_render_social_publication_preview(publication)}"
+    )
+
+
+def _open_assisted_publication(publication: dict, copy_to_clipboard: bool, open_browser: bool) -> str:
+    text = _body_with_hashtags(publication)
+    share_url = facebook_assisted_url(publication.get("link_url", ""))
+    lines = [
+        "Publicacion asistida para Facebook personal.",
+        "No hice ningun POST automatico ni pulse el boton final de publicar.",
+    ]
+    if copy_to_clipboard:
+        lines.append(_copy_text_to_clipboard(text))
+    if open_browser:
+        lines.append(open_system_target_impl(share_url))
+    lines.append(f"URL asistida: {share_url}")
+    return "\n".join(lines)
+
+
+def confirm_social_publication(publication_id: str, confirmation: str) -> str:
+    """
+    Publica una pieza social solo si la confirmacion exacta coincide.
+
+    Args:
+        publication_id (str): Id o prefijo unico de la publicacion preparada.
+        confirmation (str): Debe ser exactamente PUBLICAR <id>.
+
+    Returns:
+        str: Resultado de publicacion o bloqueo de seguridad.
+    """
+    state = load_state()
+    publication = _find_social_publication(state, publication_id)
+    if not publication:
+        return f"No encontre una publicacion social pendiente con id o prefijo: {publication_id}"
+
+    required = f"PUBLICAR {publication['id']}"
+    if str(confirmation).strip() != required:
+        return (
+            "Publicacion bloqueada por seguridad.\n"
+            f"Para confirmar, responde exactamente: {required}"
+        )
+
+    platform = str(publication.get("platform", "")).strip().lower()
+    if platform == "facebook_personal":
+        result = _open_assisted_publication(publication, copy_to_clipboard=True, open_browser=True)
+
+        def mark_assisted(current_state):
+            social = current_state.setdefault("social", {})
+            current_publication = _find_social_publication(current_state, publication["id"])
+            if current_publication:
+                current_publication["status"] = "assisted_opened"
+                current_publication["published_at"] = datetime.now(timezone.utc).isoformat()
+                social["pending_publications"] = [
+                    item for item in social.get("pending_publications", [])
+                    if item.get("id") != current_publication["id"]
+                ]
+                social.setdefault("history", []).append(current_publication)
+
+        state_transaction("confirm_social_publication_assisted", mark_assisted)
+        return result
+
+    account = _find_social_account(state, publication.get("target_account_id", ""))
+    if not account:
+        return "No encontre la cuenta destino para publicar."
+    token_ref = str(account.get("token_ref", "")).strip()
+    if not token_ref:
+        return "La cuenta destino no tiene credencial guardada."
+    try:
+        token = load_secret(token_ref)
+        publish_result = publish_publication(account, token, publication, _social_settings(state))
+    except (CredentialStoreError, SocialPublishError, OSError) as exc:
+        error_text = str(exc)
+
+        def mark_failed(current_state):
+            current_publication = _find_social_publication(current_state, publication["id"])
+            if current_publication:
+                current_publication["status"] = "failed"
+                current_publication["last_error"] = error_text
+
+        state_transaction("confirm_social_publication_failed", mark_failed)
+        return f"No pude publicar la pieza social: {error_text}"
+
+    external_id = str(publish_result.get("external_post_id", "")).strip()
+
+    def mark_published(current_state):
+        social = current_state.setdefault("social", {})
+        current_publication = _find_social_publication(current_state, publication["id"])
+        if current_publication:
+            current_publication["status"] = "published"
+            current_publication["published_at"] = datetime.now(timezone.utc).isoformat()
+            current_publication["external_post_id"] = external_id
+            current_publication["metadata"] = {
+                **current_publication.get("metadata", {}),
+                "provider_result": publish_result.get("platform", platform),
+            }
+            social["pending_publications"] = [
+                item for item in social.get("pending_publications", [])
+                if item.get("id") != current_publication["id"]
+            ]
+            social.setdefault("history", []).append(current_publication)
+            if current_publication.get("draft_id"):
+                existing_draft = _find_social_draft(current_state, current_publication["draft_id"])
+                if existing_draft:
+                    existing_draft["status"] = "published"
+
+    state_transaction("confirm_social_publication_published", mark_published)
+    return (
+        "Publicacion social completada.\n"
+        f"Plataforma: {platform}\n"
+        f"Id externo: {external_id or '-'}"
+    )
+
+
+def open_assisted_social_post(
+    publication_id: str = "",
+    draft_id: str = "",
+    body: str = "",
+    link_url: str = "",
+    hashtags: str = "",
+    copy_to_clipboard: bool = True,
+    open_browser: bool = True,
+) -> str:
+    """
+    Abre el flujo asistido para publicar en perfil personal de Facebook.
+
+    Args:
+        publication_id (str): Publicacion preparada opcional.
+        draft_id (str): Draft social opcional.
+        body (str): Copy directo si no se usa publicacion ni draft.
+        link_url (str): Link para Share Dialog.
+        hashtags (str): Hashtags separados por coma, punto y coma o salto de linea.
+        copy_to_clipboard (bool): Copiar copy al portapapeles.
+        open_browser (bool): Abrir Facebook o Share Dialog.
+
+    Returns:
+        str: Resultado del flujo asistido.
+    """
+    state = load_state()
+    publication = None
+    if str(publication_id).strip():
+        publication = _find_social_publication(state, publication_id)
+        if not publication:
+            return f"No encontre una publicacion social con id o prefijo: {publication_id}"
+    elif str(draft_id).strip():
+        draft = _find_social_draft(state, draft_id)
+        if not draft:
+            return f"No encontre un draft social con id o prefijo: {draft_id}"
+        publication = {
+            "id": draft["id"],
+            "title": draft["title"],
+            "platform": "facebook_personal",
+            "body": draft["body"],
+            "link_url": draft["link_url"],
+            "hashtags": draft.get("hashtags", []),
+        }
+    else:
+        publication = {
+            "id": "manual",
+            "title": "Publicacion asistida",
+            "platform": "facebook_personal",
+            "body": str(body).strip(),
+            "link_url": str(link_url).strip(),
+            "hashtags": _split_text_items(str(hashtags)),
+        }
+
+    result = _open_assisted_publication(
+        publication,
+        copy_to_clipboard=bool(copy_to_clipboard),
+        open_browser=bool(open_browser),
+    )
+
+    if str(publication_id).strip():
+        def mark_opened(current_state):
+            current_publication = _find_social_publication(current_state, publication["id"])
+            if current_publication:
+                current_publication["status"] = "assisted_opened"
+                current_publication["published_at"] = datetime.now(timezone.utc).isoformat()
+
+        state_transaction("open_assisted_social_post", mark_opened)
+
+    return result

@@ -114,6 +114,68 @@ class ProfileDialog(ThemedDialog):
         }
 
 
+class SocialOAuthDialog(ThemedDialog):
+    def __init__(self, parent):
+        super().__init__(parent, "Conectar red social")
+
+    def body(self, master):
+        self._prepare_body(master)
+        master.columnconfigure(1, weight=1)
+
+        self.provider_var = tk.StringVar(value="meta")
+        self.open_browser_var = tk.BooleanVar(value=True)
+
+        ttk.Label(master, text="Proveedor").grid(row=0, column=0, sticky="w", padx=6, pady=(6, 2))
+        self.provider_combo = ttk.Combobox(
+            master,
+            textvariable=self.provider_var,
+            values=("meta", "linkedin"),
+            state="readonly",
+            width=18,
+        )
+        self.provider_combo.grid(row=0, column=1, sticky="w", padx=6, pady=(6, 2))
+
+        ttk.Label(master, text="Client/App ID").grid(row=1, column=0, sticky="w", padx=6, pady=(8, 2))
+        self.client_id_entry = ttk.Entry(master, width=62)
+        self.client_id_entry.grid(row=1, column=1, sticky="ew", padx=6, pady=(8, 2))
+
+        ttk.Label(master, text="Client/App Secret").grid(row=2, column=0, sticky="w", padx=6, pady=(8, 2))
+        self.client_secret_entry = ttk.Entry(master, width=62, show="*")
+        self.client_secret_entry.grid(row=2, column=1, sticky="ew", padx=6, pady=(8, 2))
+
+        ttk.Label(master, text="Redirect URI opcional").grid(row=3, column=0, sticky="w", padx=6, pady=(8, 2))
+        self.redirect_entry = ttk.Entry(master, width=62)
+        self.redirect_entry.grid(row=3, column=1, sticky="ew", padx=6, pady=(8, 2))
+
+        ttk.Label(master, text="Scopes opcionales").grid(row=4, column=0, sticky="w", padx=6, pady=(8, 2))
+        self.scopes_entry = ttk.Entry(master, width=62)
+        self.scopes_entry.grid(row=4, column=1, sticky="ew", padx=6, pady=(8, 2))
+
+        ttk.Label(master, text="Callback pegado").grid(row=5, column=0, sticky="nw", padx=6, pady=(8, 2))
+        self.callback_text = tk.Text(master, width=62, height=3, wrap="word")
+        self.callback_text.grid(row=5, column=1, sticky="ew", padx=6, pady=(8, 2))
+        self._style_text_widget(self.callback_text)
+
+        ttk.Checkbutton(
+            master,
+            text="Abrir navegador para autorizar",
+            variable=self.open_browser_var,
+        ).grid(row=6, column=1, sticky="w", padx=6, pady=(8, 8))
+
+        return self.client_id_entry
+
+    def apply(self):
+        self.result = {
+            "provider": self.provider_var.get().strip(),
+            "client_id": self.client_id_entry.get().strip(),
+            "client_secret": self.client_secret_entry.get().strip(),
+            "redirect_uri": self.redirect_entry.get().strip(),
+            "scopes": self.scopes_entry.get().strip(),
+            "authorization_response_url": self.callback_text.get("1.0", "end-1c").strip(),
+            "open_browser": self.open_browser_var.get(),
+        }
+
+
 class FirstRunDialog(ThemedDialog):
     GOAL_TEMPLATES = (
         "Organizar mis tareas y avanzar el siguiente paso importante",

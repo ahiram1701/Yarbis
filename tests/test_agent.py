@@ -1,4 +1,5 @@
 import unittest
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -215,6 +216,41 @@ class AgentTestCase(unittest.TestCase):
         self.assertIn("AMD64", messages[0]["content"])
         self.assertIn("no procesador AMD", messages[0]["content"])
 
+    def test_format_local_temporal_context_uses_fixed_local_time(self):
+        fixed_now = datetime(2026, 5, 16, 3, 33, 19, tzinfo=timezone(timedelta(hours=-6)))
+
+        temporal_context = agent._format_local_temporal_context(fixed_now)
+
+        self.assertIn("Contexto temporal local:", temporal_context)
+        self.assertIn("Fecha local: 2026-05-16", temporal_context)
+        self.assertIn("Hora local: 03:33:19", temporal_context)
+        self.assertIn("Dia local: sabado", temporal_context)
+        self.assertIn("Zona horaria local: UTC-06:00", temporal_context)
+        self.assertIn("Referencia UTC: 2026-05-16T09:33:19+00:00", temporal_context)
+        self.assertIn("interpretar hoy, manana, ayer", temporal_context)
+
+    def test_build_messages_includes_local_temporal_context(self):
+        state = memory.normalize_state({"goal": "Responder con la hora correcta"})
+        fixed_context = (
+            "Contexto temporal local:\n"
+            "- Fecha local: 2026-05-16\n"
+            "- Hora local: 03:33:19\n"
+            "- Dia local: sabado\n"
+            "- Zona horaria local: UTC-06:00\n"
+            "- Referencia UTC: 2026-05-16T09:33:19+00:00\n"
+            "- Usa esta fecha y hora local para interpretar hoy, manana, ayer y horarios del usuario.\n"
+            "- Los timestamps UTC del estado, eventos o autoconocimiento son solo referencias internas; "
+            "no los trates como hora local del usuario."
+        )
+
+        with patch.object(agent, "_format_local_temporal_context", return_value=fixed_context):
+            messages = agent.build_messages(state)
+
+        self.assertIn("Contexto temporal local:", messages[1]["content"])
+        self.assertIn("Fecha local: 2026-05-16", messages[1]["content"])
+        self.assertIn("Zona horaria local: UTC-06:00", messages[1]["content"])
+        self.assertIn("Contexto actual del agente:", messages[1]["content"])
+
     def test_run_one_cycle_does_not_address_unknown_user_as_yarbis(self):
         state_path = TEST_RUNTIME_DIR / "agent_identity_guard_state.json"
         state_path.parent.mkdir(parents=True, exist_ok=True)
@@ -274,6 +310,13 @@ class AgentTestCase(unittest.TestCase):
         self.assertIn("list_memory_backups", agent.available_functions)
         self.assertIn("inspect_memory_backup", agent.available_functions)
         self.assertIn("import_memory_backup", agent.available_functions)
+        self.assertIn("social_accounts_overview", agent.available_functions)
+        self.assertIn("start_social_oauth", agent.available_functions)
+        self.assertIn("save_social_draft", agent.available_functions)
+        self.assertIn("list_social_drafts", agent.available_functions)
+        self.assertIn("prepare_social_publication", agent.available_functions)
+        self.assertIn("confirm_social_publication", agent.available_functions)
+        self.assertIn("open_assisted_social_post", agent.available_functions)
 
     def test_run_one_cycle_persists_cycle_before_tools(self):
         state_path = TEST_RUNTIME_DIR / "agent_tool_cycle_state.json"

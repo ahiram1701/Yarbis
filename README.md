@@ -24,6 +24,8 @@ Yarbis ya funciona como agente personal local:
 - puede ejecutar comandos del sistema con timeout y salida acotada
 - puede automatizar un navegador real con Playwright para navegar, hacer clicks, completar formularios, leer texto y tomar capturas
 - puede crear eventos `.ics`, preparar correos `mailto:` y abrir rutas/URLs con manejadores locales
+- puede preparar contenido para redes sociales, guardar drafts, conectar cuentas Meta/LinkedIn por OAuth local y publicar en Facebook Pages, Instagram profesional o LinkedIn con confirmacion explicita
+- puede asistir publicaciones en perfil personal de Facebook copiando el texto y abriendo Facebook o Share Dialog, sin publicar automaticamente
 - puede restaurar checkpoints y ejecutar tests del proyecto
 - ejecuta un autoanalisis de identidad, codigo fuente, sistema operativo y hardware al arrancar
 - puede recibir y responder mensajes por Telegram cuando ese canal esta configurado
@@ -208,6 +210,7 @@ La interfaz de escritorio permite:
 - revisar estado y actividad
 - alternar tema claro/oscuro
 - configurar y probar notificaciones
+- conectar cuentas sociales y revisar publicaciones pendientes
 - activar o desactivar el servicio de fondo
 - configurar si el servicio se abre al iniciar Windows
 - configurar el pulso proactivo del servicio
@@ -552,6 +555,11 @@ Yarbis expone al modelo estas herramientas:
 - `create_calendar_event`: genera archivos `.ics` y puede abrirlos con la app de calendario predeterminada
 - `compose_email`: abre o prepara borradores `mailto:` con el cliente de correo predeterminado
 - `open_system_target`: abre rutas, URLs o URIs con el manejador predeterminado del sistema
+- `social_accounts_overview`: resume cuentas sociales, drafts y publicaciones pendientes
+- `start_social_oauth`: conecta cuentas Meta o LinkedIn mediante OAuth local o callback pegado
+- `save_social_draft` y `list_social_drafts`: gestionan drafts de contenido social
+- `prepare_social_publication`, `list_social_publications` y `confirm_social_publication`: preparan, revisan y publican piezas sociales con confirmacion exacta `PUBLICAR <id>`
+- `open_assisted_social_post`: copia el copy y abre Facebook/Share Dialog para publicacion asistida en perfil personal
 
 ## Autoedicion segura
 
@@ -645,6 +653,9 @@ El servicio usa `.yarbis_runtime/` para PID y log. La marca `.yarbis_runtime/ser
 - `telegram_format.py`: formato compartido de respuestas Telegram
 - `intent_text.py`: normalizacion compartida de intenciones
 - `secrets_redaction.py`: redaccion de tokens en logs, eventos y errores
+- `credential_store.py`: almacen local de credenciales cifradas para tokens sociales
+- `social_oauth.py`: OAuth local y descubrimiento de cuentas Meta/LinkedIn
+- `social_publishing.py`: adaptadores de publicacion Meta, Instagram y LinkedIn
 - `activity.py`: actividad legible y eventos JSONL
 - `power.py`: apagado, reinicio y cancelacion de acciones de energia de Windows
 - `self_knowledge.py`: autoanalisis local
@@ -687,3 +698,4 @@ Ruff esta configurado solo con reglas seguras iniciales.
 - Telegram procesa mensajes de texto, no adjuntos.
 - La automatizacion de navegador requiere Playwright y un navegador Chromium/Edge disponible.
 - Calendario y correo se integran con archivos `.ics`, `mailto:` y manejadores locales; no leen buzones ni calendarios cloud por OAuth.
+- La publicacion social real requiere apps, permisos y tokens validos del proveedor. Perfil personal de Facebook solo se maneja con publicacion asistida; Yarbis no publica automaticamente en perfiles personales.

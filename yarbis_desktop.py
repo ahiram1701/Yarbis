@@ -38,6 +38,8 @@ from session import (
     factory_reset_yarbis,
     import_memory_backup_text,
     inspect_memory_backup_text,
+    list_social_publications_text,
+    open_assisted_social_post_text,
     request_stop_current_operation,
     run_auto_with_output,
     run_cycle_with_output,
@@ -45,6 +47,8 @@ from session import (
     save_note_text,
     send_test_notification,
     submit_user_reply,
+    social_accounts_overview_text,
+    start_social_oauth_text,
     update_local_context_settings,
     update_notification_settings,
     update_goal,
@@ -74,6 +78,7 @@ from ui_dialogs import (
     NoteDialog,
     NotesDialog,
     ProfileDialog,
+    SocialOAuthDialog,
     TaskDialog,
 )
 from ui_settings_dialogs import (
@@ -398,6 +403,17 @@ class YarbisDesktop(tk.Tk):
             (
                 {"text": "Notificaciones", "command": self._edit_notifications},
                 {"text": "Probar notificacion", "command": self._send_test_notification},
+            ),
+        )
+        self._build_action_group(
+            actions,
+            "Redes sociales",
+            (
+                {"text": "Conectar cuenta", "command": self._connect_social_account},
+                {"text": "Ver cuentas", "command": self._show_social_accounts},
+                {"text": "Ver pendientes", "command": self._show_social_publications},
+                {"text": "Copiar confirmacion", "command": self._copy_social_confirmation},
+                {"text": "Abrir asistido", "command": self._open_assisted_social_post},
             ),
         )
         self._build_service_group(actions)
@@ -1340,6 +1356,90 @@ class YarbisDesktop(tk.Tk):
 
     def _send_test_notification(self):
         self._start_background_job("Prueba de notificacion", send_test_notification)
+
+    def _connect_social_account(self):
+        dialog = SocialOAuthDialog(self)
+        if dialog.result is None:
+            return
+
+        missing = [
+            label
+            for label, value in (
+                ("Client/App ID", dialog.result.get("client_id")),
+                ("Client/App Secret", dialog.result.get("client_secret")),
+            )
+            if not str(value or "").strip()
+        ]
+        if missing:
+            messagebox.showwarning("Yarbis", "Faltan datos: " + ", ".join(missing), parent=self)
+            return
+
+        self._start_background_job(
+            "Conectar red social",
+            start_social_oauth_text,
+            **dialog.result,
+        )
+
+    def _show_social_accounts(self):
+        self._append_activity("Redes sociales", social_accounts_overview_text())
+        self.refresh_state_view()
+
+    def _show_social_publications(self):
+        self._append_activity("Publicaciones sociales", list_social_publications_text(status="all", limit=15))
+        self.refresh_state_view()
+
+    def _copy_social_confirmation(self):
+        publication_id = simpledialog.askstring(
+            "Copiar confirmacion",
+            "Id de publicacion pendiente:",
+            parent=self,
+        )
+        if publication_id is None:
+            return
+        cleaned_id = publication_id.strip().lower()
+        if not cleaned_id:
+            messagebox.showinfo("Yarbis", "Indica un id de publicacion pendiente.", parent=self)
+            return
+
+        state = load_state()
+        matches = [
+            publication
+            for publication in state.get("social", {}).get("pending_publications", [])
+            if publication.get("id", "").lower() == cleaned_id
+            or publication.get("id", "").lower().startswith(cleaned_id)
+        ]
+        if len(matches) != 1:
+            messagebox.showwarning(
+                "Yarbis",
+                "No encontre una publicacion pendiente unica con ese id.",
+                parent=self,
+            )
+            return
+
+        phrase = matches[0].get("confirmation_phrase", f"PUBLICAR {matches[0]['id']}")
+        self.clipboard_clear()
+        self.clipboard_append(phrase)
+        self.update()
+        self._append_activity("Redes sociales", f"Confirmacion copiada: {phrase}")
+
+    def _open_assisted_social_post(self):
+        publication_id = simpledialog.askstring(
+            "Abrir asistido",
+            "Id de publicacion pendiente o draft:",
+            parent=self,
+        )
+        if publication_id is None:
+            return
+        cleaned_id = publication_id.strip()
+        if not cleaned_id:
+            messagebox.showinfo("Yarbis", "Indica un id de publicacion o draft.", parent=self)
+            return
+        self._start_background_job(
+            "Facebook asistido",
+            open_assisted_social_post_text,
+            publication_id="" if cleaned_id.lower().startswith("draft") else cleaned_id,
+            draft_id=cleaned_id if cleaned_id.lower().startswith("draft") else "",
+        )
 
     @staticmethod
     def _install_and_start_service(start_auto: bool, account_name: str = "", password: str = "") -> str:

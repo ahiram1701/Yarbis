@@ -57,7 +57,11 @@ from tools import (
     inspect_memory_backup,
     list_memory_backups,
     list_notes,
+    list_social_publications,
+    open_assisted_social_post,
     save_note,
+    social_accounts_overview,
+    start_social_oauth,
     update_goal as update_goal_tool,
     update_profile,
 )
@@ -1052,6 +1056,42 @@ def import_memory_backup_text(path_or_id: str, mode: str = "replace") -> str:
 def add_task_text(title: str, details: str = "", priority: str = "media") -> str:
     with SESSION_LOCK:
         return add_task(title=title, details=details, priority=priority or "media")
+
+
+def social_accounts_overview_text() -> str:
+    with SESSION_LOCK:
+        return social_accounts_overview()
+
+
+def start_social_oauth_text(
+    provider: str,
+    client_id: str,
+    client_secret: str,
+    redirect_uri: str = "",
+    scopes: str = "",
+    authorization_response_url: str = "",
+    open_browser: bool = True,
+    timeout_seconds: int = 180,
+) -> str:
+    return start_social_oauth(
+        provider=provider,
+        client_id=client_id,
+        client_secret=client_secret,
+        redirect_uri=redirect_uri,
+        scopes=scopes,
+        authorization_response_url=authorization_response_url,
+        open_browser=open_browser,
+        timeout_seconds=timeout_seconds,
+    )
+
+
+def list_social_publications_text(status: str = "all", limit: int = 10) -> str:
+    with SESSION_LOCK:
+        return list_social_publications(status=status, limit=limit)
+
+
+def open_assisted_social_post_text(publication_id: str = "", draft_id: str = "") -> str:
+    return open_assisted_social_post(publication_id=publication_id, draft_id=draft_id)
 
 
 def _normalize_command_text(text: str) -> str:

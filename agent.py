@@ -4,6 +4,7 @@ import re
 import sys
 import threading
 from collections.abc import Mapping
+from datetime import datetime, timezone
 from urllib.parse import urlparse
 
 from ollama import Client
@@ -50,7 +51,15 @@ from tools import (
     save_note,
     set_plan,
     self_overview,
+    confirm_social_publication,
     inspect_memory_backup,
+    list_social_drafts,
+    list_social_publications,
+    open_assisted_social_post,
+    prepare_social_publication,
+    save_social_draft,
+    social_accounts_overview,
+    start_social_oauth,
     update_goal,
     update_internet_settings,
     update_profile,
@@ -75,6 +84,49 @@ NON_ACTIONABLE_RETRY_MESSAGE = (
 )
 MAX_NON_ACTIONABLE_RETRIES = 1
 _CANCEL_WATCH_INTERVAL_SECONDS = 0.25
+_SPANISH_WEEKDAYS = (
+    "lunes",
+    "martes",
+    "miercoles",
+    "jueves",
+    "viernes",
+    "sabado",
+    "domingo",
+)
+
+
+def _format_utc_offset(moment: datetime) -> str:
+    offset = moment.utcoffset()
+    if offset is None:
+        return "UTC"
+
+    total_minutes = int(offset.total_seconds() / 60)
+    sign = "+" if total_minutes >= 0 else "-"
+    total_minutes = abs(total_minutes)
+    hours, minutes = divmod(total_minutes, 60)
+    return f"UTC{sign}{hours:02d}:{minutes:02d}"
+
+
+def _format_local_temporal_context(now: datetime | None = None) -> str:
+    local_now = (now or datetime.now()).astimezone()
+    weekday = _SPANISH_WEEKDAYS[local_now.weekday()]
+    utc_now = local_now.astimezone(timezone.utc)
+    tz_name = local_now.tzname()
+    timezone_text = _format_utc_offset(local_now)
+    if tz_name:
+        timezone_text = f"{timezone_text} ({tz_name})"
+
+    return (
+        "Contexto temporal local:\n"
+        f"- Fecha local: {local_now.date().isoformat()}\n"
+        f"- Hora local: {local_now.strftime('%H:%M:%S')}\n"
+        f"- Dia local: {weekday}\n"
+        f"- Zona horaria local: {timezone_text}\n"
+        f"- Referencia UTC: {utc_now.isoformat(timespec='seconds')}\n"
+        "- Usa esta fecha y hora local para interpretar hoy, manana, ayer y horarios del usuario.\n"
+        "- Los timestamps UTC del estado, eventos o autoconocimiento son solo referencias internas; "
+        "no los trates como hora local del usuario."
+    )
 
 
 def _get_env_int(name: str, default: int) -> int:
@@ -198,6 +250,14 @@ tool_definitions = [
     compose_email,
     open_system_target,
     self_overview,
+    social_accounts_overview,
+    start_social_oauth,
+    save_social_draft,
+    list_social_drafts,
+    list_social_publications,
+    prepare_social_publication,
+    confirm_social_publication,
+    open_assisted_social_post,
 ]
 
 available_functions = {
@@ -233,6 +293,14 @@ available_functions = {
     "compose_email": compose_email,
     "open_system_target": open_system_target,
     "self_overview": self_overview,
+    "social_accounts_overview": social_accounts_overview,
+    "start_social_oauth": start_social_oauth,
+    "save_social_draft": save_social_draft,
+    "list_social_drafts": list_social_drafts,
+    "list_social_publications": list_social_publications,
+    "prepare_social_publication": prepare_social_publication,
+    "confirm_social_publication": confirm_social_publication,
+    "open_assisted_social_post": open_assisted_social_post,
 }
 
 PROACTIVE_SAFE_TOOL_NAMES = {
@@ -251,6 +319,11 @@ PROACTIVE_SAFE_TOOL_NAMES = {
     "list_memory_backups",
     "inspect_memory_backup",
     "self_overview",
+    "social_accounts_overview",
+    "save_social_draft",
+    "list_social_drafts",
+    "list_social_publications",
+    "prepare_social_publication",
 }
 
 ACTION_PROOF_TOOL_NAMES = {
@@ -274,6 +347,11 @@ ACTION_PROOF_TOOL_NAMES = {
     "create_calendar_event",
     "compose_email",
     "open_system_target",
+    "start_social_oauth",
+    "save_social_draft",
+    "prepare_social_publication",
+    "confirm_social_publication",
+    "open_assisted_social_post",
 }
 
 TOOL_FAILURE_PREFIXES = (
@@ -530,6 +608,9 @@ Reglas:
 - Si falta un dato clave para avanzar bien (por ejemplo nicho, audiencia, tono, archivo exacto, formato o criterio de exito), no lo inventes.
 - Si falta informacion publica, verificable o reciente, prioriza `web_search`, `fetch_web_page` o `browser_automation` segun haga falta antes de preguntarle al usuario.
 - Usa `request_user_input` solo cuando falte contexto privado, preferencias, decisiones, archivos concretos o criterios que el usuario debe definir.
+- Para creacion de contenido en redes sociales, aterriza nicho, audiencia, objetivo, plataforma, tono, oferta/CTA y restricciones de marca antes de producir piezas definitivas. Puedes crear briefs, calendarios, drafts, captions, guiones, hashtags y publicaciones pendientes con las tools sociales.
+- Nunca publiques en redes sociales sin confirmacion exacta del usuario usando `PUBLICAR <id>` y la tool `confirm_social_publication`. Para perfil personal de Facebook usa solo flujo asistido con `open_assisted_social_post`; no intentes publicar automaticamente ni simular el click final.
+- Facebook Pages, Instagram profesional y LinkedIn pueden publicarse por API si hay cuentas conectadas. Perfil personal de Facebook no usa Graph API para publicar; prepara el copy, copia al portapapeles y abre Facebook o Share Dialog para que el usuario haga el click final.
 - Respeta la politica de internet visible en el estado. Si el usuario pide cambiarla, usa `update_internet_settings`.
 - Cuando necesites una respuesta del usuario, usa `request_user_input` con una sola pregunta clara y concreta, explica brevemente por que falta ese dato y detente. No sigas produciendo contenido que dependa de esa respuesta.
 - No uses el autoconocimiento como saludo ni como relleno. No te presentes con listas de capacidades salvo que el usuario pregunte que puedes hacer.
@@ -590,6 +671,7 @@ def build_messages(state):
         include_last_result=False,
     )
     self_summary = render_self_knowledge_summary()
+    temporal_context = _format_local_temporal_context()
 
     messages = [
         {"role": "system", "content": SYSTEM_PROMPT.strip()},
@@ -597,6 +679,7 @@ def build_messages(state):
             "role": "system",
             "content": (
                 f"{memory_contract}\n\n"
+                f"{temporal_context}\n\n"
                 f"Contexto actual del agente:\n{state_summary}\n\n"
                 f"Autoconocimiento de Yarbis:\n{self_summary}"
             ),

@@ -93,6 +93,26 @@ VALID_LOCAL_CONTEXT_MODES = {"off", "safe", "detailed"}
 DEFAULT_LOCAL_CONTEXT_SAMPLE_INTERVAL_SECONDS = 30
 DEFAULT_LOCAL_CONTEXT_MAX_SNAPSHOT_AGE_SECONDS = 180
 MAX_LOCAL_CONTEXT_MODE_CHARS = 20
+DEFAULT_META_GRAPH_VERSION = "v24.0"
+DEFAULT_LINKEDIN_VERSION = "202604"
+VALID_SOCIAL_PLATFORMS = {
+    "facebook_page",
+    "facebook_personal",
+    "instagram",
+    "linkedin",
+}
+VALID_SOCIAL_ACCOUNT_TYPES = {
+    "facebook_page",
+    "facebook_personal",
+    "instagram_professional",
+    "linkedin_member",
+    "linkedin_organization",
+}
+VALID_SOCIAL_DRAFT_STATUS = {"draft", "pending", "published", "failed", "archived"}
+VALID_SOCIAL_PUBLICATION_STATUS = {"pending_confirmation", "published", "failed", "assisted_opened"}
+MAX_SOCIAL_ITEMS = 80
+MAX_SOCIAL_TEXT_CHARS = 8_000
+MAX_SOCIAL_METADATA_CHARS = 2_000
 
 
 def default_state():
@@ -205,6 +225,17 @@ def default_state():
                     "requested_at": "",
                 },
             },
+        },
+        "social": {
+            "settings": {
+                "meta_graph_version": DEFAULT_META_GRAPH_VERSION,
+                "linkedin_version": DEFAULT_LINKEDIN_VERSION,
+                "require_confirmation": True,
+            },
+            "accounts": [],
+            "drafts": [],
+            "pending_publications": [],
+            "history": [],
         },
     }
 
@@ -1004,6 +1035,219 @@ def _normalize_notifications(notifications):
     }
 
 
+def _normalize_metadata(value, limit: int = MAX_SOCIAL_METADATA_CHARS) -> dict:
+    if not isinstance(value, dict):
+        return {}
+
+    try:
+        rendered = json.dumps(value, ensure_ascii=True, sort_keys=True)
+    except (TypeError, ValueError):
+        return {}
+
+    if len(rendered) > limit:
+        return {"summary": rendered[:limit]}
+
+    return value
+
+
+def _normalize_social_settings(settings):
+    defaults = default_state()["social"]["settings"]
+    if not isinstance(settings, dict):
+        settings = {}
+
+    meta_graph_version = _coerce_text(
+        settings.get("meta_graph_version", defaults["meta_graph_version"]),
+        20,
+    ).strip()
+    if not re.fullmatch(r"v\d+\.\d+", meta_graph_version):
+        meta_graph_version = defaults["meta_graph_version"]
+
+    linkedin_version = _coerce_text(
+        settings.get("linkedin_version", defaults["linkedin_version"]),
+        20,
+    ).strip()
+    if not re.fullmatch(r"\d{6}", linkedin_version):
+        linkedin_version = defaults["linkedin_version"]
+
+    return {
+        "meta_graph_version": meta_graph_version,
+        "linkedin_version": linkedin_version,
+        "require_confirmation": True,
+    }
+
+
+def _normalize_social_platform(value: str, default: str = "facebook_page") -> str:
+    platform = str(value).strip().lower()
+    return platform if platform in VALID_SOCIAL_PLATFORMS else default
+
+
+def _normalize_social_account(account):
+    if not isinstance(account, dict):
+        return None
+
+    account_id = _coerce_text(
+        account.get("id") or _fallback_id("social-account", account.get("display_name", "")),
+        64,
+    ).strip()
+    account_type = str(account.get("account_type", "facebook_page")).strip().lower()
+    if account_type not in VALID_SOCIAL_ACCOUNT_TYPES:
+        return None
+
+    default_platform_by_account_type = {
+        "facebook_page": "facebook_page",
+        "facebook_personal": "facebook_personal",
+        "instagram_professional": "instagram",
+        "linkedin_member": "linkedin",
+        "linkedin_organization": "linkedin",
+    }
+    platform = _normalize_social_platform(
+        account.get("platform", default_platform_by_account_type.get(account_type, "facebook_page"))
+    )
+    display_name = _coerce_text(account.get("display_name", ""), 160).strip()
+    external_id = _coerce_text(account.get("external_id", ""), 160).strip()
+    token_ref = _coerce_text(account.get("token_ref", ""), 160).strip()
+
+    if not account_id or not display_name:
+        return None
+
+    return {
+        "id": account_id,
+        "platform": platform,
+        "account_type": account_type,
+        "display_name": display_name,
+        "external_id": external_id,
+        "token_ref": token_ref,
+        "scopes": _normalize_string_list(account.get("scopes", []), 40, 80),
+        "connected_at": _coerce_text(account.get("connected_at", ""), 80).strip(),
+        "expires_at": _coerce_text(account.get("expires_at", ""), 80).strip(),
+        "metadata": _normalize_metadata(account.get("metadata", {})),
+    }
+
+
+def _normalize_social_draft(draft):
+    if not isinstance(draft, dict):
+        return None
+
+    title = _coerce_text(draft.get("title", ""), 180).strip()
+    body = _coerce_text(draft.get("body", ""), MAX_SOCIAL_TEXT_CHARS).strip()
+    if not title and not body:
+        return None
+
+    status = str(draft.get("status", "draft")).strip().lower()
+    if status not in VALID_SOCIAL_DRAFT_STATUS:
+        status = "draft"
+
+    return {
+        "id": _coerce_text(draft.get("id") or _fallback_id("draft", title or body), 64).strip(),
+        "title": title or "Draft social",
+        "platform": _normalize_social_platform(draft.get("platform", "facebook_page")),
+        "target_account_id": _coerce_text(draft.get("target_account_id", ""), 64).strip(),
+        "body": body,
+        "link_url": _coerce_text(draft.get("link_url", ""), 500).strip(),
+        "media_url": _coerce_text(draft.get("media_url", ""), 500).strip(),
+        "media_path": _coerce_text(draft.get("media_path", ""), 500).strip(),
+        "media_type": _coerce_text(draft.get("media_type", ""), 40).strip().lower(),
+        "alt_text": _coerce_text(draft.get("alt_text", ""), 500).strip(),
+        "hashtags": _normalize_string_list(draft.get("hashtags", []), 40, 80),
+        "status": status,
+        "created_at": _coerce_text(draft.get("created_at", ""), 80).strip(),
+        "scheduled_for": _coerce_text(draft.get("scheduled_for", ""), 80).strip(),
+        "metadata": _normalize_metadata(draft.get("metadata", {})),
+    }
+
+
+def _normalize_social_publication(publication):
+    if not isinstance(publication, dict):
+        return None
+
+    title = _coerce_text(publication.get("title", ""), 180).strip()
+    body = _coerce_text(publication.get("body", ""), MAX_SOCIAL_TEXT_CHARS).strip()
+    platform = _normalize_social_platform(publication.get("platform", "facebook_page"))
+    publication_id = _coerce_text(
+        publication.get("id") or _fallback_id("pub", title or body or platform),
+        64,
+    ).strip()
+    if not publication_id or (not body and not publication.get("link_url") and not publication.get("media_url")):
+        return None
+
+    status = str(publication.get("status", "pending_confirmation")).strip().lower()
+    if status not in VALID_SOCIAL_PUBLICATION_STATUS:
+        status = "pending_confirmation"
+
+    return {
+        "id": publication_id,
+        "draft_id": _coerce_text(publication.get("draft_id", ""), 64).strip(),
+        "title": title or "Publicacion social",
+        "platform": platform,
+        "target_account_id": _coerce_text(publication.get("target_account_id", ""), 64).strip(),
+        "target_label": _coerce_text(publication.get("target_label", ""), 180).strip(),
+        "body": body,
+        "link_url": _coerce_text(publication.get("link_url", ""), 500).strip(),
+        "media_url": _coerce_text(publication.get("media_url", ""), 500).strip(),
+        "media_path": _coerce_text(publication.get("media_path", ""), 500).strip(),
+        "media_type": _coerce_text(publication.get("media_type", ""), 40).strip().lower(),
+        "alt_text": _coerce_text(publication.get("alt_text", ""), 500).strip(),
+        "hashtags": _normalize_string_list(publication.get("hashtags", []), 40, 80),
+        "status": status,
+        "confirmation_phrase": _coerce_text(
+            publication.get("confirmation_phrase", f"PUBLICAR {publication_id}"),
+            100,
+        ).strip() or f"PUBLICAR {publication_id}",
+        "created_at": _coerce_text(publication.get("created_at", ""), 80).strip(),
+        "scheduled_for": _coerce_text(publication.get("scheduled_for", ""), 80).strip(),
+        "published_at": _coerce_text(publication.get("published_at", ""), 80).strip(),
+        "external_post_id": _coerce_text(publication.get("external_post_id", ""), 200).strip(),
+        "last_error": _coerce_text(publication.get("last_error", ""), 600).strip(),
+        "metadata": _normalize_metadata(publication.get("metadata", {})),
+    }
+
+
+def _normalize_social(social):
+    defaults = default_state()["social"]
+    if not isinstance(social, dict):
+        social = {}
+
+    accounts = []
+    for account in social.get("accounts", []):
+        normalized_account = _normalize_social_account(account)
+        if normalized_account:
+            accounts.append(normalized_account)
+            if len(accounts) >= MAX_SOCIAL_ITEMS:
+                break
+
+    drafts = []
+    for draft in social.get("drafts", []):
+        normalized_draft = _normalize_social_draft(draft)
+        if normalized_draft:
+            drafts.append(normalized_draft)
+            if len(drafts) >= MAX_SOCIAL_ITEMS:
+                break
+
+    pending_publications = []
+    for publication in social.get("pending_publications", []):
+        normalized_publication = _normalize_social_publication(publication)
+        if normalized_publication:
+            pending_publications.append(normalized_publication)
+            if len(pending_publications) >= MAX_SOCIAL_ITEMS:
+                break
+
+    history = []
+    for publication in social.get("history", []):
+        normalized_publication = _normalize_social_publication(publication)
+        if normalized_publication:
+            history.append(normalized_publication)
+            if len(history) >= MAX_SOCIAL_ITEMS:
+                break
+
+    return {
+        "settings": _normalize_social_settings(social.get("settings", defaults["settings"])),
+        "accounts": accounts,
+        "drafts": drafts,
+        "pending_publications": pending_publications,
+        "history": history,
+    }
+
+
 def normalize_state(state):
     normalized = default_state()
 
@@ -1035,6 +1279,7 @@ def normalize_state(state):
     normalized["internet"] = _normalize_internet(state.get("internet", {}))
     normalized["self_knowledge"] = _normalize_self_knowledge(state.get("self_knowledge", {}))
     normalized["notifications"] = _normalize_notifications(state.get("notifications", {}))
+    normalized["social"] = _normalize_social(state.get("social", {}))
 
     raw_messages = state.get("messages", [])
     if isinstance(raw_messages, list):
@@ -1195,6 +1440,28 @@ def render_state_summary(
             "Internet bloqueado para: "
             + ", ".join(internet_settings["blocked_domains"])
         )
+
+    social = normalized["social"]
+    pending_social = [
+        publication
+        for publication in social["pending_publications"]
+        if publication["status"] == "pending_confirmation"
+    ]
+    lines.append(
+        "Redes sociales: "
+        f"{len(social['accounts'])} cuenta(s), "
+        f"{len(social['drafts'])} draft(s), "
+        f"{len(pending_social)} pendiente(s) de confirmacion, "
+        f"Meta={social['settings']['meta_graph_version']}, "
+        f"LinkedIn={social['settings']['linkedin_version']}"
+    )
+    if pending_social:
+        for publication in pending_social[:3]:
+            lines.append(
+                f"- Pendiente social [{publication['id']}]: "
+                f"{publication['platform']} -> {publication['target_label'] or publication['target_account_id'] or 'sin destino'}; "
+                f"confirmar con {publication['confirmation_phrase']}"
+            )
 
     self_knowledge = normalized["self_knowledge"]
     if self_knowledge["last_analyzed_at"]:
