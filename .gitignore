@@ -7,6 +7,7 @@ state.json.tmp
 *.log
 tests_runtime/
 .yarbis_checkpoints/
+.yarbis_memory_backups/
 .yarbis_runtime/
 *.egg-info/
 service_host/bin/

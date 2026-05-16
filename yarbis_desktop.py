@@ -6,7 +6,7 @@ import threading
 import tkinter as tk
 from datetime import datetime
 from pathlib import Path
-from tkinter import messagebox, simpledialog, ttk
+from tkinter import filedialog, messagebox, simpledialog, ttk
 
 import activity
 from memory import (
@@ -27,6 +27,7 @@ from pc_context_runtime import (
 from session import (
     add_task_text,
     clear_activity_for_first_run_if_needed,
+    create_memory_backup_text,
     get_local_context_settings,
     get_notification_settings,
     get_ollama_settings,
@@ -35,6 +36,8 @@ from session import (
     get_ui_theme,
     has_pending_user_question,
     factory_reset_yarbis,
+    import_memory_backup_text,
+    inspect_memory_backup_text,
     request_stop_current_operation,
     run_auto_with_output,
     run_cycle_with_output,
@@ -66,6 +69,7 @@ from service_manager import (
 from telegram_inbox import start_telegram_polling, stop_telegram_polling
 from ui_dialogs import (
     FirstRunDialog,
+    MemoryImportModeDialog,
     MultilineTextDialog,
     NoteDialog,
     NotesDialog,
@@ -378,6 +382,14 @@ class YarbisDesktop(tk.Tk):
                 {"text": "Editar perfil", "command": self._edit_profile},
                 {"text": "Ver notas", "command": self._manage_notes},
                 {"text": "Crear tarea", "command": self._create_task},
+            ),
+        )
+        self._build_action_group(
+            actions,
+            "Memoria",
+            (
+                {"text": "Respaldar memoria", "command": self._backup_memory},
+                {"text": "Trasplantar memoria", "command": self._import_memory},
             ),
         )
         self._build_action_group(
@@ -1569,6 +1581,91 @@ class YarbisDesktop(tk.Tk):
         if dialog.result:
             self._append_activity("Notas", dialog.result)
         self.refresh_state_view()
+
+    def _memory_backups_dir(self) -> Path:
+        return Path(__file__).resolve().parent / ".yarbis_memory_backups"
+
+    def _backup_memory(self):
+        if self._busy:
+            messagebox.showinfo("Yarbis", "Ya hay una accion en curso. Espera a que termine.", parent=self)
+            return
+
+        backups_dir = self._memory_backups_dir()
+        backups_dir.mkdir(parents=True, exist_ok=True)
+        target_path = filedialog.asksaveasfilename(
+            parent=self,
+            title="Guardar respaldo de memoria",
+            initialdir=str(backups_dir),
+            defaultextension=".json",
+            filetypes=(
+                ("Respaldos de memoria Yarbis", "*.json"),
+                ("Todos los archivos", "*.*"),
+            ),
+        )
+        if not target_path:
+            return
+
+        include_secrets = messagebox.askyesno(
+            "Secretos en respaldo",
+            (
+                "Quieres incluir tokens persistidos de ntfy y Telegram?\n\n"
+                "Elige No para crear un respaldo portable con secretos redactados."
+            ),
+            parent=self,
+        )
+        result = create_memory_backup_text(
+            path=target_path,
+            include_secrets=include_secrets,
+        )
+        self._append_activity("Respaldo de memoria", result)
+        self.refresh_state_view()
+        messagebox.showinfo("Yarbis", result, parent=self)
+
+    def _import_memory(self):
+        if self._busy:
+            messagebox.showinfo("Yarbis", "Ya hay una accion en curso. Espera a que termine.", parent=self)
+            return
+
+        backups_dir = self._memory_backups_dir()
+        backups_dir.mkdir(parents=True, exist_ok=True)
+        source_path = filedialog.askopenfilename(
+            parent=self,
+            title="Seleccionar respaldo de memoria",
+            initialdir=str(backups_dir),
+            filetypes=(
+                ("Respaldos de memoria Yarbis", "*.json"),
+                ("Todos los archivos", "*.*"),
+            ),
+        )
+        if not source_path:
+            return
+
+        summary = inspect_memory_backup_text(source_path)
+        if not summary.startswith("Respaldo de memoria."):
+            messagebox.showwarning("Yarbis", summary, parent=self)
+            return
+
+        dialog = MemoryImportModeDialog(self, backup_summary=summary)
+        if dialog.result is None:
+            return
+
+        mode = dialog.result
+        if mode == "replace":
+            should_import = messagebox.askyesno(
+                "Confirmar trasplante",
+                (
+                    "Esto reemplazara la memoria actual despues de crear un respaldo local previo. "
+                    "Quieres continuar?"
+                ),
+                parent=self,
+            )
+            if not should_import:
+                return
+
+        result = import_memory_backup_text(source_path, mode=mode)
+        self._append_activity("Trasplante de memoria", result)
+        self.refresh_state_view()
+        messagebox.showinfo("Yarbis", result, parent=self)
 
     def _create_task(self):
         dialog = TaskDialog(self, "Crear tarea")

@@ -50,8 +50,12 @@ from notifications import (
 from self_knowledge import render_self_knowledge_summary
 from tools import (
     add_task,
+    create_memory_backup,
     delete_note,
     get_note,
+    import_memory_backup,
+    inspect_memory_backup,
+    list_memory_backups,
     list_notes,
     save_note,
     update_goal as update_goal_tool,
@@ -1023,6 +1027,26 @@ def get_note_text(identifier: str) -> str:
 def delete_note_text(identifier: str) -> str:
     with SESSION_LOCK:
         return delete_note(identifier=identifier)
+
+
+def create_memory_backup_text(path: str = "", include_secrets: bool = False) -> str:
+    with SESSION_LOCK:
+        return create_memory_backup(path=path, include_secrets=include_secrets)
+
+
+def list_memory_backups_text(limit: int = 10) -> str:
+    with SESSION_LOCK:
+        return list_memory_backups(limit=limit)
+
+
+def inspect_memory_backup_text(path_or_id: str) -> str:
+    with SESSION_LOCK:
+        return inspect_memory_backup(path_or_id=path_or_id)
+
+
+def import_memory_backup_text(path_or_id: str, mode: str = "replace") -> str:
+    with SESSION_LOCK:
+        return import_memory_backup(path_or_id=path_or_id, mode=mode)
 
 
 def add_task_text(title: str, details: str = "", priority: str = "media") -> str:

@@ -117,6 +117,7 @@ Que conserva:
 - `state.json`: objetivo, historial reciente, perfil, notas, tareas, Telegram, notificaciones, modelo y configuracion local.
 - `.yarbis_runtime/`: logs, actividad, eventos y archivos operativos no versionados.
 - `.yarbis_checkpoints/`: checkpoints de autoedicion.
+- `.yarbis_memory_backups/`: paquetes portables de respaldo y trasplante de memoria.
 - La configuracion del servicio SCM, incluida la cuenta existente; el actualizador solo refresca `binPath`, arranque automatico/manual y el host publicado.
 
 Que puede cambiar:
@@ -497,6 +498,28 @@ Puedes pedir cambios en lenguaje natural, por ejemplo:
 
 Internamente el agente usa `update_internet_settings`, `web_search`, `fetch_web_page` y, cuando hace falta una sesion real con clicks, formularios o capturas, `browser_automation`.
 
+## Respaldo y trasplante de memoria
+
+Yarbis puede crear paquetes portables de memoria a partir de `state.json`. Por defecto se guardan en `.yarbis_memory_backups/` y quedan fuera de git.
+
+Formato del paquete:
+
+- `format`: identificador del respaldo de memoria de Yarbis
+- `schema_version`: version del formato
+- `id` y `created_at`: identificador y fecha UTC
+- `options`: opciones usadas al crear el respaldo
+- `redacted_paths`: campos sensibles omitidos
+- `state`: estado normalizado listo para importar
+
+Los respaldos redactan por defecto `notifications.ntfy.token`, `notifications.telegram.bot_token` y `notifications.telegram.pending_power_confirmation.token`. Usa `include_secrets=True` solo si necesitas un clon completo y vas a proteger el archivo resultante.
+
+Para trasplantar memoria hay dos modos:
+
+- `replace`: crea primero un respaldo local del estado actual y luego sustituye `state.json`. Si el respaldo origen tenia secretos redactados, conserva los secretos actuales del destino.
+- `merge`: crea primero un respaldo local y fusiona perfil, notas, tareas, mensajes, plan y autoconocimiento sin reemplazar configuracion local como Ollama, internet, notificaciones, UI, servicio o contexto local.
+
+Desde la app de escritorio usa `Memoria` -> `Respaldar memoria` o `Memoria` -> `Trasplantar memoria`. Desde lenguaje natural, el agente usa `create_memory_backup`, `list_memory_backups`, `inspect_memory_backup` e `import_memory_backup`.
+
 ## Tools internas
 
 Yarbis expone al modelo estas herramientas:
@@ -509,6 +532,7 @@ Yarbis expone al modelo estas herramientas:
 - `save_note` y `list_notes`: memoria persistente
 - `add_task`, `list_tasks` y `update_task_status`: backlog de trabajo
 - `set_plan`: plan actual
+- `create_memory_backup`, `list_memory_backups`, `inspect_memory_backup` e `import_memory_backup`: respaldo y trasplante de memoria
 - `list_files` y `read_text_file`: lectura de rutas del workspace o del filesystem local
 - `write_text_file`: escritura con checkpoint y diff
 - `list_checkpoints` y `restore_checkpoint`: recuperacion de cambios
@@ -543,6 +567,7 @@ Rutas del workspace protegidas contra escritura desde tools:
 - `.venv`
 - `__pycache__`
 - `.yarbis_checkpoints`
+- `.yarbis_memory_backups`
 - `state.json`
 
 Rutas omitidas del listado de archivos:
@@ -552,6 +577,7 @@ Rutas omitidas del listado de archivos:
 - `__pycache__`
 - `tests_runtime`
 - `.yarbis_checkpoints`
+- `.yarbis_memory_backups`
 
 ## Autoconocimiento local
 

@@ -17,6 +17,7 @@ from integrations import (
 )
 from internet import fetch_web_page as fetch_public_web_page
 from internet import search_web as search_public_web
+import memory_transfer
 from memory import (
     VALID_INTERNET_MODES,
     VALID_SEARCH_PROVIDERS,
@@ -43,12 +44,14 @@ IGNORED_LISTING_NAMES = {
     "__pycache__",
     "tests_runtime",
     ".yarbis_checkpoints",
+    ".yarbis_memory_backups",
 }
 PROTECTED_WRITE_ROOT_NAMES = {
     ".git",
     ".venv",
     "__pycache__",
     ".yarbis_checkpoints",
+    ".yarbis_memory_backups",
 }
 PROTECTED_WRITE_PATHS = {"state.json"}
 CLEAR_VALUE = "[clear]"
@@ -126,6 +129,14 @@ def _bounded_diff_lines(diff_lines: list[str]) -> list[str]:
 
 def _new_id(prefix: str) -> str:
     return f"{prefix}-{uuid4().hex[:8]}"
+
+
+def _coerce_bool(value) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    return str(value).strip().lower() in {"1", "true", "yes", "si", "s", "on"}
 
 
 def _new_checkpoint_id() -> str:
@@ -480,6 +491,132 @@ def restore_checkpoint(checkpoint_id: str) -> str:
         f"Checkpoint usado: {metadata.get('id')}\n"
         f"Archivo: {metadata.get('target_path')}\n"
         "Siguiente paso recomendado: ejecuta `run_project_tests` para validar el estado restaurado."
+    )
+
+
+def _format_memory_backup_counts(counts: dict) -> str:
+    return (
+        f"mensajes={counts.get('messages', 0)}, "
+        f"notas={counts.get('notes', 0)}, "
+        f"tareas={counts.get('tasks', 0)}, "
+        f"plan={counts.get('plan_items', 0)}"
+    )
+
+
+def create_memory_backup(path: str = "", include_secrets: bool = False) -> str:
+    """
+    Crea un respaldo portable de la memoria persistente de Yarbis.
+
+    Args:
+        path (str): Ruta destino opcional. Si se omite, usa .yarbis_memory_backups.
+        include_secrets (bool): Si True, incluye tokens persistidos en state.json.
+
+    Returns:
+        str: Resumen del respaldo creado.
+    """
+    try:
+        backup = memory_transfer.create_backup(
+            path=path,
+            include_secrets=_coerce_bool(include_secrets),
+        )
+    except memory_transfer.MemoryTransferError as exc:
+        return str(exc)
+
+    secret_status = "incluidos" if backup["include_secrets"] else "redactados"
+    redacted = ", ".join(backup["redacted_paths"]) if backup["redacted_paths"] else "ninguno"
+    return (
+        "Respaldo de memoria creado.\n"
+        f"Id: {backup['id']}\n"
+        f"Archivo: {backup['path']}\n"
+        f"Fecha: {backup['created_at']}\n"
+        f"Secretos: {secret_status}\n"
+        f"Campos redactados: {redacted}\n"
+        f"Contenido: {_format_memory_backup_counts(backup['counts'])}"
+    )
+
+
+def list_memory_backups(limit: int = 10) -> str:
+    """
+    Lista respaldos de memoria disponibles en .yarbis_memory_backups.
+
+    Args:
+        limit (int): Maximo de respaldos a mostrar.
+
+    Returns:
+        str: Listado resumido de respaldos.
+    """
+    backups = memory_transfer.list_backups(limit=limit)
+    if not backups:
+        return "No hay respaldos de memoria guardados."
+
+    lines = []
+    for backup in backups:
+        secret_status = "con secretos" if backup["include_secrets"] else "redactado"
+        lines.append(
+            f"[{backup['id']}] {backup['created_at']} "
+            f"({secret_status}; {_format_memory_backup_counts(backup['counts'])}) "
+            f"{backup['path']}"
+        )
+    return "\n".join(lines)
+
+
+def inspect_memory_backup(path_or_id: str) -> str:
+    """
+    Inspecciona la metadata de un respaldo de memoria sin importarlo.
+
+    Args:
+        path_or_id (str): Ruta, nombre o prefijo unico del respaldo.
+
+    Returns:
+        str: Resumen seguro del respaldo.
+    """
+    try:
+        backup = memory_transfer.inspect_backup(path_or_id)
+    except memory_transfer.MemoryTransferError as exc:
+        return str(exc)
+
+    secret_status = "incluidos" if backup["include_secrets"] else "redactados"
+    redacted = ", ".join(backup["redacted_paths"]) if backup["redacted_paths"] else "ninguno"
+    return (
+        "Respaldo de memoria.\n"
+        f"Id: {backup['id']}\n"
+        f"Archivo: {backup['path']}\n"
+        f"Fecha: {backup['created_at']}\n"
+        f"Objetivo: {backup['goal'] or '-'}\n"
+        f"Perfil: {backup['profile_name'] or '-'}\n"
+        f"Secretos: {secret_status}\n"
+        f"Campos redactados: {redacted}\n"
+        f"Contenido: {_format_memory_backup_counts(backup['counts'])}"
+    )
+
+
+def import_memory_backup(path_or_id: str, mode: str = "replace") -> str:
+    """
+    Trasplanta un respaldo de memoria sobre esta instalacion.
+
+    Args:
+        path_or_id (str): Ruta, nombre o prefijo unico del respaldo.
+        mode (str): replace para sustituir o merge para fusionar recuerdos.
+
+    Returns:
+        str: Resultado de la importacion y ruta del respaldo de seguridad previo.
+    """
+    try:
+        result = memory_transfer.import_backup(path_or_id, mode=mode)
+    except memory_transfer.MemoryTransferError as exc:
+        return str(exc)
+
+    mode_label = "reemplazo" if result["mode"] == "replace" else "fusion"
+    redacted = ", ".join(result["redacted_paths"]) if result["redacted_paths"] else "ninguno"
+    safety_backup = result["safety_backup"]
+    return (
+        "Trasplante de memoria completado.\n"
+        f"Modo: {mode_label}\n"
+        f"Respaldo importado: {result['source_id']}\n"
+        f"Archivo origen: {result['source_path']}\n"
+        f"Respaldo previo local: {safety_backup['path']}\n"
+        f"Campos redactados preservados desde destino: {redacted}\n"
+        f"Contenido importado: {_format_memory_backup_counts(result['counts'])}"
     )
 
 

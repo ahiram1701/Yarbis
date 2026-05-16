@@ -270,6 +270,10 @@ class AgentTestCase(unittest.TestCase):
         self.assertIn("create_calendar_event", agent.available_functions)
         self.assertIn("compose_email", agent.available_functions)
         self.assertIn("open_system_target", agent.available_functions)
+        self.assertIn("create_memory_backup", agent.available_functions)
+        self.assertIn("list_memory_backups", agent.available_functions)
+        self.assertIn("inspect_memory_backup", agent.available_functions)
+        self.assertIn("import_memory_backup", agent.available_functions)
 
     def test_run_one_cycle_persists_cycle_before_tools(self):
         state_path = TEST_RUNTIME_DIR / "agent_tool_cycle_state.json"

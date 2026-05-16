@@ -463,6 +463,63 @@ class NotesDialog(ThemedDialog):
         self.result = "\n".join(self.activity_messages).strip()
 
 
+class MemoryImportModeDialog(ThemedDialog):
+    MODE_LABELS = {
+        "Reemplazar memoria": "replace",
+        "Fusionar recuerdos": "merge",
+    }
+
+    def __init__(self, parent, backup_summary: str):
+        self.backup_summary = backup_summary
+        super().__init__(parent, "Trasplantar memoria")
+
+    def body(self, master):
+        self._prepare_body(master)
+        master.columnconfigure(0, weight=1)
+
+        ttk.Label(master, text="Respaldo seleccionado").grid(
+            row=0,
+            column=0,
+            sticky="w",
+            padx=6,
+            pady=(6, 2),
+        )
+        self.summary_text = tk.Text(master, width=72, height=9, wrap="word")
+        self.summary_text.grid(row=1, column=0, sticky="ew", padx=6)
+        self._style_text_widget(self.summary_text)
+        self.summary_text.insert("1.0", self.backup_summary)
+        self.summary_text.configure(state="disabled")
+
+        ttk.Label(master, text="Modo de trasplante").grid(
+            row=2,
+            column=0,
+            sticky="w",
+            padx=6,
+            pady=(10, 2),
+        )
+        self.mode_combo = ttk.Combobox(
+            master,
+            values=tuple(self.MODE_LABELS.keys()),
+            state="readonly",
+            width=28,
+        )
+        self.mode_combo.grid(row=3, column=0, sticky="w", padx=6, pady=(0, 6))
+        self.mode_combo.set("Reemplazar memoria")
+
+        ttk.Label(
+            master,
+            text=(
+                "Reemplazar crea un respaldo local previo y sustituye state.json. "
+                "Fusionar conserva configuracion local y combina perfil, notas, tareas, mensajes y plan."
+            ),
+            wraplength=520,
+        ).grid(row=4, column=0, sticky="ew", padx=6, pady=(0, 6))
+        return self.mode_combo
+
+    def apply(self):
+        self.result = self.MODE_LABELS.get(self.mode_combo.get(), "replace")
+
+
 class TaskDialog(ThemedDialog):
     def body(self, master):
         self._prepare_body(master)
