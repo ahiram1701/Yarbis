@@ -16,6 +16,7 @@ $RuntimeDir = Join-Path $RepoRoot ".yarbis_runtime"
 $UpdateBackupDir = Join-Path $RuntimeDir "updates"
 $StateFile = Join-Path $RepoRoot "state.json"
 $ServiceName = "Yarbis"
+$DefaultSourceRepo = "C:\DEV\Github\yarbis"
 
 $serviceWasInstalled = $false
 $serviceWasRunning = $false
@@ -32,34 +33,131 @@ $stashMessage = ""
 $stashSummary = "sin cambios locales"
 $stashConflict = $false
 $stashPopAttempted = $false
+$resolvedFetchSource = ""
+$resolvedFetchLabel = ""
 
 function Write-Step([string]$Message) {
     Write-Host ""
     Write-Host "==> $Message" -ForegroundColor Cyan
 }
 
+function Invoke-NativeCapture([string]$FilePath, [string[]]$Arguments) {
+    $previousErrorActionPreference = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = "Continue"
+        $output = & $FilePath @Arguments 2>&1
+        $nativeExitCode = $LASTEXITCODE
+    }
+    finally {
+        $ErrorActionPreference = $previousErrorActionPreference
+    }
+
+    return [pscustomobject]@{
+        ExitCode = $nativeExitCode
+        Output = @($output)
+    }
+}
+
 function Invoke-CommandChecked([string]$FilePath, [string[]]$Arguments, [string]$Action) {
     Write-Host ("> " + $FilePath + " " + ($Arguments -join " "))
-    & $FilePath @Arguments
-    if ($LASTEXITCODE -ne 0) {
-        throw "$Action fallo con exit=$LASTEXITCODE."
+    $result = Invoke-NativeCapture -FilePath $FilePath -Arguments $Arguments
+    if ($result.Output) {
+        $result.Output | ForEach-Object { Write-Host $_ }
+    }
+    if ($result.ExitCode -ne 0) {
+        throw "$Action fallo con exit=$($result.ExitCode)."
     }
 }
 
 function Invoke-GitOutput([string[]]$Arguments, [string]$Action) {
-    $output = & git -C $RepoRoot @Arguments 2>&1
-    if ($LASTEXITCODE -ne 0) {
-        throw "$Action fallo.`n$($output -join "`n")"
+    $gitArguments = @("-C", $RepoRoot) + @($Arguments)
+    $result = Invoke-NativeCapture -FilePath "git" -Arguments $gitArguments
+    if ($result.ExitCode -ne 0) {
+        throw "$Action fallo.`n$($result.Output -join "`n")"
     }
-    return ($output -join "`n").Trim()
+    return ($result.Output -join "`n").Trim()
+}
+
+function Get-GitRemoteUrl([string]$RepositoryRoot, [string]$RemoteName) {
+    $result = Invoke-NativeCapture -FilePath "git" -Arguments @("-C", $RepositoryRoot, "remote", "get-url", $RemoteName)
+    if ($result.ExitCode -ne 0) {
+        return ""
+    }
+    return ($result.Output -join "`n").Trim()
+}
+
+function Resolve-UpdateSource {
+    $directRemoteUrl = Get-GitRemoteUrl $RepoRoot $Remote
+    if ($directRemoteUrl) {
+        $script:resolvedFetchSource = $Remote
+        $script:resolvedFetchLabel = "$Remote ($directRemoteUrl)"
+        return
+    }
+
+    $candidates = @()
+    if ($env:YARBIS_UPDATE_SOURCE) {
+        $candidates += [string]$env:YARBIS_UPDATE_SOURCE
+    }
+    if ($Remote -and $Remote -ne "origin") {
+        $candidates += $Remote
+    }
+    if ((Test-Path -LiteralPath $DefaultSourceRepo) -and ((Resolve-Path -LiteralPath $DefaultSourceRepo).Path -ne (Resolve-Path -LiteralPath $RepoRoot).Path)) {
+        $candidates += $DefaultSourceRepo
+    }
+
+    foreach ($candidate in $candidates) {
+        $cleaned = [string]$candidate
+        if (-not $cleaned.Trim()) {
+            continue
+        }
+
+        if (Test-Path -LiteralPath $cleaned) {
+            $candidateRoot = (Resolve-Path -LiteralPath $cleaned).Path
+            $candidateRemoteUrl = Get-GitRemoteUrl $candidateRoot "origin"
+            if ($candidateRemoteUrl) {
+                $script:resolvedFetchSource = $candidateRemoteUrl
+                $script:resolvedFetchLabel = "$candidateRemoteUrl (origin de $candidateRoot)"
+                return
+            }
+
+            if (Test-Path -LiteralPath (Join-Path $candidateRoot ".git")) {
+                $script:resolvedFetchSource = $candidateRoot
+                $script:resolvedFetchLabel = $candidateRoot
+                return
+            }
+        }
+        else {
+            $script:resolvedFetchSource = $cleaned
+            $script:resolvedFetchLabel = $cleaned
+            return
+        }
+    }
+
+    throw (
+        "No encontre la fuente de actualizacion '$Remote'. " +
+        "Configura un remote con `git remote add origin URL`, usa `-Remote URL_O_RUTA`, " +
+        "o define YARBIS_UPDATE_SOURCE."
+    )
+}
+
+function Test-UpdateSource {
+    Write-Step "Validando fuente de actualizacion"
+    Write-Host "Fuente: $resolvedFetchLabel"
+    $result = Invoke-NativeCapture -FilePath "git" -Arguments @("-C", $RepoRoot, "ls-remote", $resolvedFetchSource, $Branch)
+    if ($result.ExitCode -ne 0) {
+        throw "No pude leer $Branch desde $resolvedFetchLabel.`n$($result.Output -join "`n")"
+    }
+    if (-not ($result.Output -join "").Trim()) {
+        throw "La fuente $resolvedFetchLabel no publico la rama '$Branch'."
+    }
 }
 
 function Get-GitStatusLines {
-    $output = & git -C $RepoRoot status --porcelain 2>&1
-    if ($LASTEXITCODE -ne 0) {
-        throw "No pude revisar cambios locales.`n$($output -join "`n")"
+    $result = Invoke-NativeCapture -FilePath "git" -Arguments @("-C", $RepoRoot, "status", "--porcelain")
+    if ($result.ExitCode -ne 0) {
+        throw "No pude revisar cambios locales.`n$($result.Output -join "`n")"
     }
-    return @($output | Where-Object { [string]$_ })
+    return @($result.Output | Where-Object { [string]$_ })
 }
 
 function Save-LocalChangesForUpdate {
@@ -84,10 +182,11 @@ function Save-LocalChangesForUpdate {
         $script:stashMessage
     ) "guardar cambios locales en stash"
 
-    $stashEntries = @(& git -C $RepoRoot stash list --format="%gd`t%s" 2>&1)
-    if ($LASTEXITCODE -ne 0) {
-        throw "No pude leer la lista de stash.`n$($stashEntries -join "`n")"
+    $stashListResult = Invoke-NativeCapture -FilePath "git" -Arguments @("-C", $RepoRoot, "stash", "list", "--format=%gd`t%s")
+    if ($stashListResult.ExitCode -ne 0) {
+        throw "No pude leer la lista de stash.`n$($stashListResult.Output -join "`n")"
     }
+    $stashEntries = @($stashListResult.Output)
     $matchingEntry = $stashEntries | Where-Object { $_ -like "*$($script:stashMessage)*" } | Select-Object -First 1
     if (-not $matchingEntry) {
         throw "Git reporto el stash, pero no pude encontrarlo por mensaje: $($script:stashMessage)"
@@ -106,9 +205,9 @@ function Restore-LocalChangesFromStash {
 
     Write-Step "Restaurando cambios locales"
     $script:stashPopAttempted = $true
-    $output = & git -C $RepoRoot stash pop --index $script:stashRef 2>&1
-    $rendered = ($output -join "`n").Trim()
-    if ($LASTEXITCODE -eq 0) {
+    $result = Invoke-NativeCapture -FilePath "git" -Arguments @("-C", $RepoRoot, "stash", "pop", "--index", $script:stashRef)
+    $rendered = ($result.Output -join "`n").Trim()
+    if ($result.ExitCode -eq 0) {
         if ($rendered) {
             Write-Host $rendered
         }
@@ -138,8 +237,17 @@ function Invoke-PythonOutput([string]$Code, [string]$Action, [switch]$AllowMissi
         throw "No encontre $VenvPython. Ejecuta .\scripts\setup.ps1 o permite que este actualizador recree .venv."
     }
 
-    $output = & $VenvPython -c $Code 2>&1
-    if ($LASTEXITCODE -ne 0) {
+    $previousErrorActionPreference = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = "Continue"
+        $output = & $VenvPython -c $Code 2>&1
+        $pythonExitCode = $LASTEXITCODE
+    }
+    finally {
+        $ErrorActionPreference = $previousErrorActionPreference
+    }
+
+    if ($pythonExitCode -ne 0) {
         $rendered = ($output -join "`n").Trim()
         if ($AllowFailure) {
             Write-Warning "$Action fallo: $rendered"
@@ -250,7 +358,8 @@ try {
     }
     Invoke-GitOutput @("rev-parse", "--show-toplevel") "validar repo Git" | Out-Null
     $oldCommit = Invoke-GitOutput @("rev-parse", "--short", "HEAD") "leer commit actual"
-    Save-LocalChangesForUpdate
+    Resolve-UpdateSource
+    Test-UpdateSource
 
     Write-Step "Leyendo estado del servicio y helper"
     $serviceInfo = Get-YarbisServiceInfo
@@ -265,6 +374,13 @@ try {
     $helperStatus = Invoke-PythonOutput "from pc_context_runtime import get_context_helper_status; print('running' if get_context_helper_status().get('running') else 'stopped')" "leer helper de contexto local" -AllowMissingPython -AllowFailure
     $helperWasRunning = $helperStatus.Trim().EndsWith("running")
 
+    if ($helperWasRunning) {
+        Write-Step "Deteniendo helper de contexto local"
+        Invoke-PythonOutput "from pc_context_runtime import stop_context_helper; print(stop_context_helper())" "detener helper de contexto local" -AllowMissingPython -AllowFailure | Out-Null
+    }
+
+    Save-LocalChangesForUpdate
+
     New-Item -ItemType Directory -Force -Path $UpdateBackupDir | Out-Null
     if (Test-Path -LiteralPath $StateFile) {
         $timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
@@ -278,13 +394,8 @@ try {
 
     Stop-YarbisServiceIfNeeded
 
-    if ($helperWasRunning) {
-        Write-Step "Deteniendo helper de contexto local"
-        Invoke-PythonOutput "from pc_context_runtime import stop_context_helper; print(stop_context_helper())" "detener helper de contexto local" -AllowMissingPython -AllowFailure | Out-Null
-    }
-
-    Write-Step "Trayendo cambios desde $Remote/$Branch"
-    Invoke-CommandChecked "git" @("-C", $RepoRoot, "fetch", $Remote, $Branch) "git fetch"
+    Write-Step "Trayendo cambios desde $resolvedFetchLabel/$Branch"
+    Invoke-CommandChecked "git" @("-C", $RepoRoot, "fetch", $resolvedFetchSource, $Branch) "git fetch"
     $targetCommit = Invoke-GitOutput @("rev-parse", "--short", "FETCH_HEAD") "leer commit remoto"
     Invoke-CommandChecked "git" @("-C", $RepoRoot, "merge", "--ff-only", "FETCH_HEAD") "fast-forward desde $Remote/$Branch"
     $newCommit = Invoke-GitOutput @("rev-parse", "--short", "HEAD") "leer commit actualizado"
@@ -374,6 +485,17 @@ catch {
         }
         catch {
             Write-Warning "No pude restaurar el servicio automaticamente: $($_.Exception.Message)"
+        }
+    }
+
+    if ($helperWasRunning -and -not $codeUpdated -and -not $stashConflict) {
+        Write-Host ""
+        Write-Host "Intentando restaurar el helper de contexto local..."
+        try {
+            Invoke-PythonOutput "from pc_context_runtime import start_context_helper; print(start_context_helper())" "restaurar helper de contexto local" -AllowFailure | Out-Null
+        }
+        catch {
+            Write-Warning "No pude restaurar el helper automaticamente: $($_.Exception.Message)"
         }
     }
 

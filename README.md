@@ -92,6 +92,12 @@ Por defecto el actualizador usa `origin/main` y solo acepta fast-forward, para e
 .\scripts\update.ps1 -Remote origin -Branch main
 ```
 
+Si una copia no tiene remote `origin`, intenta usar `YARBIS_UPDATE_SOURCE` y despues el repo fuente `C:\DEV\Github\yarbis`. Si ese repo fuente tiene `origin`, usa su URL para traer cambios. Tambien puedes indicar una URL o ruta directa:
+
+```powershell
+.\scripts\update.ps1 -Remote https://github.com/ahiram1701/yarbis.git -Branch main
+```
+
 Si necesitas salir de una emergencia y ya validaste el cambio por otro camino, puedes omitir los checks:
 
 ```powershell
@@ -132,16 +138,18 @@ Si detecta cambios locales versionados o no versionados, el actualizador los gua
 Flujo interno del actualizador:
 
 1. Valida que la carpeta sea un repo Git.
-2. Si hay cambios locales, los guarda en un stash con nombre `yarbis-update-AAAAMMDD-HHMMSS`.
+2. Resuelve y valida la fuente de actualizacion antes de tocar servicio o cambios locales.
 3. Lee si el servicio SCM y el helper de contexto local estan activos.
-4. Copia `state.json` a `.yarbis_runtime/updates/state-AAAAMMDD-HHMMSS.json` si existe.
-5. Detiene el servicio y el helper si estaban corriendo.
-6. Ejecuta `git fetch` y `git merge --ff-only FETCH_HEAD`.
-7. Instala dependencias con `.venv\Scripts\python.exe -m pip install -r requirements.txt`.
-8. Ejecuta `.\scripts\check.ps1`, salvo que uses `-SkipChecks`.
-9. Reaplica el stash local con `git stash pop --index`.
-10. Si no hay conflictos, recompila/reconfigura el servicio SCM y reinicia lo que estaba activo.
-11. Imprime un resumen con commit anterior, commit remoto, commit actual, checks, dependencias, cambios locales, servicio y respaldo de estado.
+4. Detiene el helper si estaba corriendo, antes de ocultar archivos untracked con stash.
+5. Si hay cambios locales, los guarda en un stash con nombre `yarbis-update-AAAAMMDD-HHMMSS`.
+6. Copia `state.json` a `.yarbis_runtime/updates/state-AAAAMMDD-HHMMSS.json` si existe.
+7. Detiene el servicio si estaba corriendo.
+8. Ejecuta `git fetch` y `git merge --ff-only FETCH_HEAD`.
+9. Instala dependencias con `.venv\Scripts\python.exe -m pip install -r requirements.txt`.
+10. Ejecuta `.\scripts\check.ps1`, salvo que uses `-SkipChecks`.
+11. Reaplica el stash local con `git stash pop --index`.
+12. Si no hay conflictos, recompila/reconfigura el servicio SCM y reinicia lo que estaba activo.
+13. Imprime un resumen con commit anterior, commit remoto, commit actual, checks, dependencias, cambios locales, servicio y respaldo de estado.
 
 Recuperacion si algo falla:
 
