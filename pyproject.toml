@@ -49,6 +49,7 @@ py-modules = [
   "internet",
   "main",
   "memory",
+  "memory_backup",
   "memory_transfer",
   "notifications",
   "pc_context",

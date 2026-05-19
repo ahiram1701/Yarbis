@@ -1,21 +1,16 @@
-import copy
 import json
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
-from uuid import uuid4
 
 import memory
+import memory_backup
 
 WORKSPACE_ROOT = Path(__file__).resolve().parent
-BACKUPS_DIR = WORKSPACE_ROOT / ".yarbis_memory_backups"
-BACKUP_FORMAT = "yarbis.memory_backup"
-SCHEMA_VERSION = 1
-REDACTED_VALUE = "[redacted]"
-SECRET_PATHS = (
-    "notifications.ntfy.token",
-    "notifications.telegram.bot_token",
-    "notifications.telegram.pending_power_confirmation.token",
-)
+BACKUPS_DIR = memory_backup.BACKUPS_DIR
+BACKUP_FORMAT = memory_backup.BACKUP_FORMAT
+SCHEMA_VERSION = memory_backup.SCHEMA_VERSION
+REDACTED_VALUE = memory_backup.REDACTED_VALUE
+SECRET_PATHS = memory_backup.SECRET_PATHS
 VALID_IMPORT_MODES = {"replace", "merge"}
 
 
@@ -24,163 +19,66 @@ class MemoryTransferError(ValueError):
 
 
 def _utc_now() -> datetime:
-    return datetime.now(timezone.utc)
+    return memory_backup.utc_now()
 
 
 def _new_backup_id() -> str:
-    timestamp = _utc_now().strftime("%Y%m%dT%H%M%S%fZ")
-    return f"memory-backup-{timestamp}-{uuid4().hex[:6]}"
+    return memory_backup.new_backup_id()
 
 
 def _copy_json(value):
-    return copy.deepcopy(value)
+    return memory_backup.copy_json(value)
 
 
 def _path_parts(path: str) -> list[str]:
-    return [part for part in str(path).split(".") if part]
+    return memory_backup.path_parts(path)
 
 
 def _get_nested(mapping: dict, path: str):
-    current = mapping
-    for part in _path_parts(path):
-        if not isinstance(current, dict) or part not in current:
-            return ""
-        current = current[part]
-    return current
+    return memory_backup.get_nested(mapping, path)
 
 
 def _set_nested(mapping: dict, path: str, value):
-    parts = _path_parts(path)
-    if not parts:
-        return
-
-    current = mapping
-    for part in parts[:-1]:
-        next_value = current.get(part)
-        if not isinstance(next_value, dict):
-            next_value = {}
-            current[part] = next_value
-        current = next_value
-    current[parts[-1]] = value
+    memory_backup.set_nested(mapping, path, value)
 
 
 def _redact_secrets(state: dict) -> tuple[dict, list[str]]:
-    redacted_state = _copy_json(state)
-    redacted_paths = []
-
-    for path in SECRET_PATHS:
-        value = _get_nested(redacted_state, path)
-        if str(value).strip():
-            _set_nested(redacted_state, path, REDACTED_VALUE)
-            redacted_paths.append(path)
-
-    return redacted_state, redacted_paths
+    return memory_backup.redact_secrets(state)
 
 
 def _resolve_export_path(path: str, backup_id: str) -> Path:
-    cleaned_path = str(path).strip()
-    if not cleaned_path:
-        return BACKUPS_DIR / f"{backup_id}.json"
-
-    candidate = Path(cleaned_path).expanduser()
-    if not candidate.is_absolute():
-        if len(candidate.parts) == 1:
-            candidate = BACKUPS_DIR / candidate
-        else:
-            candidate = WORKSPACE_ROOT / candidate
-
-    if candidate.exists() and candidate.is_dir():
-        candidate = candidate / f"{backup_id}.json"
-    elif not candidate.suffix:
-        candidate = candidate.with_suffix(".json")
-
-    return candidate
-
-
-def _backup_files() -> list[Path]:
-    if not BACKUPS_DIR.exists():
-        return []
-    return sorted(
-        [item for item in BACKUPS_DIR.iterdir() if item.is_file() and item.suffix.lower() == ".json"],
-        key=lambda item: item.stat().st_mtime,
-        reverse=True,
+    return memory_backup.resolve_export_path(
+        path,
+        backup_id,
+        backups_dir=BACKUPS_DIR,
+        workspace_root=WORKSPACE_ROOT,
     )
 
 
+def _backup_files() -> list[Path]:
+    return memory_backup.backup_files(BACKUPS_DIR)
+
+
 def _resolve_import_path(path_or_id: str) -> Path:
-    cleaned = str(path_or_id).strip()
-    if not cleaned:
-        raise MemoryTransferError("Debes indicar un respaldo de memoria.")
-
-    raw_candidate = Path(cleaned).expanduser()
-    candidates = []
-    if raw_candidate.is_absolute():
-        candidates.append(raw_candidate)
-    else:
-        candidates.append(WORKSPACE_ROOT / raw_candidate)
-        candidates.append(BACKUPS_DIR / raw_candidate)
-        if not raw_candidate.suffix:
-            candidates.append(BACKUPS_DIR / raw_candidate.with_suffix(".json"))
-
-    for candidate in candidates:
-        if candidate.exists() and candidate.is_file():
-            return candidate
-
-    lowered = cleaned.casefold()
-    matches = [
-        backup_path
-        for backup_path in _backup_files()
-        if backup_path.name.casefold().startswith(lowered)
-        or backup_path.stem.casefold().startswith(lowered)
-    ]
-
-    if not matches:
-        raise MemoryTransferError(f"No encontre un respaldo de memoria con ruta o id: {path_or_id}")
-    if len(matches) > 1:
-        rendered = ", ".join(item.stem for item in matches[:5])
-        raise MemoryTransferError(f"El identificador coincide con varios respaldos: {rendered}")
-    return matches[0]
+    try:
+        return memory_backup.resolve_import_path(
+            path_or_id,
+            backups_dir=BACKUPS_DIR,
+            workspace_root=WORKSPACE_ROOT,
+        )
+    except memory_backup.MemoryBackupError as exc:
+        raise MemoryTransferError(str(exc)) from exc
 
 
 def _load_backup_package(path: Path) -> dict:
     try:
-        package = json.loads(path.read_text(encoding="utf-8"))
-    except FileNotFoundError as exc:
-        raise MemoryTransferError(f"No existe el respaldo de memoria: {path}") from exc
-    except json.JSONDecodeError as exc:
-        raise MemoryTransferError(f"El respaldo no es JSON valido: {exc}") from exc
-    except OSError as exc:
-        raise MemoryTransferError(f"No pude leer el respaldo de memoria: {exc}") from exc
-
-    if not isinstance(package, dict):
-        raise MemoryTransferError("El respaldo de memoria no tiene formato valido.")
-    if package.get("format") != BACKUP_FORMAT:
-        raise MemoryTransferError("El archivo no es un respaldo de memoria de Yarbis.")
-    if package.get("schema_version") != SCHEMA_VERSION:
-        raise MemoryTransferError(
-            "Version de respaldo no soportada: "
-            f"{package.get('schema_version', 'desconocida')}"
-        )
-    if not isinstance(package.get("state"), dict):
-        raise MemoryTransferError("El respaldo no contiene un estado valido.")
-
-    normalized_package = dict(package)
-    normalized_package["state"] = memory.normalize_state(package["state"])
-    normalized_package["redacted_paths"] = [
-        str(path)
-        for path in package.get("redacted_paths", [])
-        if str(path).strip()
-    ]
-    return normalized_package
+        return memory_backup.load_backup_package(path, normalizer=memory.normalize_state)
+    except memory_backup.MemoryBackupError as exc:
+        raise MemoryTransferError(str(exc)) from exc
 
 
 def _state_counts(state: dict) -> dict:
-    return {
-        "messages": len(state.get("messages", [])),
-        "notes": len(state.get("notes", [])),
-        "tasks": len(state.get("tasks", [])),
-        "plan_items": len(state.get("current_plan", [])),
-    }
+    return memory_backup.state_counts(state)
 
 
 def _write_backup_package(
@@ -189,53 +87,26 @@ def _write_backup_package(
     include_secrets: bool = False,
     reason: str = "manual",
 ) -> dict:
-    backup_id = _new_backup_id()
-    normalized_state = memory.normalize_state(state)
-    redacted_paths = []
-    package_state = _copy_json(normalized_state)
-    if not include_secrets:
-        package_state, redacted_paths = _redact_secrets(package_state)
-
-    created_at = _utc_now().isoformat()
-    package = {
-        "format": BACKUP_FORMAT,
-        "schema_version": SCHEMA_VERSION,
-        "id": backup_id,
-        "created_at": created_at,
-        "options": {
-            "include_secrets": bool(include_secrets),
-            "reason": str(reason).strip() or "manual",
-        },
-        "redacted_paths": redacted_paths,
-        "state": package_state,
-    }
-
-    target_path = _resolve_export_path(path, backup_id)
     try:
-        target_path.parent.mkdir(parents=True, exist_ok=True)
-        target_path.write_text(
-            json.dumps(package, ensure_ascii=False, indent=2),
-            encoding="utf-8",
+        return memory_backup.write_backup_package(
+            state,
+            path=path,
+            backups_dir=BACKUPS_DIR,
+            workspace_root=WORKSPACE_ROOT,
+            normalizer=memory.normalize_state,
+            include_secrets=bool(include_secrets),
+            reason=reason,
         )
-    except OSError as exc:
-        raise MemoryTransferError(f"No pude guardar el respaldo de memoria: {exc}") from exc
-
-    return {
-        "id": backup_id,
-        "path": str(target_path),
-        "created_at": created_at,
-        "include_secrets": bool(include_secrets),
-        "redacted_paths": redacted_paths,
-        "counts": _state_counts(package_state),
-    }
+    except memory_backup.MemoryBackupError as exc:
+        raise MemoryTransferError(str(exc)) from exc
 
 
-def create_backup(path: str = "", include_secrets: bool = False) -> dict:
+def create_backup(path: str = "", include_secrets: bool = False, reason: str = "manual") -> dict:
     return _write_backup_package(
         memory.load_state(),
         path=path,
         include_secrets=bool(include_secrets),
-        reason="manual",
+        reason=reason,
     )
 
 

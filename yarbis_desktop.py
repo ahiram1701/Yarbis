@@ -44,6 +44,7 @@ from session import (
     import_memory_backup_text,
     inspect_memory_backup_text,
     list_social_publications_text,
+    memory_protection_status_text,
     open_assisted_social_post_text,
     request_stop_current_operation,
     run_auto_with_output,
@@ -58,9 +59,11 @@ from session import (
     update_notification_settings,
     update_goal,
     update_ollama_settings,
+    update_memory_protection_settings_text,
     update_profile_text,
     update_service_proactive_settings,
     update_ui_theme,
+    verify_memory_backups_text,
 )
 from service_manager import (
     format_health_status,
@@ -89,6 +92,7 @@ from ui_dialogs import (
 )
 from ui_settings_dialogs import (
     LocalContextDialog,
+    MemoryProtectionDialog,
     NotificationsDialog,
     OllamaSettingsDialog,
     ServiceInstallDialog,
@@ -417,8 +421,10 @@ class YarbisDesktop(tk.Tk):
             actions,
             "Memoria",
             (
+                {"text": "Proteccion", "command": self._edit_memory_protection},
                 {"text": "Respaldar memoria", "command": self._backup_memory},
                 {"text": "Trasplantar memoria", "command": self._import_memory},
+                {"text": "Verificar respaldos", "command": self._verify_memory_backups},
             ),
         )
         self._build_action_group(
@@ -1746,6 +1752,35 @@ class YarbisDesktop(tk.Tk):
 
     def _memory_backups_dir(self) -> Path:
         return Path(__file__).resolve().parent / ".yarbis_memory_backups"
+
+    def _edit_memory_protection(self):
+        if self._busy:
+            messagebox.showinfo("Yarbis", "Ya hay una accion en curso. Espera a que termine.", parent=self)
+            return
+
+        state = load_state()
+        dialog = MemoryProtectionDialog(
+            self,
+            initial_settings=state.get("memory_protection", {}),
+            status_text=memory_protection_status_text(),
+        )
+        if dialog.result is None:
+            return
+
+        result = update_memory_protection_settings_text(**dialog.result)
+        self._append_activity("Proteccion de memoria", result)
+        self.refresh_state_view()
+        messagebox.showinfo("Yarbis", result, parent=self)
+
+    def _verify_memory_backups(self):
+        if self._busy:
+            messagebox.showinfo("Yarbis", "Ya hay una accion en curso. Espera a que termine.", parent=self)
+            return
+
+        result = verify_memory_backups_text()
+        self._append_activity("Verificacion de memoria", result)
+        self.refresh_state_view()
+        messagebox.showinfo("Yarbis", result, parent=self)
 
     def _backup_memory(self):
         if self._busy:

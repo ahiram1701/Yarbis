@@ -537,12 +537,13 @@ El archivo `state.json` guarda:
 - configuracion del pulso proactivo del servicio
 - tema de la interfaz
 - politica de internet
+- proteccion de memoria, respaldo automatico y espejo externo opcional
 - resumen de autoconocimiento
 - configuracion de notificaciones
 
 El estado se normaliza antes de guardarse para mantener estructura compatible y valores validos. Yarbis no recorta destructivamente historial, notas, tareas ni resultados persistentes; cuando necesita enviar contexto al modelo, mostrar previews, resumir diffs o devolver salidas de tools, aplica limites sobre esa salida derivada.
 
-`state.json` y `state.json.tmp` estan ignorados por git.
+`state.json`, `state.json.tmp` y `state.json.tmp-*` estan ignorados por git.
 
 ## Busqueda web
 
@@ -568,9 +569,11 @@ Puedes pedir cambios en lenguaje natural, por ejemplo:
 
 Internamente el agente usa `update_internet_settings`, `web_search`, `fetch_web_page` y, cuando hace falta una sesion real con clicks, formularios o capturas, `browser_automation`.
 
-## Respaldo y trasplante de memoria
+## Proteccion, respaldo y trasplante de memoria
 
-Yarbis puede crear paquetes portables de memoria a partir de `state.json`. Por defecto se guardan en `.yarbis_memory_backups/` y quedan fuera de git.
+Yarbis protege `state.json` con escrituras atomicas, verificacion JSON posterior y respaldos automaticos redactados en cada cambio. Si `state.json` falta o queda danado, intenta restaurar automaticamente el respaldo valido mas reciente; si no hay ninguno, preserva una copia del archivo danado en `.yarbis_runtime/memory_recovery/` y arranca con defaults seguros.
+
+Los respaldos se guardan por defecto en `.yarbis_memory_backups/` y quedan fuera de git. Puedes configurar un espejo externo desde `Memoria` -> `Proteccion`, por ejemplo una carpeta de OneDrive, USB o red. La perdida fisica del disco solo queda cubierta si ese espejo vive fuera del workspace local.
 
 Formato del paquete:
 
@@ -581,14 +584,14 @@ Formato del paquete:
 - `redacted_paths`: campos sensibles omitidos
 - `state`: estado normalizado listo para importar
 
-Los respaldos redactan por defecto `notifications.ntfy.token`, `notifications.telegram.bot_token` y `notifications.telegram.pending_power_confirmation.token`. Usa `include_secrets=True` solo si necesitas un clon completo y vas a proteger el archivo resultante.
+Los respaldos automaticos siempre redactan `notifications.ntfy.token`, `notifications.telegram.bot_token` y `notifications.telegram.pending_power_confirmation.token`. Usa `include_secrets=True` solo en un respaldo manual si necesitas un clon completo y vas a proteger el archivo resultante.
 
 Para trasplantar memoria hay dos modos:
 
 - `replace`: crea primero un respaldo local del estado actual y luego sustituye `state.json`. Si el respaldo origen tenia secretos redactados, conserva los secretos actuales del destino.
 - `merge`: crea primero un respaldo local y fusiona perfil, notas, tareas, mensajes, plan y autoconocimiento sin reemplazar configuracion local como Ollama, internet, notificaciones, UI, servicio o contexto local.
 
-Desde la app de escritorio usa `Memoria` -> `Respaldar memoria` o `Memoria` -> `Trasplantar memoria`. Desde lenguaje natural, el agente usa `create_memory_backup`, `list_memory_backups`, `inspect_memory_backup` e `import_memory_backup`.
+Desde la app de escritorio usa `Memoria` -> `Proteccion`, `Respaldar memoria`, `Trasplantar memoria` o `Verificar respaldos`. Desde lenguaje natural, el agente usa `memory_protection_status`, `update_memory_protection_settings`, `verify_memory_backups`, `create_memory_backup`, `list_memory_backups`, `inspect_memory_backup` e `import_memory_backup`.
 
 ## Tools internas
 
@@ -602,7 +605,8 @@ Yarbis expone al modelo estas herramientas:
 - `save_note` y `list_notes`: memoria persistente
 - `add_task`, `list_tasks` y `update_task_status`: backlog de trabajo
 - `set_plan`: plan actual
-- `create_memory_backup`, `list_memory_backups`, `inspect_memory_backup` e `import_memory_backup`: respaldo y trasplante de memoria
+- `memory_protection_status`, `update_memory_protection_settings` y `verify_memory_backups`: proteccion automatica de memoria
+- `create_memory_backup`, `list_memory_backups`, `inspect_memory_backup` e `import_memory_backup`: respaldo y trasplante manual de memoria
 - `coding_set_workspace`, `coding_workspace_overview`, `coding_list_files` y `coding_read_text_file`: contexto de un repositorio local activo
 - `coding_propose_text_file`, `coding_list_proposals`, `coding_get_proposal`, `coding_apply_proposal` y `coding_discard_proposal`: propuestas de cambios de codigo en modo `propose_first`
 - `coding_git_status`, `coding_git_diff` y `coding_run_validation`: estado Git, diff y validaciones dentro del repo activo
@@ -718,7 +722,9 @@ El servicio usa `.yarbis_runtime/` para PID y log. La marca `.yarbis_runtime/ser
 - `service_manager.py`: inicio, parada, estado, autostart y health del servicio
 - `service_host/`: host nativo .NET que se registra ante SCM y controla el proceso Python
 - `pc_context.py`, `pc_context_tray.py`, `pc_context_runtime.py`: captura local interactiva, helper de bandeja y tarea programada
-- `memory.py`: estado persistente, defaults, normalizacion y transacciones
+- `memory.py`: estado persistente, defaults, normalizacion, transacciones y recuperacion
+- `memory_backup.py`: nucleo portable de respaldos, redaccion, espejo, verificacion y retencion
+- `memory_transfer.py`: importacion, fusion y trasplante de respaldos
 - `tools.py`: herramientas internas del agente
 - `internet.py`: busqueda y lectura web segura
 - `notifications.py`: Windows, ntfy y Telegram

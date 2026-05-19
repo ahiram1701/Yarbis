@@ -387,6 +387,7 @@ try {
         $stateBackup = Join-Path $UpdateBackupDir "state-$timestamp.json"
         Copy-Item -LiteralPath $StateFile -Destination $stateBackup -Force
         Write-Host "Respaldo de state.json: $stateBackup"
+        Invoke-PythonOutput "import memory_transfer; backup = memory_transfer.create_backup(reason='pre_update'); print('Respaldo portable de memoria: ' + backup['path'])" "crear respaldo portable pre-update" -AllowMissingPython -AllowFailure | Out-Null
     }
     else {
         Write-Host "No existe state.json; no hay estado que respaldar."

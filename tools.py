@@ -26,8 +26,10 @@ from memory import (
     VALID_TASK_PRIORITY,
     VALID_TASK_STATUS,
     load_state,
+    memory_protection_status as memory_protection_status_data,
     render_state_summary,
     state_transaction,
+    verify_memory_backups as verify_memory_backups_data,
 )
 from self_knowledge import render_self_knowledge_summary
 from social_oauth import SocialOAuthError, connect_social_account
@@ -1392,6 +1394,144 @@ def import_memory_backup(path_or_id: str, mode: str = "replace") -> str:
         f"Campos redactados preservados desde destino: {redacted}\n"
         f"Contenido importado: {_format_memory_backup_counts(result['counts'])}"
     )
+
+
+def _format_latest_memory_backup(latest: dict | None) -> str:
+    if not latest:
+        return "-"
+    return (
+        f"{latest.get('created_at', '-')} "
+        f"[{latest.get('id', '-')}] {latest.get('path', '-')}"
+    )
+
+
+def memory_protection_status() -> str:
+    """
+    Muestra el estado de proteccion automatica de memoria y respaldos disponibles.
+
+    Returns:
+        str: Resumen de configuracion, ultimo respaldo y errores.
+    """
+    status = memory_protection_status_data()
+    enabled = "activa" if status["enabled"] else "desactivada"
+    cadence = "cada cambio" if status["backup_on_every_change"] else "manual"
+    mirror = status["mirror_dir"] or "-"
+    last_error = status["last_error"] or "-"
+    latest = _format_latest_memory_backup(status.get("latest_backup"))
+    retention = status.get("retention", {})
+
+    return (
+        "Proteccion de memoria.\n"
+        f"Estado: {enabled}\n"
+        f"Respaldo automatico: {cadence}\n"
+        f"Directorio local: {status['local_dir']}\n"
+        f"Espejo externo: {mirror}\n"
+        f"Retencion: {retention.get('max_auto_backups', 0)} automaticos; "
+        f"diarios por {retention.get('keep_daily_days', 0)} dias\n"
+        f"Verificacion post-escritura: {'si' if status['verify_after_write'] else 'no'}\n"
+        f"Auto-restauracion: {'si' if status['auto_restore'] else 'no'}\n"
+        f"Ultimo backup: {status['last_backup_at'] or '-'}\n"
+        f"Ultima recuperacion: {status['last_recovery_at'] or '-'}\n"
+        f"Respaldos validos: {status['valid_backups']}\n"
+        f"Respaldos invalidos: {status['invalid_backups']}\n"
+        f"Mas reciente: {latest}\n"
+        f"Ultimo aviso: {last_error}"
+    )
+
+
+def verify_memory_backups() -> str:
+    """
+    Verifica respaldos de memoria locales y del espejo configurado.
+
+    Returns:
+        str: Conteo de respaldos validos, invalidos y respaldo mas reciente.
+    """
+    verified = verify_memory_backups_data()
+    latest = _format_latest_memory_backup(verified.get("latest"))
+    lines = [
+        "Verificacion de respaldos de memoria.",
+        f"Directorio local: {verified['local_dir']}",
+        f"Espejo externo: {verified['mirror_dir'] or '-'}",
+        f"Validos: {verified['valid_count']}",
+        f"Invalidos: {verified['invalid_count']}",
+        f"Mas reciente: {latest}",
+    ]
+    for invalid in verified.get("invalid", [])[:5]:
+        lines.append(f"Invalido: {invalid['path']} -> {invalid['error']}")
+    return "\n".join(lines)
+
+
+def update_memory_protection_settings(
+    enabled: bool = True,
+    backup_on_every_change: bool = True,
+    mirror_dir: str = "",
+    max_auto_backups: int = 250,
+    keep_daily_days: int = 90,
+    verify_after_write: bool = True,
+    auto_restore: bool = True,
+) -> str:
+    """
+    Configura la proteccion automatica de memoria persistente.
+
+    Args:
+        enabled (bool): Activa o desactiva la proteccion.
+        backup_on_every_change (bool): Si True, respalda cada escritura de state.json.
+        mirror_dir (str): Carpeta externa opcional para espejar respaldos.
+        max_auto_backups (int): Maximo de respaldos automaticos recientes.
+        keep_daily_days (int): Dias para conservar al menos un respaldo diario.
+        verify_after_write (bool): Valida JSON despues de cada escritura atomica.
+        auto_restore (bool): Restaura automaticamente si state.json falta o se dana.
+
+    Returns:
+        str: Resumen de la configuracion aplicada.
+    """
+    cleaned_mirror = str(mirror_dir).strip()
+    if cleaned_mirror == CLEAR_VALUE:
+        cleaned_mirror = ""
+    if cleaned_mirror:
+        candidate = Path(cleaned_mirror).expanduser()
+        if not candidate.is_absolute():
+            candidate = (WORKSPACE_ROOT / candidate).resolve()
+        try:
+            candidate.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            return f"No pude preparar el espejo externo: {exc}"
+        if not candidate.is_dir():
+            return f"El espejo externo no es una carpeta: {candidate}"
+        cleaned_mirror = str(candidate)
+
+    try:
+        cleaned_max_auto = max(1, min(5000, int(max_auto_backups)))
+    except (TypeError, ValueError):
+        return "max_auto_backups debe ser un numero entre 1 y 5000."
+
+    try:
+        cleaned_keep_daily = max(0, min(3650, int(keep_daily_days)))
+    except (TypeError, ValueError):
+        return "keep_daily_days debe ser un numero entre 0 y 3650."
+
+    def mutate(state):
+        current = state.get("memory_protection", {})
+        if not isinstance(current, dict):
+            current = {}
+        state["memory_protection"] = {
+            "enabled": _coerce_bool(enabled),
+            "backup_on_every_change": _coerce_bool(backup_on_every_change),
+            "mirror_dir": cleaned_mirror,
+            "include_secrets": False,
+            "retention": {
+                "max_auto_backups": cleaned_max_auto,
+                "keep_daily_days": cleaned_keep_daily,
+            },
+            "verify_after_write": _coerce_bool(verify_after_write),
+            "auto_restore": _coerce_bool(auto_restore),
+            "last_backup_at": str(current.get("last_backup_at", "")),
+            "last_recovery_at": str(current.get("last_recovery_at", "")),
+            "last_error": str(current.get("last_error", "")),
+        }
+
+    state_transaction("update_memory_protection_settings", mutate)
+    return memory_protection_status()
 
 
 def run_project_tests(

@@ -6,6 +6,8 @@ import threading
 import time
 from pathlib import Path
 
+import memory_backup
+
 try:
     import msvcrt
 except ImportError:  # pragma: no cover - Windows path is covered locally.
@@ -16,8 +18,14 @@ try:
 except ImportError:  # pragma: no cover - POSIX fallback only.
     fcntl = None
 
-STATE_FILE = Path("state.json")
-STATE_LOCK_FILE = Path(__file__).resolve().parent / ".yarbis_runtime" / "state.lock"
+WORKSPACE_ROOT = Path(__file__).resolve().parent
+DEFAULT_STATE_FILE = Path("state.json")
+STATE_FILE = DEFAULT_STATE_FILE
+STATE_LOCK_FILE = WORKSPACE_ROOT / ".yarbis_runtime" / "state.lock"
+DEFAULT_MEMORY_BACKUPS_DIR = WORKSPACE_ROOT / ".yarbis_memory_backups"
+MEMORY_BACKUPS_DIR = DEFAULT_MEMORY_BACKUPS_DIR
+DEFAULT_MEMORY_PROTECTION_CONFIG_FILE = WORKSPACE_ROOT / ".yarbis_runtime" / "memory_protection.json"
+MEMORY_PROTECTION_CONFIG_FILE = DEFAULT_MEMORY_PROTECTION_CONFIG_FILE
 STATE_LOCK = threading.RLock()
 _STATE_TRANSACTION_LOCAL = threading.local()
 _STATE_LOCK_POLL_SECONDS = 0.05
@@ -118,6 +126,16 @@ VALID_CODING_MODES = {DEFAULT_CODING_MODE}
 MAX_CODING_WORKSPACE_PATH_CHARS = 1_000
 MAX_CODING_PROPOSAL_IDS = 80
 MAX_CODING_PROPOSAL_ID_CHARS = 80
+DEFAULT_MEMORY_PROTECTION_ENABLED = True
+DEFAULT_MEMORY_PROTECTION_BACKUP_ON_EVERY_CHANGE = True
+DEFAULT_MEMORY_PROTECTION_INCLUDE_SECRETS = False
+DEFAULT_MEMORY_PROTECTION_VERIFY_AFTER_WRITE = True
+DEFAULT_MEMORY_PROTECTION_AUTO_RESTORE = True
+DEFAULT_MEMORY_PROTECTION_MAX_AUTO_BACKUPS = 250
+DEFAULT_MEMORY_PROTECTION_KEEP_DAILY_DAYS = 90
+MAX_MEMORY_PROTECTION_MIRROR_DIR_CHARS = 1_000
+MAX_MEMORY_PROTECTION_TIMESTAMP_CHARS = 80
+MAX_MEMORY_PROTECTION_ERROR_CHARS = 600
 
 
 def default_state():
@@ -149,6 +167,21 @@ def default_state():
             "workspace_path": "",
             "mode": DEFAULT_CODING_MODE,
             "pending_proposal_ids": [],
+        },
+        "memory_protection": {
+            "enabled": DEFAULT_MEMORY_PROTECTION_ENABLED,
+            "backup_on_every_change": DEFAULT_MEMORY_PROTECTION_BACKUP_ON_EVERY_CHANGE,
+            "mirror_dir": "",
+            "include_secrets": DEFAULT_MEMORY_PROTECTION_INCLUDE_SECRETS,
+            "retention": {
+                "max_auto_backups": DEFAULT_MEMORY_PROTECTION_MAX_AUTO_BACKUPS,
+                "keep_daily_days": DEFAULT_MEMORY_PROTECTION_KEEP_DAILY_DAYS,
+            },
+            "verify_after_write": DEFAULT_MEMORY_PROTECTION_VERIFY_AFTER_WRITE,
+            "auto_restore": DEFAULT_MEMORY_PROTECTION_AUTO_RESTORE,
+            "last_backup_at": "",
+            "last_recovery_at": "",
+            "last_error": "",
         },
         "ollama": {
             "model": DEFAULT_OLLAMA_MODEL,
@@ -605,6 +638,79 @@ def _normalize_bool(value, default: bool) -> bool:
     if value is None:
         return default
     return bool(value)
+
+
+def _normalize_memory_protection(memory_protection):
+    defaults = default_state()["memory_protection"]
+    if not isinstance(memory_protection, dict):
+        memory_protection = {}
+
+    retention = memory_protection.get("retention", {})
+    if not isinstance(retention, dict):
+        retention = {}
+    retention_defaults = defaults["retention"]
+
+    try:
+        max_auto_backups = max(
+            1,
+            min(
+                5000,
+                int(retention.get("max_auto_backups", retention_defaults["max_auto_backups"])),
+            ),
+        )
+    except (TypeError, ValueError):
+        max_auto_backups = retention_defaults["max_auto_backups"]
+
+    try:
+        keep_daily_days = max(
+            0,
+            min(
+                3650,
+                int(retention.get("keep_daily_days", retention_defaults["keep_daily_days"])),
+            ),
+        )
+    except (TypeError, ValueError):
+        keep_daily_days = retention_defaults["keep_daily_days"]
+
+    return {
+        "enabled": _normalize_bool(
+            memory_protection.get("enabled", defaults["enabled"]),
+            defaults["enabled"],
+        ),
+        "backup_on_every_change": _normalize_bool(
+            memory_protection.get("backup_on_every_change", defaults["backup_on_every_change"]),
+            defaults["backup_on_every_change"],
+        ),
+        "mirror_dir": _coerce_text(
+            memory_protection.get("mirror_dir", defaults["mirror_dir"]),
+            MAX_MEMORY_PROTECTION_MIRROR_DIR_CHARS,
+        ).strip(),
+        "include_secrets": False,
+        "retention": {
+            "max_auto_backups": max_auto_backups,
+            "keep_daily_days": keep_daily_days,
+        },
+        "verify_after_write": _normalize_bool(
+            memory_protection.get("verify_after_write", defaults["verify_after_write"]),
+            defaults["verify_after_write"],
+        ),
+        "auto_restore": _normalize_bool(
+            memory_protection.get("auto_restore", defaults["auto_restore"]),
+            defaults["auto_restore"],
+        ),
+        "last_backup_at": _coerce_text(
+            memory_protection.get("last_backup_at", defaults["last_backup_at"]),
+            MAX_MEMORY_PROTECTION_TIMESTAMP_CHARS,
+        ).strip(),
+        "last_recovery_at": _coerce_text(
+            memory_protection.get("last_recovery_at", defaults["last_recovery_at"]),
+            MAX_MEMORY_PROTECTION_TIMESTAMP_CHARS,
+        ).strip(),
+        "last_error": _coerce_text(
+            memory_protection.get("last_error", defaults["last_error"]),
+            MAX_MEMORY_PROTECTION_ERROR_CHARS,
+        ).strip(),
+    }
 
 
 def _normalize_service(service):
@@ -1325,6 +1431,7 @@ def normalize_state(state):
     )
     normalized["autonomy"] = _normalize_autonomy(state.get("autonomy", {}))
     normalized["coding"] = _normalize_coding(state.get("coding", {}))
+    normalized["memory_protection"] = _normalize_memory_protection(state.get("memory_protection", {}))
     normalized["ollama"] = _normalize_ollama(state.get("ollama", {}))
     normalized["service"] = _normalize_service(state.get("service", {}))
     normalized["ui"] = _normalize_ui(state.get("ui", {}))
@@ -1532,6 +1639,17 @@ def render_state_summary(
     else:
         lines.append("Autoconocimiento: pendiente de autoanalisis inicial.")
 
+    protection = normalized["memory_protection"]
+    protection_status = "activa" if protection["enabled"] else "desactivada"
+    mirror_status = "con espejo" if protection["mirror_dir"] else "sin espejo externo"
+    backup_status = "por cambio" if protection["backup_on_every_change"] else "manual"
+    lines.append(
+        "Proteccion de memoria: "
+        f"{protection_status}, {backup_status}, {mirror_status}."
+    )
+    if protection["last_error"]:
+        lines.append(f"Ultimo aviso de proteccion: {protection['last_error']}")
+
     notification_settings = normalized["notifications"]
     notification_status = "activadas" if notification_settings["enabled"] else "desactivadas"
     lines.append(
@@ -1574,36 +1692,243 @@ def render_state_summary(
     return "\n".join(lines)
 
 
-def _load_state_unlocked():
-    if not STATE_FILE.exists():
-        return default_state()
+def _state_file_path() -> Path:
+    return Path(STATE_FILE)
 
+
+def _state_file_uses_default_path() -> bool:
+    return _state_file_path() == DEFAULT_STATE_FILE
+
+
+def _runtime_dir_for_state() -> Path:
+    if _state_file_uses_default_path():
+        return WORKSPACE_ROOT / ".yarbis_runtime"
+    return _state_file_path().parent / ".yarbis_runtime"
+
+
+def _memory_backups_dir() -> Path:
+    configured_dir = Path(MEMORY_BACKUPS_DIR)
+    if configured_dir != DEFAULT_MEMORY_BACKUPS_DIR:
+        return configured_dir
+    if _state_file_uses_default_path():
+        return DEFAULT_MEMORY_BACKUPS_DIR
+    state_path = _state_file_path()
+    if state_path.name == DEFAULT_STATE_FILE.name:
+        return state_path.parent / ".yarbis_memory_backups"
+    return state_path.parent / f".{state_path.stem}_memory_backups"
+
+
+def _memory_protection_config_file() -> Path:
+    configured_file = Path(MEMORY_PROTECTION_CONFIG_FILE)
+    if configured_file != DEFAULT_MEMORY_PROTECTION_CONFIG_FILE:
+        return configured_file
+    return _runtime_dir_for_state() / "memory_protection.json"
+
+
+def _load_memory_protection_runtime_config() -> dict:
+    config_path = _memory_protection_config_file()
     try:
-        with open(STATE_FILE, "r", encoding="utf-8") as file:
-            state = json.load(file)
+        payload = json.loads(config_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
-        return default_state()
+        return default_state()["memory_protection"]
 
-    return normalize_state(state)
+    if not isinstance(payload, dict):
+        return default_state()["memory_protection"]
+    source = payload.get("memory_protection", payload)
+    return _normalize_memory_protection(source)
 
 
-def _save_state_unlocked(state):
-    normalized = normalize_state(state)
-    STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
-    tmp_file = STATE_FILE.with_name(f"{STATE_FILE.name}.tmp")
+def _write_memory_protection_runtime_config(settings: dict) -> None:
+    normalized_settings = _normalize_memory_protection(settings)
+    payload = {
+        "memory_protection": {
+            "enabled": normalized_settings["enabled"],
+            "backup_on_every_change": normalized_settings["backup_on_every_change"],
+            "mirror_dir": normalized_settings["mirror_dir"],
+            "include_secrets": False,
+            "retention": normalized_settings["retention"],
+            "verify_after_write": normalized_settings["verify_after_write"],
+            "auto_restore": normalized_settings["auto_restore"],
+        }
+    }
+    try:
+        memory_backup.write_json_atomic(
+            _memory_protection_config_file(),
+            payload,
+            ensure_ascii=True,
+            indent=2,
+            verify=True,
+        )
+    except memory_backup.MemoryBackupError:
+        pass
 
-    with open(tmp_file, "w", encoding="utf-8") as file:
-        json.dump(normalized, file, ensure_ascii=False, indent=2)
+
+def _memory_backup_dirs_for_settings(settings: dict) -> list[Path]:
+    backup_dirs = [_memory_backups_dir()]
+    mirror_dir = str(settings.get("mirror_dir", "")).strip()
+    if mirror_dir:
+        backup_dirs.append(Path(mirror_dir).expanduser())
+    return backup_dirs
+
+
+def _write_state_file_atomic(normalized: dict, verify_after_write: bool = True) -> None:
+    memory_backup.write_json_atomic(
+        _state_file_path(),
+        normalized,
+        ensure_ascii=False,
+        indent=2,
+        verify=verify_after_write,
+    )
+
+
+def _preserve_unreadable_state_file(reason: str) -> str:
+    state_path = _state_file_path()
+    if not state_path.exists():
+        return ""
+
+    timestamp = memory_backup.utc_now().strftime("%Y%m%d-%H%M%S%f")
+    recovery_dir = _runtime_dir_for_state() / "memory_recovery"
+    target_path = recovery_dir / f"{state_path.name}.{reason}-{timestamp}.json"
+    try:
+        return str(memory_backup.copy_file_atomic(state_path, target_path))
+    except memory_backup.MemoryBackupError:
+        return ""
+
+
+def _recovery_error_text(reason: str, error: Exception | str, preserved_path: str = "") -> str:
+    rendered_error = str(error).strip()
+    message = f"No pude leer {STATE_FILE} ({reason}): {rendered_error}."
+    if preserved_path:
+        message += f" Copia preservada: {preserved_path}."
+    return message[:MAX_MEMORY_PROTECTION_ERROR_CHARS]
+
+
+def _recover_state_from_backups_unlocked(reason: str, error: Exception | str, missing: bool = False):
+    settings = _load_memory_protection_runtime_config()
+    if not settings.get("auto_restore", True):
+        return None
+
+    latest = memory_backup.latest_valid_backup(
+        backup_dirs=_memory_backup_dirs_for_settings(settings),
+        normalizer=normalize_state,
+    )
+    if latest:
+        preserved_path = "" if missing else _preserve_unreadable_state_file(reason)
+        restored_state = normalize_state(latest["package"]["state"])
+        restored_state["memory_protection"]["last_recovery_at"] = memory_backup.utc_now_text()
+        restored_state["memory_protection"]["last_error"] = (
+            f"Estado restaurado desde {latest['path']} por {reason}."
+        )[:MAX_MEMORY_PROTECTION_ERROR_CHARS]
+        if preserved_path:
+            restored_state["memory_protection"]["last_error"] = (
+                f"{restored_state['memory_protection']['last_error']} "
+                f"Copia previa: {preserved_path}."
+            )[:MAX_MEMORY_PROTECTION_ERROR_CHARS]
+        _write_state_file_atomic(
+            restored_state,
+            verify_after_write=restored_state["memory_protection"]["verify_after_write"],
+        )
+        _write_memory_protection_runtime_config(restored_state["memory_protection"])
+        return restored_state
+
+    if missing:
+        return None
+
+    preserved_path = _preserve_unreadable_state_file(reason)
+    fallback_state = default_state()
+    fallback_state["memory_protection"]["last_error"] = _recovery_error_text(
+        reason,
+        error,
+        preserved_path=preserved_path,
+    )
+    _write_state_file_atomic(fallback_state, verify_after_write=True)
+    _write_memory_protection_runtime_config(fallback_state["memory_protection"])
+    return fallback_state
+
+
+def _load_state_unlocked():
+    state_path = _state_file_path()
+    if not state_path.exists():
+        recovered_state = _recover_state_from_backups_unlocked(
+            "missing",
+            "state.json no existe",
+            missing=True,
+        )
+        return recovered_state or default_state()
 
     try:
-        tmp_file.replace(STATE_FILE)
-    except PermissionError:
-        with open(STATE_FILE, "w", encoding="utf-8") as file:
-            json.dump(normalized, file, ensure_ascii=False, indent=2)
-        try:
-            tmp_file.unlink()
-        except OSError:
-            pass
+        with open(state_path, "r", encoding="utf-8") as file:
+            state = json.load(file)
+    except (OSError, json.JSONDecodeError) as exc:
+        recovered_state = _recover_state_from_backups_unlocked("corrupt", exc)
+        return recovered_state or default_state()
+
+    normalized = normalize_state(state)
+    _write_memory_protection_runtime_config(normalized["memory_protection"])
+    return normalized
+
+
+def _apply_memory_protection_after_save_unlocked(normalized: dict) -> dict:
+    protected_state = normalize_state(normalized)
+    settings = protected_state["memory_protection"]
+    _write_memory_protection_runtime_config(settings)
+
+    if not (settings["enabled"] and settings["backup_on_every_change"]):
+        return protected_state
+
+    backup_result = None
+    last_error = ""
+    try:
+        backup_result = memory_backup.write_backup_package(
+            protected_state,
+            backups_dir=_memory_backups_dir(),
+            normalizer=None,
+            include_secrets=False,
+            reason=memory_backup.AUTO_BACKUP_REASON,
+        )
+        mirror_dir = settings.get("mirror_dir", "")
+        if mirror_dir:
+            try:
+                memory_backup.mirror_backup(backup_result["path"], mirror_dir)
+            except memory_backup.MemoryBackupError as exc:
+                last_error = str(exc)
+
+        retention = settings.get("retention", {})
+        memory_backup.prune_auto_backups(
+            backups_dir=_memory_backups_dir(),
+            max_auto_backups=retention.get("max_auto_backups", DEFAULT_MEMORY_PROTECTION_MAX_AUTO_BACKUPS),
+            keep_daily_days=retention.get("keep_daily_days", DEFAULT_MEMORY_PROTECTION_KEEP_DAILY_DAYS),
+        )
+        if mirror_dir:
+            memory_backup.prune_auto_backups(
+                backups_dir=Path(mirror_dir).expanduser(),
+                max_auto_backups=retention.get("max_auto_backups", DEFAULT_MEMORY_PROTECTION_MAX_AUTO_BACKUPS),
+                keep_daily_days=retention.get("keep_daily_days", DEFAULT_MEMORY_PROTECTION_KEEP_DAILY_DAYS),
+            )
+    except memory_backup.MemoryBackupError as exc:
+        last_error = str(exc)
+
+    if backup_result or last_error:
+        protected_state["memory_protection"]["last_error"] = last_error[:MAX_MEMORY_PROTECTION_ERROR_CHARS]
+        if backup_result:
+            protected_state["memory_protection"]["last_backup_at"] = backup_result["created_at"]
+        _write_state_file_atomic(
+            protected_state,
+            verify_after_write=protected_state["memory_protection"]["verify_after_write"],
+        )
+        _write_memory_protection_runtime_config(protected_state["memory_protection"])
+
+    return protected_state
+
+
+def _save_state_unlocked(state, create_backup: bool = True):
+    normalized = normalize_state(state)
+    verify_after_write = normalized["memory_protection"]["verify_after_write"]
+    _write_state_file_atomic(normalized, verify_after_write=verify_after_write)
+    if create_backup:
+        return _apply_memory_protection_after_save_unlocked(normalized)
+    _write_memory_protection_runtime_config(normalized["memory_protection"])
+    return normalized
 
 
 def load_state():
@@ -1628,3 +1953,42 @@ def state_transaction(label: str, mutator):
             result = mutator(state)
             _save_state_unlocked(state)
             return result
+
+
+def verify_memory_backups() -> dict:
+    with STATE_LOCK:
+        with _state_file_lock("verify_memory_backups"):
+            state = _load_state_unlocked()
+            settings = state["memory_protection"]
+            verified = memory_backup.verify_backups(
+                backup_dirs=_memory_backup_dirs_for_settings(settings),
+                normalizer=normalize_state,
+            )
+            return {
+                "settings": settings,
+                "local_dir": str(_memory_backups_dir()),
+                "mirror_dir": settings.get("mirror_dir", ""),
+                **verified,
+            }
+
+
+def memory_protection_status() -> dict:
+    verified = verify_memory_backups()
+    settings = verified["settings"]
+    return {
+        "enabled": settings["enabled"],
+        "backup_on_every_change": settings["backup_on_every_change"],
+        "mirror_dir": settings["mirror_dir"],
+        "include_secrets": settings["include_secrets"],
+        "retention": settings["retention"],
+        "verify_after_write": settings["verify_after_write"],
+        "auto_restore": settings["auto_restore"],
+        "last_backup_at": settings["last_backup_at"],
+        "last_recovery_at": settings["last_recovery_at"],
+        "last_error": settings["last_error"],
+        "local_dir": verified["local_dir"],
+        "valid_backups": verified["valid_count"],
+        "invalid_backups": verified["invalid_count"],
+        "latest_backup": verified["latest"],
+        "invalid": verified["invalid"],
+    }

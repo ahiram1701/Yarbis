@@ -65,12 +65,15 @@ from tools import (
     list_memory_backups,
     list_notes,
     list_social_publications,
+    memory_protection_status,
     open_assisted_social_post,
     save_note,
     social_accounts_overview,
     start_social_oauth,
     update_goal as update_goal_tool,
+    update_memory_protection_settings,
     update_profile,
+    verify_memory_backups,
 )
 from service_manager import format_readiness_status, readiness_status
 
@@ -1059,6 +1062,37 @@ def inspect_memory_backup_text(path_or_id: str) -> str:
 def import_memory_backup_text(path_or_id: str, mode: str = "replace") -> str:
     with SESSION_LOCK:
         return import_memory_backup(path_or_id=path_or_id, mode=mode)
+
+
+def memory_protection_status_text() -> str:
+    with SESSION_LOCK:
+        return memory_protection_status()
+
+
+def verify_memory_backups_text() -> str:
+    with SESSION_LOCK:
+        return verify_memory_backups()
+
+
+def update_memory_protection_settings_text(
+    enabled: bool = True,
+    backup_on_every_change: bool = True,
+    mirror_dir: str = "",
+    max_auto_backups: int = 250,
+    keep_daily_days: int = 90,
+    verify_after_write: bool = True,
+    auto_restore: bool = True,
+) -> str:
+    with SESSION_LOCK:
+        return update_memory_protection_settings(
+            enabled=enabled,
+            backup_on_every_change=backup_on_every_change,
+            mirror_dir=mirror_dir,
+            max_auto_backups=max_auto_backups,
+            keep_daily_days=keep_daily_days,
+            verify_after_write=verify_after_write,
+            auto_restore=auto_restore,
+        )
 
 
 def add_task_text(title: str, details: str = "", priority: str = "media") -> str:

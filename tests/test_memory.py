@@ -1,14 +1,22 @@
 import json
+import shutil
 import unittest
 from pathlib import Path
 from unittest.mock import patch
+from uuid import uuid4
 
 import memory
+import memory_transfer
 
 TEST_RUNTIME_DIR = Path.cwd() / "tests_runtime"
 
 
 class MemoryTestCase(unittest.TestCase):
+    def _memory_protection_paths(self, name: str):
+        base = TEST_RUNTIME_DIR / "memory_protection" / f"{name}-{uuid4().hex[:8]}"
+        base.mkdir(parents=True, exist_ok=True)
+        return base, base / "state.json", base / "state.lock"
+
     def test_load_state_returns_defaults_for_invalid_json(self):
         state_path = TEST_RUNTIME_DIR / "memory_invalid_state.json"
         state_path.parent.mkdir(parents=True, exist_ok=True)
@@ -142,6 +150,155 @@ class MemoryTestCase(unittest.TestCase):
 
         self.assertIn("No pude tomar el lock de estado", str(ctx.exception))
         self.assertIn("busy-test", str(ctx.exception))
+
+    def test_save_state_creates_redacted_auto_backup_and_mirror(self):
+        base, state_path, lock_path = self._memory_protection_paths("auto-mirror")
+        mirror_dir = base / "mirror"
+
+        seeded_state = memory.normalize_state({
+            "goal": "memoria protegida",
+            "notifications": {
+                "enabled": True,
+                "channels": ["ntfy", "telegram"],
+                "ntfy": {"topic": "topic", "token": "ntfy-secret"},
+                "telegram": {
+                    "bot_token": "123456:secret",
+                    "chat_id": "42",
+                    "pending_power_confirmation": {
+                        "action": "shutdown",
+                        "token": "pending-secret",
+                    },
+                },
+            },
+            "memory_protection": {
+                "mirror_dir": str(mirror_dir),
+                "retention": {
+                    "max_auto_backups": 10,
+                    "keep_daily_days": 0,
+                },
+            },
+        })
+
+        with patch.object(memory, "STATE_FILE", state_path):
+            with patch.object(memory, "STATE_LOCK_FILE", lock_path):
+                memory.save_state(seeded_state)
+
+        stored = json.loads(state_path.read_text(encoding="utf-8"))
+        local_backups = list((base / ".yarbis_memory_backups").glob("*.json"))
+        mirror_backups = list(mirror_dir.glob("*.json"))
+
+        self.assertTrue(stored["memory_protection"]["last_backup_at"])
+        self.assertEqual(stored["memory_protection"]["last_error"], "")
+        self.assertEqual(len(local_backups), 1)
+        self.assertEqual(len(mirror_backups), 1)
+
+        package = json.loads(local_backups[0].read_text(encoding="utf-8"))
+        self.assertEqual(package["options"]["reason"], "auto_state_change")
+        self.assertFalse(package["options"]["include_secrets"])
+        self.assertEqual(package["state"]["notifications"]["ntfy"]["token"], "[redacted]")
+        self.assertEqual(package["state"]["notifications"]["telegram"]["bot_token"], "[redacted]")
+        self.assertEqual(
+            package["state"]["notifications"]["telegram"]["pending_power_confirmation"]["token"],
+            "[redacted]",
+        )
+
+    def test_load_state_restores_corrupt_state_from_local_backup(self):
+        base, state_path, lock_path = self._memory_protection_paths("restore-local")
+        seeded_state = memory.normalize_state({"goal": "restaurar local"})
+
+        with patch.object(memory, "STATE_FILE", state_path):
+            with patch.object(memory, "STATE_LOCK_FILE", lock_path):
+                memory.save_state(seeded_state)
+                state_path.write_text("{", encoding="utf-8")
+                restored = memory.load_state()
+
+        recovery_files = list((base / ".yarbis_runtime" / "memory_recovery").glob("*.json"))
+        self.assertEqual(restored["goal"], "restaurar local")
+        self.assertTrue(restored["memory_protection"]["last_recovery_at"])
+        self.assertIn("Estado restaurado", restored["memory_protection"]["last_error"])
+        self.assertEqual(len(recovery_files), 1)
+
+    def test_load_state_restores_missing_state_from_mirror_when_local_backup_is_gone(self):
+        base, state_path, lock_path = self._memory_protection_paths("restore-mirror")
+        mirror_dir = base / "mirror"
+        seeded_state = memory.normalize_state({
+            "goal": "restaurar espejo",
+            "memory_protection": {
+                "mirror_dir": str(mirror_dir),
+            },
+        })
+
+        with patch.object(memory, "STATE_FILE", state_path):
+            with patch.object(memory, "STATE_LOCK_FILE", lock_path):
+                memory.save_state(seeded_state)
+                shutil.rmtree(base / ".yarbis_memory_backups")
+                state_path.unlink()
+                restored = memory.load_state()
+
+        self.assertEqual(restored["goal"], "restaurar espejo")
+        self.assertTrue(restored["memory_protection"]["last_recovery_at"])
+        self.assertTrue(state_path.exists())
+
+    def test_load_state_without_valid_backup_preserves_corrupt_file_and_defaults(self):
+        base, state_path, lock_path = self._memory_protection_paths("no-backup")
+        state_path.write_text("{", encoding="utf-8")
+
+        with patch.object(memory, "STATE_FILE", state_path):
+            with patch.object(memory, "STATE_LOCK_FILE", lock_path):
+                state = memory.load_state()
+
+        recovery_files = list((base / ".yarbis_runtime" / "memory_recovery").glob("*.json"))
+        stored = json.loads(state_path.read_text(encoding="utf-8"))
+        self.assertEqual(state["goal"], memory.DEFAULT_GOAL)
+        self.assertEqual(stored["goal"], memory.DEFAULT_GOAL)
+        self.assertEqual(len(recovery_files), 1)
+        self.assertIn("No pude leer", state["memory_protection"]["last_error"])
+
+    def test_auto_backup_pruning_preserves_manual_backups(self):
+        base, state_path, lock_path = self._memory_protection_paths("prune")
+        backups_dir = base / ".yarbis_memory_backups"
+
+        with patch.object(memory, "STATE_FILE", state_path):
+            with patch.object(memory, "STATE_LOCK_FILE", lock_path):
+                with patch.object(memory_transfer, "BACKUPS_DIR", backups_dir):
+                    memory.save_state(memory.normalize_state({
+                        "goal": "version 0",
+                        "memory_protection": {
+                            "retention": {
+                                "max_auto_backups": 2,
+                                "keep_daily_days": 0,
+                            },
+                        },
+                    }))
+                    manual_backup = memory_transfer.create_backup()
+                    for index in range(1, 6):
+                        memory.save_state(memory.normalize_state({
+                            "goal": f"version {index}",
+                            "memory_protection": {
+                                "retention": {
+                                    "max_auto_backups": 2,
+                                    "keep_daily_days": 0,
+                                },
+                            },
+                        }))
+
+        packages = [
+            json.loads(path.read_text(encoding="utf-8"))
+            for path in backups_dir.glob("*.json")
+        ]
+        auto_packages = [
+            package
+            for package in packages
+            if package["options"]["reason"] == "auto_state_change"
+        ]
+        manual_ids = [
+            package["id"]
+            for package in packages
+            if package["options"]["reason"] == "manual"
+        ]
+
+        self.assertLessEqual(len(auto_packages), 2)
+        self.assertIn(manual_backup["id"], manual_ids)
 
     def test_render_state_summary_can_omit_last_result_for_internal_context(self):
         summary = memory.render_state_summary(

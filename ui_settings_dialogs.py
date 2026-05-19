@@ -1,6 +1,6 @@
 import os
 import tkinter as tk
-from tkinter import ttk
+from tkinter import filedialog, ttk
 
 from memory import (
     DEFAULT_OLLAMA_API_KEY_ENV_VAR,
@@ -559,6 +559,142 @@ class OllamaSettingsDialog(ThemedDialog):
             "host": self.host_entry.get().strip(),
             "api_key_env_var": self.api_key_env_entry.get().strip(),
             "timeout_seconds": self.timeout_spin.get().strip(),
+        }
+
+
+class MemoryProtectionDialog(ThemedDialog):
+    def __init__(self, parent, initial_settings: dict, status_text: str = ""):
+        self.initial_settings = initial_settings if isinstance(initial_settings, dict) else {}
+        self.status_text = status_text
+        super().__init__(parent, "Proteccion de memoria")
+
+    def body(self, master):
+        self._prepare_body(master)
+        retention = self.initial_settings.get("retention", {})
+        if not isinstance(retention, dict):
+            retention = {}
+
+        self.enabled_var = tk.BooleanVar(value=bool(self.initial_settings.get("enabled", True)))
+        self.backup_each_change_var = tk.BooleanVar(
+            value=bool(self.initial_settings.get("backup_on_every_change", True))
+        )
+        self.verify_var = tk.BooleanVar(value=bool(self.initial_settings.get("verify_after_write", True)))
+        self.restore_var = tk.BooleanVar(value=bool(self.initial_settings.get("auto_restore", True)))
+        self.mirror_var = tk.StringVar(value=str(self.initial_settings.get("mirror_dir", "")).strip())
+        self.max_auto_var = tk.StringVar(value=str(retention.get("max_auto_backups", 250)))
+        self.keep_daily_var = tk.StringVar(value=str(retention.get("keep_daily_days", 90)))
+
+        container = ttk.Frame(master)
+        container.grid(row=0, column=0, sticky="nsew", padx=6, pady=6)
+        container.columnconfigure(0, weight=1)
+        master.columnconfigure(0, weight=1)
+
+        ttk.Checkbutton(
+            container,
+            text="Activar proteccion de memoria",
+            variable=self.enabled_var,
+        ).grid(row=0, column=0, sticky="w", pady=(0, 4))
+
+        ttk.Checkbutton(
+            container,
+            text="Respaldar cada cambio de memoria",
+            variable=self.backup_each_change_var,
+        ).grid(row=1, column=0, sticky="w", pady=2)
+
+        ttk.Checkbutton(
+            container,
+            text="Verificar JSON despues de escribir",
+            variable=self.verify_var,
+        ).grid(row=2, column=0, sticky="w", pady=2)
+
+        ttk.Checkbutton(
+            container,
+            text="Restaurar automaticamente si state.json falla",
+            variable=self.restore_var,
+        ).grid(row=3, column=0, sticky="w", pady=(2, 10))
+
+        mirror_frame = ttk.LabelFrame(container, text="Espejo externo")
+        mirror_frame.grid(row=4, column=0, sticky="ew", pady=(0, 10))
+        mirror_frame.columnconfigure(0, weight=1)
+
+        self.mirror_entry = ttk.Entry(mirror_frame, textvariable=self.mirror_var, width=64)
+        self.mirror_entry.grid(row=0, column=0, sticky="ew", padx=10, pady=10)
+        ttk.Button(
+            mirror_frame,
+            text="Elegir carpeta",
+            command=self._choose_mirror_dir,
+        ).grid(row=0, column=1, sticky="e", padx=(0, 10), pady=10)
+
+        retention_frame = ttk.LabelFrame(container, text="Retencion")
+        retention_frame.grid(row=5, column=0, sticky="ew", pady=(0, 10))
+        retention_frame.columnconfigure(0, weight=1)
+        retention_frame.columnconfigure(1, weight=1)
+
+        ttk.Label(retention_frame, text="Automaticos recientes").grid(
+            row=0,
+            column=0,
+            sticky="w",
+            padx=10,
+            pady=(10, 2),
+        )
+        self.max_auto_spin = ttk.Spinbox(
+            retention_frame,
+            from_=1,
+            to=5000,
+            increment=10,
+            width=8,
+            textvariable=self.max_auto_var,
+            style="Yarbis.TSpinbox",
+        )
+        self.max_auto_spin.grid(row=1, column=0, sticky="w", padx=10, pady=(0, 10))
+
+        ttk.Label(retention_frame, text="Dias diarios").grid(
+            row=0,
+            column=1,
+            sticky="w",
+            padx=10,
+            pady=(10, 2),
+        )
+        self.keep_daily_spin = ttk.Spinbox(
+            retention_frame,
+            from_=0,
+            to=3650,
+            increment=1,
+            width=8,
+            textvariable=self.keep_daily_var,
+            style="Yarbis.TSpinbox",
+        )
+        self.keep_daily_spin.grid(row=1, column=1, sticky="w", padx=10, pady=(0, 10))
+
+        if self.status_text:
+            ttk.Label(
+                container,
+                text=self.status_text,
+                foreground=self.theme_palette["muted"],
+                wraplength=560,
+                justify="left",
+            ).grid(row=6, column=0, sticky="ew")
+
+        return self.mirror_entry
+
+    def _choose_mirror_dir(self):
+        selected = filedialog.askdirectory(
+            parent=self,
+            title="Seleccionar espejo externo",
+            initialdir=self.mirror_var.get().strip() or os.getcwd(),
+        )
+        if selected:
+            self.mirror_var.set(selected)
+
+    def apply(self):
+        self.result = {
+            "enabled": self.enabled_var.get(),
+            "backup_on_every_change": self.backup_each_change_var.get(),
+            "mirror_dir": self.mirror_var.get().strip(),
+            "max_auto_backups": self.max_auto_spin.get().strip(),
+            "keep_daily_days": self.keep_daily_spin.get().strip(),
+            "verify_after_write": self.verify_var.get(),
+            "auto_restore": self.restore_var.get(),
         }
 
 
