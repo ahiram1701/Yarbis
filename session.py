@@ -50,6 +50,13 @@ from notifications import (
 from self_knowledge import render_self_knowledge_summary
 from tools import (
     add_task,
+    coding_apply_proposal,
+    coding_discard_proposal,
+    coding_git_status,
+    coding_get_proposal,
+    coding_list_proposals,
+    coding_set_workspace,
+    coding_workspace_overview,
     create_memory_backup,
     delete_note,
     get_note,
@@ -89,6 +96,7 @@ FACTORY_RESET_RUNTIME_FILES = (
 FACTORY_RESET_RUNTIME_DIRS = (
     "browser",
     "calendar",
+    "coding_proposals",
 )
 
 
@@ -1056,6 +1064,41 @@ def import_memory_backup_text(path_or_id: str, mode: str = "replace") -> str:
 def add_task_text(title: str, details: str = "", priority: str = "media") -> str:
     with SESSION_LOCK:
         return add_task(title=title, details=details, priority=priority or "media")
+
+
+def coding_set_workspace_text(path: str) -> str:
+    with SESSION_LOCK:
+        return coding_set_workspace(path=path)
+
+
+def coding_workspace_overview_text() -> str:
+    with SESSION_LOCK:
+        return coding_workspace_overview()
+
+
+def coding_list_proposals_text(status: str = "pending", limit: int = 20) -> str:
+    with SESSION_LOCK:
+        return coding_list_proposals(status=status, limit=limit)
+
+
+def coding_get_proposal_text(proposal_id: str) -> str:
+    with SESSION_LOCK:
+        return coding_get_proposal(proposal_id=proposal_id)
+
+
+def coding_apply_proposal_text(proposal_id: str) -> str:
+    with SESSION_LOCK:
+        return coding_apply_proposal(proposal_id=proposal_id)
+
+
+def coding_discard_proposal_text(proposal_id: str) -> str:
+    with SESSION_LOCK:
+        return coding_discard_proposal(proposal_id=proposal_id)
+
+
+def coding_git_status_text() -> str:
+    with SESSION_LOCK:
+        return coding_git_status()
 
 
 def social_accounts_overview_text() -> str:

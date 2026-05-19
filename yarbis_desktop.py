@@ -27,6 +27,11 @@ from pc_context_runtime import (
 from session import (
     add_task_text,
     clear_activity_for_first_run_if_needed,
+    coding_apply_proposal_text,
+    coding_discard_proposal_text,
+    coding_get_proposal_text,
+    coding_list_proposals_text,
+    coding_set_workspace_text,
     create_memory_backup_text,
     get_local_context_settings,
     get_notification_settings,
@@ -78,6 +83,7 @@ from ui_dialogs import (
     NoteDialog,
     NotesDialog,
     ProfileDialog,
+    CodingProposalsDialog,
     SocialOAuthDialog,
     TaskDialog,
 )
@@ -223,6 +229,7 @@ class YarbisDesktop(tk.Tk):
         self.thinking_var = tk.StringVar(value="No.")
         self.theme_var = tk.StringVar()
         self.ollama_var = tk.StringVar()
+        self.coding_var = tk.StringVar()
         self.health_var = tk.StringVar()
         self.readiness_var = tk.StringVar()
         self.status_var = tk.StringVar(value="Listo.")
@@ -293,8 +300,8 @@ class YarbisDesktop(tk.Tk):
             pady=4,
         )
 
-        ttk.Label(summary, text="Pensando").grid(row=5, column=0, sticky="nw", padx=10, pady=4)
-        ttk.Label(summary, textvariable=self.thinking_var, wraplength=780).grid(
+        ttk.Label(summary, text="Coding").grid(row=5, column=0, sticky="nw", padx=10, pady=4)
+        ttk.Label(summary, textvariable=self.coding_var, wraplength=780).grid(
             row=5,
             column=1,
             sticky="nw",
@@ -302,8 +309,8 @@ class YarbisDesktop(tk.Tk):
             pady=4,
         )
 
-        ttk.Label(summary, text="Salud").grid(row=6, column=0, sticky="nw", padx=10, pady=4)
-        ttk.Label(summary, textvariable=self.health_var, wraplength=780).grid(
+        ttk.Label(summary, text="Pensando").grid(row=6, column=0, sticky="nw", padx=10, pady=4)
+        ttk.Label(summary, textvariable=self.thinking_var, wraplength=780).grid(
             row=6,
             column=1,
             sticky="nw",
@@ -311,8 +318,8 @@ class YarbisDesktop(tk.Tk):
             pady=4,
         )
 
-        ttk.Label(summary, text="Preparacion").grid(row=7, column=0, sticky="nw", padx=10, pady=4)
-        ttk.Label(summary, textvariable=self.readiness_var, wraplength=780).grid(
+        ttk.Label(summary, text="Salud").grid(row=7, column=0, sticky="nw", padx=10, pady=4)
+        ttk.Label(summary, textvariable=self.health_var, wraplength=780).grid(
             row=7,
             column=1,
             sticky="nw",
@@ -320,9 +327,18 @@ class YarbisDesktop(tk.Tk):
             pady=4,
         )
 
-        ttk.Label(summary, text="Pendiente").grid(row=8, column=0, sticky="nw", padx=10, pady=(4, 10))
-        ttk.Label(summary, textvariable=self.pending_var, wraplength=780).grid(
+        ttk.Label(summary, text="Preparacion").grid(row=8, column=0, sticky="nw", padx=10, pady=4)
+        ttk.Label(summary, textvariable=self.readiness_var, wraplength=780).grid(
             row=8,
+            column=1,
+            sticky="nw",
+            padx=(0, 10),
+            pady=4,
+        )
+
+        ttk.Label(summary, text="Pendiente").grid(row=9, column=0, sticky="nw", padx=10, pady=(4, 10))
+        ttk.Label(summary, textvariable=self.pending_var, wraplength=780).grid(
+            row=9,
             column=1,
             sticky="nw",
             padx=(0, 10),
@@ -387,6 +403,14 @@ class YarbisDesktop(tk.Tk):
                 {"text": "Editar perfil", "command": self._edit_profile},
                 {"text": "Ver notas", "command": self._manage_notes},
                 {"text": "Crear tarea", "command": self._create_task},
+            ),
+        )
+        self._build_action_group(
+            actions,
+            "Coding",
+            (
+                {"text": "Workspace de codigo", "command": self._choose_coding_workspace},
+                {"text": "Propuestas", "command": self._manage_coding_proposals},
             ),
         )
         self._build_action_group(
@@ -1004,6 +1028,17 @@ class YarbisDesktop(tk.Tk):
             f"@ {host_text} "
             f"({ollama_settings.get('timeout_seconds', DEFAULT_OLLAMA_TIMEOUT_SECONDS)}s)"
         )
+        coding_settings = state.get("coding", {})
+        coding_workspace = str(coding_settings.get("workspace_path", "")).strip()
+        coding_pending = coding_settings.get("pending_proposal_ids", [])
+        if coding_workspace:
+            self.coding_var.set(
+                f"{coding_workspace} "
+                f"(modo={coding_settings.get('mode', 'propose_first')}, "
+                f"propuestas={len(coding_pending)})"
+            )
+        else:
+            self.coding_var.set("Sin workspace de codigo.")
 
         health = health_status()
         self.health_var.set(format_health_status(health))
@@ -1656,6 +1691,33 @@ class YarbisDesktop(tk.Tk):
 
         self._append_activity("Objetivo actualizado", result)
         readiness_status(force=True)
+        self.refresh_state_view()
+
+    def _choose_coding_workspace(self):
+        state = load_state()
+        initial_dir = str(state.get("coding", {}).get("workspace_path", "")).strip() or str(_WORKSPACE_ROOT)
+        selected_path = filedialog.askdirectory(
+            title="Selecciona el repositorio de codigo",
+            initialdir=initial_dir,
+            parent=self,
+        )
+        if not selected_path:
+            return
+
+        result = coding_set_workspace_text(selected_path)
+        self._append_activity("Workspace de codigo", result)
+        self.refresh_state_view()
+
+    def _manage_coding_proposals(self):
+        dialog = CodingProposalsDialog(
+            self,
+            apply_callback=coding_apply_proposal_text,
+            discard_callback=coding_discard_proposal_text,
+            detail_callback=coding_get_proposal_text,
+            list_callback=coding_list_proposals_text,
+        )
+        if dialog.result:
+            self._append_activity("Propuestas de coding", dialog.result)
         self.refresh_state_view()
 
     def _edit_profile(self):

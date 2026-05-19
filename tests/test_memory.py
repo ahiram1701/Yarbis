@@ -28,6 +28,9 @@ class MemoryTestCase(unittest.TestCase):
             memory.DEFAULT_MAX_STEPS_PER_CYCLE,
         )
         self.assertEqual(state["ollama"]["timeout_seconds"], 900)
+        self.assertEqual(state["coding"]["workspace_path"], "")
+        self.assertEqual(state["coding"]["mode"], memory.DEFAULT_CODING_MODE)
+        self.assertEqual(state["coding"]["pending_proposal_ids"], [])
 
     def test_legacy_default_goal_normalizes_to_empty(self):
         normalized = memory.normalize_state({
@@ -35,6 +38,29 @@ class MemoryTestCase(unittest.TestCase):
         })
 
         self.assertEqual(normalized["goal"], "")
+
+    def test_normalize_state_preserves_coding_settings(self):
+        normalized = memory.normalize_state({
+            "coding": {
+                "workspace_path": "C:/repo/demo",
+                "mode": "propose_first",
+                "pending_proposal_ids": ["proposal-1", "proposal-1", "", "proposal-2"],
+            }
+        })
+
+        self.assertEqual(normalized["coding"]["workspace_path"], "C:/repo/demo")
+        self.assertEqual(normalized["coding"]["mode"], "propose_first")
+        self.assertEqual(normalized["coding"]["pending_proposal_ids"], ["proposal-1", "proposal-2"])
+
+    def test_normalize_state_defaults_invalid_coding_mode(self):
+        normalized = memory.normalize_state({
+            "coding": {
+                "workspace_path": "C:/repo/demo",
+                "mode": "direct_write",
+            }
+        })
+
+        self.assertEqual(normalized["coding"]["mode"], memory.DEFAULT_CODING_MODE)
 
     def test_save_state_keeps_messages_complete(self):
         state_path = TEST_RUNTIME_DIR / "memory_complete_messages_state.json"

@@ -113,6 +113,11 @@ VALID_SOCIAL_PUBLICATION_STATUS = {"pending_confirmation", "published", "failed"
 MAX_SOCIAL_ITEMS = 80
 MAX_SOCIAL_TEXT_CHARS = 8_000
 MAX_SOCIAL_METADATA_CHARS = 2_000
+DEFAULT_CODING_MODE = "propose_first"
+VALID_CODING_MODES = {DEFAULT_CODING_MODE}
+MAX_CODING_WORKSPACE_PATH_CHARS = 1_000
+MAX_CODING_PROPOSAL_IDS = 80
+MAX_CODING_PROPOSAL_ID_CHARS = 80
 
 
 def default_state():
@@ -139,6 +144,11 @@ def default_state():
         "autonomy": {
             "max_steps_per_cycle": DEFAULT_MAX_STEPS_PER_CYCLE,
             "auto_cycles_default": DEFAULT_AUTO_CYCLES,
+        },
+        "coding": {
+            "workspace_path": "",
+            "mode": DEFAULT_CODING_MODE,
+            "pending_proposal_ids": [],
         },
         "ollama": {
             "model": DEFAULT_OLLAMA_MODEL,
@@ -475,6 +485,49 @@ def _normalize_autonomy(autonomy):
         normalized["auto_cycles_default"] = defaults["auto_cycles_default"]
 
     return normalized
+
+
+def _normalize_coding(coding):
+    defaults = default_state()["coding"]
+    if not isinstance(coding, dict):
+        coding = {}
+
+    workspace_path = _coerce_text(
+        coding.get("workspace_path", defaults["workspace_path"]),
+        MAX_CODING_WORKSPACE_PATH_CHARS,
+    ).strip()
+
+    mode = _coerce_text(
+        coding.get("mode", defaults["mode"]),
+        40,
+    ).strip().lower()
+    if mode not in VALID_CODING_MODES:
+        mode = defaults["mode"]
+
+    raw_pending_ids = coding.get("pending_proposal_ids", defaults["pending_proposal_ids"])
+    if isinstance(raw_pending_ids, str):
+        pending_candidates = re.split(r"[,;\n]+", raw_pending_ids)
+    elif isinstance(raw_pending_ids, list):
+        pending_candidates = raw_pending_ids
+    else:
+        pending_candidates = []
+
+    pending_proposal_ids = []
+    seen_ids = set()
+    for candidate in pending_candidates:
+        proposal_id = _coerce_text(candidate, MAX_CODING_PROPOSAL_ID_CHARS).strip()
+        if not proposal_id or proposal_id in seen_ids:
+            continue
+        pending_proposal_ids.append(proposal_id)
+        seen_ids.add(proposal_id)
+        if len(pending_proposal_ids) >= MAX_CODING_PROPOSAL_IDS:
+            break
+
+    return {
+        "workspace_path": workspace_path,
+        "mode": mode,
+        "pending_proposal_ids": pending_proposal_ids,
+    }
 
 
 def _normalize_ollama(ollama):
@@ -1271,6 +1324,7 @@ def normalize_state(state):
         state.get("awaiting_user_input", {}),
     )
     normalized["autonomy"] = _normalize_autonomy(state.get("autonomy", {}))
+    normalized["coding"] = _normalize_coding(state.get("coding", {}))
     normalized["ollama"] = _normalize_ollama(state.get("ollama", {}))
     normalized["service"] = _normalize_service(state.get("service", {}))
     normalized["ui"] = _normalize_ui(state.get("ui", {}))
@@ -1332,6 +1386,12 @@ def render_state_summary(
             "Autonomia: "
             f"{normalized['autonomy']['max_steps_per_cycle']} pasos/ciclo, "
             f"{normalized['autonomy']['auto_cycles_default']} ciclos por defecto"
+        ),
+        (
+            "Coding: "
+            f"workspace={normalized['coding']['workspace_path'] or '-'}, "
+            f"modo={normalized['coding']['mode']}, "
+            f"propuestas_pendientes={len(normalized['coding']['pending_proposal_ids'])}"
         ),
         (
             "Ollama: "

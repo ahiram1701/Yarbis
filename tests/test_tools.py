@@ -18,6 +18,8 @@ class ToolsTestCase(unittest.TestCase):
         self.runtime_dir = TEST_RUNTIME_ROOT / f"{self._testMethodName}-{uuid4().hex[:8]}"
         self.runtime_dir.mkdir(parents=True, exist_ok=True)
         self.checkpoints_dir = self.runtime_dir / ".yarbis_checkpoints"
+        self.proposals_dir = self.runtime_dir / ".yarbis_runtime" / "coding_proposals"
+        self.state_path = self.runtime_dir / "state.json"
         self.external_dir = Path(tempfile.gettempdir()) / f"yarbis-tools-{self._testMethodName}-{uuid4().hex[:8]}"
         self.external_dir.mkdir(parents=True, exist_ok=True)
 
@@ -114,6 +116,149 @@ class ToolsTestCase(unittest.TestCase):
         self.assertIn("[truncado", preview)
         self.assertIn("diff truncado", diff)
         self.assertLessEqual(len(diff.splitlines()), tools.MAX_DIFF_LINES)
+
+    def test_coding_set_workspace_persists_repo_path(self):
+        with patch.object(memory, "STATE_FILE", self.state_path):
+            with patch.object(tools, "CODING_PROPOSALS_DIR", self.proposals_dir):
+                result = tools.coding_set_workspace(str(self.external_dir))
+                state = memory.load_state()
+
+        self.assertIn("Workspace de codigo configurado", result)
+        self.assertEqual(state["coding"]["workspace_path"], str(self.external_dir.resolve()))
+        self.assertEqual(state["coding"]["mode"], "propose_first")
+
+    def test_coding_set_workspace_rejects_missing_path(self):
+        missing_path = self.external_dir / "missing"
+
+        result = tools.coding_set_workspace(str(missing_path))
+
+        self.assertIn("no existe", result)
+
+    def test_coding_tools_reject_paths_outside_active_workspace(self):
+        outside_file = self.runtime_dir / "outside.txt"
+        outside_file.write_text("fuera", encoding="utf-8")
+
+        with patch.object(memory, "STATE_FILE", self.state_path):
+            with patch.object(tools, "CODING_PROPOSALS_DIR", self.proposals_dir):
+                tools.coding_set_workspace(str(self.external_dir))
+                result = tools.coding_read_text_file(str(outside_file))
+
+        self.assertIn("Ruta fuera del workspace de codigo activo", result)
+
+    def test_coding_propose_text_file_creates_diff_without_modifying_file(self):
+        file_path = self.external_dir / "app.py"
+        file_path.write_text("print('old')\n", encoding="utf-8")
+
+        with patch.object(memory, "STATE_FILE", self.state_path):
+            with patch.object(tools, "CODING_PROPOSALS_DIR", self.proposals_dir):
+                tools.coding_set_workspace(str(self.external_dir))
+                result = tools.coding_propose_text_file("app.py", "print('new')\n", reason="actualizar salida")
+                state = memory.load_state()
+                detail = tools.coding_get_proposal(state["coding"]["pending_proposal_ids"][0])
+
+        proposal_files = list(self.proposals_dir.glob("*.json"))
+        proposal = json.loads(proposal_files[0].read_text(encoding="utf-8"))
+        self.assertIn("Propuesta de coding creada", result)
+        self.assertIn("Diff:", detail)
+        self.assertIn("-print('old')", result)
+        self.assertIn("+print('new')", result)
+        self.assertEqual(file_path.read_text(encoding="utf-8"), "print('old')\n")
+        self.assertEqual(proposal["relative_path"], "app.py")
+        self.assertEqual(proposal["status"], "pending")
+        self.assertEqual(state["coding"]["pending_proposal_ids"], [proposal["id"]])
+
+    def test_coding_apply_proposal_writes_file_with_checkpoint(self):
+        file_path = self.external_dir / "app.py"
+        file_path.write_text("print('old')\n", encoding="utf-8")
+
+        with patch.object(memory, "STATE_FILE", self.state_path):
+            with patch.object(tools, "CODING_PROPOSALS_DIR", self.proposals_dir):
+                with patch.object(tools, "CHECKPOINTS_DIR", self.checkpoints_dir):
+                    tools.coding_set_workspace(str(self.external_dir))
+                    propose_result = tools.coding_propose_text_file("app.py", "print('new')\n")
+                    proposal_id = next(
+                        line.split(":", 1)[1].strip()
+                        for line in propose_result.splitlines()
+                        if line.startswith("Id:")
+                    )
+
+                    apply_result = tools.coding_apply_proposal(proposal_id)
+                    state = memory.load_state()
+
+        proposal = json.loads((self.proposals_dir / f"{proposal_id}.json").read_text(encoding="utf-8"))
+        checkpoint_dirs = [item for item in self.checkpoints_dir.iterdir() if item.is_dir()]
+        self.assertIn("Propuesta aplicada", apply_result)
+        self.assertEqual(file_path.read_text(encoding="utf-8"), "print('new')\n")
+        self.assertEqual(proposal["status"], "applied")
+        self.assertEqual(state["coding"]["pending_proposal_ids"], [])
+        self.assertEqual(len(checkpoint_dirs), 1)
+
+    def test_write_text_file_blocks_active_coding_workspace_in_propose_first_mode(self):
+        file_path = self.external_dir / "app.py"
+        file_path.write_text("print('old')\n", encoding="utf-8")
+
+        with patch.object(memory, "STATE_FILE", self.state_path):
+            with patch.object(tools, "CODING_PROPOSALS_DIR", self.proposals_dir):
+                tools.coding_set_workspace(str(self.external_dir))
+                result = tools.write_text_file(str(file_path), "print('new')\n")
+
+        self.assertIn("Escritura bloqueada", result)
+        self.assertEqual(file_path.read_text(encoding="utf-8"), "print('old')\n")
+
+    def test_coding_git_status_runs_inside_active_workspace(self):
+        fake_result = subprocess.CompletedProcess(
+            args=["git", "status"],
+            returncode=0,
+            stdout="## main\n M app.py\n",
+            stderr="",
+        )
+
+        with patch.object(memory, "STATE_FILE", self.state_path):
+            with patch.object(tools, "CODING_PROPOSALS_DIR", self.proposals_dir):
+                tools.coding_set_workspace(str(self.external_dir))
+                with patch.object(tools.subprocess, "run", return_value=fake_result) as run_mock:
+                    result = tools.coding_git_status()
+
+        self.assertIn("Git status OK.", result)
+        self.assertIn("M app.py", result)
+        self.assertEqual(run_mock.call_args.kwargs["cwd"], str(self.external_dir.resolve()))
+        self.assertFalse(run_mock.call_args.kwargs["shell"])
+
+    def test_coding_git_status_reports_non_repo_failure(self):
+        fake_result = subprocess.CompletedProcess(
+            args=["git", "status"],
+            returncode=128,
+            stdout="",
+            stderr="fatal: not a git repository",
+        )
+
+        with patch.object(memory, "STATE_FILE", self.state_path):
+            with patch.object(tools, "CODING_PROPOSALS_DIR", self.proposals_dir):
+                tools.coding_set_workspace(str(self.external_dir))
+                with patch.object(tools.subprocess, "run", return_value=fake_result):
+                    result = tools.coding_git_status()
+
+        self.assertIn("Git status con fallos", result)
+        self.assertIn("not a git repository", result)
+
+    def test_coding_run_validation_executes_command_inside_active_workspace(self):
+        fake_result = subprocess.CompletedProcess(
+            args="python -m unittest",
+            returncode=0,
+            stdout="OK",
+            stderr="",
+        )
+
+        with patch.object(memory, "STATE_FILE", self.state_path):
+            with patch.object(tools, "CODING_PROPOSALS_DIR", self.proposals_dir):
+                tools.coding_set_workspace(str(self.external_dir))
+                with patch.object(tools.subprocess, "run", return_value=fake_result) as run_mock:
+                    result = tools.coding_run_validation("python -m unittest", timeout_seconds=5)
+
+        self.assertIn("Validacion OK.", result)
+        self.assertIn("OK", result)
+        self.assertEqual(run_mock.call_args.kwargs["cwd"], str(self.external_dir.resolve()))
+        self.assertTrue(run_mock.call_args.kwargs["shell"])
 
     def test_restore_checkpoint_recovers_previous_content(self):
         file_path = self.runtime_dir / "recover_me.py"

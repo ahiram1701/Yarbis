@@ -27,6 +27,7 @@ Yarbis ya funciona como agente personal local:
 - puede preparar contenido para redes sociales, guardar drafts, conectar cuentas Meta/LinkedIn por OAuth local y publicar en Facebook Pages, Instagram profesional o LinkedIn con confirmacion explicita
 - puede asistir publicaciones en perfil personal de Facebook copiando el texto y abriendo Facebook o Share Dialog, sin publicar automaticamente
 - puede restaurar checkpoints y ejecutar tests del proyecto
+- puede trabajar como agente de coding sobre un repositorio local activo en modo `propose_first`: inspecciona archivos, genera propuestas con diff y aplica cambios solo tras aprobacion
 - ejecuta un autoanalisis de identidad, codigo fuente, sistema operativo y hardware al arrancar
 - puede recibir y responder mensajes por Telegram cuando ese canal esta configurado
 - puede ejecutarse como Windows Service y arrancar con Windows desde SCM
@@ -298,6 +299,64 @@ Al cambiar `goal`, Yarbis reinicia el contexto operativo del objetivo:
 - limpia preguntas pendientes
 - conserva perfil, notas, ajustes, notificaciones e internet
 
+## Creacion de contenido para redes sociales
+
+Yarbis puede ayudarte a planear contenido, redactar piezas por plataforma, guardar drafts, preparar publicaciones y publicar cuando haya una cuenta conectada. La publicacion real siempre queda bloqueada hasta que confirmes con la frase exacta `PUBLICAR <id>`.
+
+Flujo recomendado:
+
+1. Define el objetivo de contenido, por ejemplo: `Quiero preparar contenido para redes sociales de mi servicio de automatizacion para negocios locales`.
+2. Da contexto de marca: nicho, audiencia, oferta, tono, restricciones, enlaces, hashtags prohibidos o aprobados y frecuencia deseada.
+3. Pide un calendario, brief o lote de piezas: `Crea 10 ideas para LinkedIn e Instagram con captions y CTA`.
+4. Cuando una pieza te guste, pide: `Guarda esto como draft social para LinkedIn` o `Prepara esta pieza para publicar en Instagram`.
+5. Revisa el preview que devuelve Yarbis. Si esta correcto, confirma exactamente con `PUBLICAR <id>`.
+
+### Conectar cuentas
+
+Desde la app de escritorio usa `Redes sociales` -> `Conectar cuenta`.
+
+- `meta` conecta Facebook Pages, Instagram profesional y perfil personal de Facebook en modo asistido.
+- `linkedin` conecta perfiles u organizaciones donde la app tenga permisos.
+- Necesitas crear una app en Meta o LinkedIn y proporcionar `Client/App ID` y `Client/App Secret`.
+- Si usas el callback local por defecto, Yarbis abre el navegador y espera la autorizacion. Si el proveedor no acepta loopback o prefieres completar manualmente, pega la URL final de callback en el campo `Callback pegado` y vuelve a aceptar.
+- Los tokens se guardan en `.yarbis_runtime/credentials/`; `state.json` solo conserva referencias y metadatos.
+
+Despues de conectar, usa `Redes sociales` -> `Ver cuentas` para revisar los destinos disponibles.
+
+### Publicar con confirmacion
+
+Puedes pedirlo en lenguaje natural:
+
+```text
+Prepara este copy para publicar en la pagina de Facebook conectada: ...
+```
+
+Yarbis creara una publicacion pendiente y devolvera un preview con una frase como:
+
+```text
+PUBLICAR pub-abc123
+```
+
+Solo cuando respondas exactamente esa frase, Yarbis intentara publicar por API. Si falta cuenta conectada, media compatible, permisos o token valido, la publicacion queda detenida y el error se registra sin exponer secretos.
+
+### Facebook personal
+
+Meta no permite publicar automaticamente en perfiles personales por Graph API. Para ese caso, Yarbis usa publicacion asistida:
+
+- prepara el copy, hashtags, link y checklist
+- copia el texto al portapapeles
+- abre Facebook o el Share Dialog
+- deja que tu hagas el click final de publicar
+
+Puedes usar `Redes sociales` -> `Abrir asistido` o pedir: `Abre esta pieza en Facebook personal asistido`.
+
+### Buenas practicas
+
+- Usa Facebook Pages para publicacion automatizada de negocio.
+- Usa Instagram profesional si quieres publicar por API; Instagram requiere media publica (`media_url`) para crear el contenedor.
+- Para LinkedIn con imagen, usa una ruta local de archivo (`media_path`) para que Yarbis suba la imagen antes de publicar.
+- Programa recordatorios con calendario o tareas; Yarbis no autopublica desde el servicio sin confirmacion exacta.
+
 ## Telegram
 
 Telegram funciona como canal de notificaciones y tambien como inbox remoto.
@@ -544,6 +603,9 @@ Yarbis expone al modelo estas herramientas:
 - `add_task`, `list_tasks` y `update_task_status`: backlog de trabajo
 - `set_plan`: plan actual
 - `create_memory_backup`, `list_memory_backups`, `inspect_memory_backup` e `import_memory_backup`: respaldo y trasplante de memoria
+- `coding_set_workspace`, `coding_workspace_overview`, `coding_list_files` y `coding_read_text_file`: contexto de un repositorio local activo
+- `coding_propose_text_file`, `coding_list_proposals`, `coding_get_proposal`, `coding_apply_proposal` y `coding_discard_proposal`: propuestas de cambios de codigo en modo `propose_first`
+- `coding_git_status`, `coding_git_diff` y `coding_run_validation`: estado Git, diff y validaciones dentro del repo activo
 - `list_files` y `read_text_file`: lectura de rutas del workspace o del filesystem local
 - `write_text_file`: escritura con checkpoint y diff
 - `list_checkpoints` y `restore_checkpoint`: recuperacion de cambios
@@ -564,6 +626,17 @@ Yarbis expone al modelo estas herramientas:
 ## Autoedicion segura
 
 Las tools de archivos pueden trabajar dentro del workspace o con rutas absolutas externas. Las escrituras mantienen checkpoint previo en `.yarbis_checkpoints/`.
+
+## Modo coding
+
+Yarbis puede usar un repositorio local como workspace de codigo activo. Primero configura la carpeta con lenguaje natural o desde terminal con:
+
+```powershell
+python main.py
+>>> coding workspace C:\ruta\al\repo
+```
+
+En este modo el flujo por defecto es `propose_first`: Yarbis no escribe directamente en archivos del repo activo con `write_text_file`; crea propuestas persistidas en `.yarbis_runtime/coding_proposals/` con contenido previo, contenido propuesto y diff. Puedes revisarlas con `coding proposals`, aplicarlas con `coding apply <id>` o descartarlas con `coding discard <id>`. Al aplicar una propuesta se crea un checkpoint previo y despues puedes validar con `coding_run_validation` o un comando de tests.
 
 Limites de salida actuales:
 

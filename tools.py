@@ -34,7 +34,9 @@ from social_oauth import SocialOAuthError, connect_social_account
 from social_publishing import SocialPublishError, facebook_assisted_url, publish_publication
 
 WORKSPACE_ROOT = Path(__file__).resolve().parent
+RUNTIME_DIR = WORKSPACE_ROOT / ".yarbis_runtime"
 CHECKPOINTS_DIR = WORKSPACE_ROOT / ".yarbis_checkpoints"
+CODING_PROPOSALS_DIR = RUNTIME_DIR / "coding_proposals"
 MAX_LIST_ITEMS = 200
 MAX_READ_BYTES = 16_000
 MAX_WRITE_BYTES = 64_000
@@ -42,6 +44,8 @@ MAX_WRITE_PREVIEW_CHARS = 600
 MAX_DIFF_LINES = 160
 MAX_TEST_OUTPUT_CHARS = 6_000
 MAX_COMMAND_OUTPUT_CHARS = 12_000
+MAX_CODING_PROPOSAL_REASON_CHARS = 1_000
+MAX_CODING_PROPOSAL_LIST_ITEMS = 50
 IGNORED_LISTING_NAMES = {
     ".git",
     ".venv",
@@ -49,6 +53,7 @@ IGNORED_LISTING_NAMES = {
     "tests_runtime",
     ".yarbis_checkpoints",
     ".yarbis_memory_backups",
+    ".yarbis_runtime",
 }
 PROTECTED_WRITE_ROOT_NAMES = {
     ".git",
@@ -56,9 +61,19 @@ PROTECTED_WRITE_ROOT_NAMES = {
     "__pycache__",
     ".yarbis_checkpoints",
     ".yarbis_memory_backups",
+    ".yarbis_runtime",
 }
 PROTECTED_WRITE_PATHS = {"state.json"}
 CLEAR_VALUE = "[clear]"
+DEFAULT_CODING_MODE = "propose_first"
+CODING_PROPOSAL_PENDING = "pending"
+CODING_PROPOSAL_APPLIED = "applied"
+CODING_PROPOSAL_DISCARDED = "discarded"
+VALID_CODING_PROPOSAL_STATUS = {
+    CODING_PROPOSAL_PENDING,
+    CODING_PROPOSAL_APPLIED,
+    CODING_PROPOSAL_DISCARDED,
+}
 
 
 def _resolve_workspace_path(path: str) -> tuple[Path | None, str | None]:
@@ -66,6 +81,91 @@ def _resolve_workspace_path(path: str) -> tuple[Path | None, str | None]:
     resolved = (WORKSPACE_ROOT / candidate).resolve() if not candidate.is_absolute() else candidate.resolve()
 
     return resolved, None
+
+
+def _is_relative_to(path: Path, root: Path) -> bool:
+    try:
+        path.relative_to(root)
+    except ValueError:
+        return False
+    return True
+
+
+def _coding_state(state: dict | None = None) -> dict:
+    source_state = state if isinstance(state, dict) else load_state()
+    coding = source_state.get("coding", {})
+    return coding if isinstance(coding, dict) else {}
+
+
+def _active_coding_workspace(state: dict | None = None) -> tuple[Path | None, str | None]:
+    coding = _coding_state(state)
+    workspace_text = str(coding.get("workspace_path", "")).strip()
+    if not workspace_text:
+        return None, "No hay workspace de codigo configurado. Usa `coding_set_workspace` primero."
+
+    workspace_path = Path(workspace_text).resolve()
+    if not workspace_path.exists():
+        return None, f"El workspace de codigo no existe: {workspace_text}"
+    if not workspace_path.is_dir():
+        return None, f"El workspace de codigo no es una carpeta: {workspace_text}"
+
+    return workspace_path, None
+
+
+def _resolve_coding_path(path: str = ".") -> tuple[Path | None, Path | None, str | None]:
+    workspace_path, workspace_error = _active_coding_workspace()
+    if workspace_error:
+        return None, None, workspace_error
+
+    cleaned_path = str(path).strip() or "."
+    candidate = Path(cleaned_path)
+    resolved = candidate.resolve() if candidate.is_absolute() else (workspace_path / candidate).resolve()
+
+    try:
+        relative_path = resolved.relative_to(workspace_path)
+    except ValueError:
+        return None, None, (
+            "Ruta fuera del workspace de codigo activo. "
+            f"Workspace: {workspace_path}; ruta solicitada: {cleaned_path}"
+        )
+
+    return resolved, relative_path, None
+
+
+def _coding_write_block_reason(path: Path) -> str | None:
+    coding = _coding_state()
+    if str(coding.get("mode", DEFAULT_CODING_MODE)).strip().lower() != DEFAULT_CODING_MODE:
+        return None
+
+    workspace_text = str(coding.get("workspace_path", "")).strip()
+    if not workspace_text:
+        return None
+
+    workspace_path = Path(workspace_text).resolve()
+    if _is_relative_to(path.resolve(), workspace_path):
+        return (
+            "Escritura bloqueada dentro del workspace de codigo activo en modo propose_first. "
+            "Usa `coding_propose_text_file` para generar una propuesta y aplicala solo tras aprobacion."
+        )
+
+    return None
+
+
+def _validate_coding_write_path(relative_path: Path) -> str | None:
+    protected_parts = {
+        ".git",
+        ".venv",
+        "__pycache__",
+        ".yarbis_checkpoints",
+        ".yarbis_memory_backups",
+        ".yarbis_runtime",
+    }
+    parts = relative_path.parts
+    if any(part in protected_parts for part in parts):
+        return f"Escritura de coding bloqueada en ruta protegida: {relative_path.as_posix()}"
+    if relative_path.as_posix() == "state.json":
+        return "Escritura de coding bloqueada en state.json."
+    return None
 
 
 def _workspace_relative(path: Path) -> str:
@@ -148,6 +248,90 @@ def _new_checkpoint_id() -> str:
     return f"checkpoint-{timestamp}-{uuid4().hex[:6]}"
 
 
+def _new_coding_proposal_id() -> str:
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+    return f"proposal-{timestamp}-{uuid4().hex[:6]}"
+
+
+def _coding_proposal_path(proposal_id: str) -> Path:
+    return CODING_PROPOSALS_DIR / f"{proposal_id}.json"
+
+
+def _load_coding_proposal(proposal_id: str) -> tuple[dict | None, Path | None, str | None]:
+    cleaned_id = str(proposal_id).strip()
+    if not cleaned_id:
+        return None, None, "Debes indicar un id de propuesta."
+
+    candidates = []
+    if CODING_PROPOSALS_DIR.exists():
+        for proposal_path in CODING_PROPOSALS_DIR.glob("*.json"):
+            if proposal_path.stem.lower().startswith(cleaned_id.lower()):
+                candidates.append(proposal_path)
+
+    if not candidates:
+        return None, None, f"No encontre una propuesta con id o prefijo: {proposal_id}"
+    if len(candidates) > 1:
+        return None, None, f"El prefijo coincide con varias propuestas: {proposal_id}"
+
+    proposal_path = candidates[0]
+    try:
+        proposal = json.loads(proposal_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        return None, None, f"No pude leer la propuesta {proposal_path.stem}: {exc}"
+    if not isinstance(proposal, dict):
+        return None, None, f"La propuesta {proposal_path.stem} no tiene formato valido."
+
+    return proposal, proposal_path, None
+
+
+def _iter_coding_proposals() -> list[dict]:
+    if not CODING_PROPOSALS_DIR.exists():
+        return []
+
+    proposals = []
+    for proposal_path in CODING_PROPOSALS_DIR.glob("*.json"):
+        try:
+            proposal = json.loads(proposal_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if isinstance(proposal, dict):
+            proposals.append(proposal)
+
+    proposals.sort(key=lambda item: str(item.get("updated_at") or item.get("created_at") or ""), reverse=True)
+    return proposals
+
+
+def _save_coding_proposal(proposal: dict, proposal_path: Path | None = None) -> None:
+    proposal_id = str(proposal.get("id", "")).strip()
+    if not proposal_id:
+        raise ValueError("La propuesta no tiene id.")
+
+    CODING_PROPOSALS_DIR.mkdir(parents=True, exist_ok=True)
+    target_path = proposal_path or _coding_proposal_path(proposal_id)
+    tmp_path = target_path.with_name(f"{target_path.name}.tmp")
+    tmp_path.write_text(json.dumps(proposal, ensure_ascii=True, indent=2), encoding="utf-8")
+    tmp_path.replace(target_path)
+
+
+def _set_coding_pending_proposal(proposal_id: str, pending: bool) -> None:
+    cleaned_id = str(proposal_id).strip()
+    if not cleaned_id:
+        return
+
+    def mutate(state):
+        coding = state.setdefault("coding", {})
+        pending_ids = [
+            str(item).strip()
+            for item in coding.get("pending_proposal_ids", [])
+            if str(item).strip() and str(item).strip() != cleaned_id
+        ]
+        if pending:
+            pending_ids.append(cleaned_id)
+        coding["pending_proposal_ids"] = pending_ids
+
+    state_transaction("coding_pending_proposal", mutate)
+
+
 def _create_checkpoint(
     file_path: Path,
     previous_content: str,
@@ -228,13 +412,18 @@ def _find_checkpoint_dir(checkpoint_id: str) -> tuple[Path | None, dict | None, 
     return checkpoint_dir, metadata, None
 
 
-def _render_diff_preview(path: Path, previous_content: str, new_content: str) -> str:
+def _render_diff_preview_with_labels(
+    previous_content: str,
+    new_content: str,
+    fromfile: str,
+    tofile: str,
+) -> str:
     diff_lines = list(
         difflib.unified_diff(
             previous_content.splitlines(),
             new_content.splitlines(),
-            fromfile=f"a/{_workspace_relative(path)}",
-            tofile=f"b/{_workspace_relative(path)}",
+            fromfile=fromfile,
+            tofile=tofile,
             lineterm="",
         )
     )
@@ -243,6 +432,16 @@ def _render_diff_preview(path: Path, previous_content: str, new_content: str) ->
         return "Sin cambios detectados."
 
     return "\n".join(_bounded_diff_lines(diff_lines))
+
+
+def _render_diff_preview(path: Path, previous_content: str, new_content: str) -> str:
+    relative_path = _workspace_relative(path)
+    return _render_diff_preview_with_labels(
+        previous_content,
+        new_content,
+        fromfile=f"a/{relative_path}",
+        tofile=f"b/{relative_path}",
+    )
 
 
 def list_files(path: str = ".") -> str:
@@ -325,13 +524,14 @@ def read_text_file(path: str, max_bytes: int = 0) -> str:
     return content
 
 
-def write_text_file(path: str, content: str) -> str:
+def _write_text_file_impl(path: str, content: str, enforce_coding_guard: bool = True) -> str:
     """
     Escribe texto en un archivo de forma segura.
 
     Args:
         path (str): Ruta destino.
         content (str): Contenido a guardar.
+        enforce_coding_guard (bool): Si es True, respeta el modo coding propose_first.
 
     Returns:
         str: Resultado de la operacion, con checkpoint y diff.
@@ -339,6 +539,11 @@ def write_text_file(path: str, content: str) -> str:
     file_path, error = _resolve_workspace_path(path)
     if error:
         return error
+
+    if enforce_coding_guard:
+        coding_block_reason = _coding_write_block_reason(file_path)
+        if coding_block_reason:
+            return coding_block_reason
 
     write_error = _validate_write_path(file_path)
     if write_error:
@@ -359,7 +564,7 @@ def write_text_file(path: str, content: str) -> str:
     if existed_before:
         try:
             previous_content = file_path.read_text(encoding="utf-8")
-        except OSError as exc:
+        except (OSError, UnicodeDecodeError) as exc:
             return f"No pude leer el archivo antes de escribir: {exc}"
 
     if existed_before and previous_content == content:
@@ -399,6 +604,571 @@ def write_text_file(path: str, content: str) -> str:
         f"{diff_preview}\n"
         "Siguiente paso recomendado: ejecuta `run_project_tests` si tocaste codigo o tests."
     )
+
+
+def write_text_file(path: str, content: str) -> str:
+    """
+    Escribe texto en un archivo de forma segura.
+
+    Args:
+        path (str): Ruta destino.
+        content (str): Contenido a guardar.
+
+    Returns:
+        str: Resultado de la operacion, con checkpoint y diff.
+    """
+    return _write_text_file_impl(path=path, content=content, enforce_coding_guard=True)
+
+
+def coding_set_workspace(path: str) -> str:
+    """
+    Define el repositorio local activo para tareas de coding.
+
+    Args:
+        path (str): Carpeta del repositorio. Puede ser absoluta o relativa al workspace de Yarbis.
+
+    Returns:
+        str: Resumen de la configuracion aplicada.
+    """
+    cleaned_path = str(path).strip()
+    if not cleaned_path:
+        return "Debes indicar la carpeta del repositorio de codigo."
+
+    candidate = Path(cleaned_path)
+    workspace_path = candidate.resolve() if candidate.is_absolute() else (WORKSPACE_ROOT / candidate).resolve()
+    if not workspace_path.exists():
+        return f"El workspace de codigo no existe: {workspace_path}"
+    if not workspace_path.is_dir():
+        return f"El workspace de codigo no es una carpeta: {workspace_path}"
+
+    pending_ids = [
+        str(proposal.get("id", "")).strip()
+        for proposal in _iter_coding_proposals()
+        if str(proposal.get("status", CODING_PROPOSAL_PENDING)).strip() == CODING_PROPOSAL_PENDING
+        and str(proposal.get("workspace_path", "")).strip()
+        and Path(str(proposal.get("workspace_path", ""))).resolve() == workspace_path
+        and str(proposal.get("id", "")).strip()
+    ]
+
+    def mutate(state):
+        state["coding"] = {
+            "workspace_path": str(workspace_path),
+            "mode": DEFAULT_CODING_MODE,
+            "pending_proposal_ids": pending_ids,
+        }
+
+    state_transaction("coding_set_workspace", mutate)
+    git_marker = "si" if (workspace_path / ".git").exists() else "no"
+    return (
+        "Workspace de codigo configurado.\n"
+        f"Ruta: {workspace_path}\n"
+        f"Modo: {DEFAULT_CODING_MODE}\n"
+        f"Repo Git: {git_marker}\n"
+        f"Propuestas pendientes: {len(pending_ids)}"
+    )
+
+
+def coding_workspace_overview() -> str:
+    """
+    Resume el workspace de codigo activo.
+
+    Returns:
+        str: Estado del workspace, modo y propuestas pendientes.
+    """
+    state = load_state()
+    coding = _coding_state(state)
+    workspace_path, workspace_error = _active_coding_workspace(state)
+    if workspace_error:
+        return workspace_error
+
+    pending_ids = coding.get("pending_proposal_ids", [])
+    top_level = coding_list_files(".")
+    return (
+        "Workspace de codigo activo.\n"
+        f"Ruta: {workspace_path}\n"
+        f"Modo: {coding.get('mode', DEFAULT_CODING_MODE)}\n"
+        f"Propuestas pendientes: {len(pending_ids)}\n\n"
+        f"Archivos principales:\n{top_level}"
+    )
+
+
+def coding_list_files(path: str = ".") -> str:
+    """
+    Lista archivos y carpetas dentro del workspace de codigo activo.
+
+    Args:
+        path (str): Carpeta relativa o absoluta dentro del workspace de codigo.
+
+    Returns:
+        str: Lista acotada de archivos y carpetas.
+    """
+    directory, _relative_path, error = _resolve_coding_path(path)
+    if error:
+        return error
+    if not directory.exists():
+        return f"La ruta no existe dentro del workspace de codigo: {path}"
+    if not directory.is_dir():
+        return f"No es una carpeta valida dentro del workspace de codigo: {path}"
+
+    workspace_path, workspace_error = _active_coding_workspace()
+    if workspace_error:
+        return workspace_error
+
+    items = sorted(
+        (
+            item
+            for item in directory.iterdir()
+            if item.name not in IGNORED_LISTING_NAMES
+        ),
+        key=lambda item: (not item.is_dir(), item.name.lower()),
+    )
+    if not items:
+        return "La carpeta de codigo esta vacia."
+
+    rendered = []
+    for item in items[:MAX_LIST_ITEMS]:
+        kind = "DIR " if item.is_dir() else "FILE"
+        rendered.append(f"[{kind}] {item.relative_to(workspace_path).as_posix()}")
+    if len(items) > MAX_LIST_ITEMS:
+        rendered.append(f"... {len(items) - MAX_LIST_ITEMS} elemento(s) mas.")
+    return "\n".join(rendered)
+
+
+def coding_read_text_file(path: str, max_bytes: int = 0) -> str:
+    """
+    Lee un archivo de texto dentro del workspace de codigo activo.
+
+    Args:
+        path (str): Archivo relativo o absoluto dentro del workspace de codigo.
+        max_bytes (int): Limite opcional de bytes a leer.
+
+    Returns:
+        str: Contenido del archivo.
+    """
+    file_path, _relative_path, error = _resolve_coding_path(path)
+    if error:
+        return error
+    if not file_path.exists():
+        return f"No existe el archivo dentro del workspace de codigo: {path}"
+    if not file_path.is_file():
+        return f"No es un archivo valido dentro del workspace de codigo: {path}"
+
+    try:
+        requested_limit = int(max_bytes)
+    except (TypeError, ValueError):
+        return "max_bytes debe ser un entero."
+
+    try:
+        if requested_limit > 0:
+            effective_limit = max(1, min(MAX_READ_BYTES, requested_limit))
+            raw_content = file_path.read_bytes()[: effective_limit + 1]
+            was_truncated = len(raw_content) > effective_limit
+            raw_content = raw_content[:effective_limit]
+        else:
+            raw_content = file_path.read_bytes()
+            was_truncated = False
+    except OSError as exc:
+        return f"Error leyendo archivo de codigo: {exc}"
+
+    content = raw_content.decode("utf-8", errors="replace")
+    if was_truncated:
+        content += f"\n...[truncado por max_bytes={effective_limit}]"
+    return content
+
+
+def coding_propose_text_file(path: str, content: str, reason: str = "") -> str:
+    """
+    Crea una propuesta de cambio para un archivo del workspace de codigo activo sin aplicarla.
+
+    Args:
+        path (str): Archivo relativo o absoluto dentro del workspace de codigo.
+        content (str): Contenido propuesto completo para el archivo.
+        reason (str): Motivo breve de la propuesta.
+
+    Returns:
+        str: Id de propuesta y diff resumido.
+    """
+    target_path, relative_path, error = _resolve_coding_path(path)
+    if error:
+        return error
+
+    write_error = _validate_coding_write_path(relative_path)
+    if write_error:
+        return write_error
+
+    encoded_content = str(content).encode("utf-8")
+    if len(encoded_content) > MAX_WRITE_BYTES:
+        return (
+            "Contenido demasiado grande para proponer en una sola operacion: "
+            f"{len(encoded_content)} bytes. Limite: {MAX_WRITE_BYTES} bytes."
+        )
+
+    existed_before = target_path.exists()
+    if existed_before and not target_path.is_file():
+        return f"No es un archivo valido dentro del workspace de codigo: {relative_path.as_posix()}"
+
+    previous_content = ""
+    if existed_before:
+        try:
+            previous_content = target_path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError) as exc:
+            return f"No pude leer el archivo actual antes de proponer: {exc}"
+
+    proposed_content = str(content)
+    if existed_before and previous_content == proposed_content:
+        return (
+            f"Sin cambios para proponer en: {relative_path.as_posix()}\n"
+            "El contenido propuesto coincide con el archivo actual."
+        )
+
+    workspace_path, workspace_error = _active_coding_workspace()
+    if workspace_error:
+        return workspace_error
+
+    proposal_id = _new_coding_proposal_id()
+    now = datetime.now(timezone.utc).isoformat()
+    diff_preview = _render_diff_preview_with_labels(
+        previous_content,
+        proposed_content,
+        fromfile=f"a/{relative_path.as_posix()}",
+        tofile=f"b/{relative_path.as_posix()}",
+    )
+    proposal = {
+        "id": proposal_id,
+        "workspace_path": str(workspace_path),
+        "relative_path": relative_path.as_posix(),
+        "target_path": str(target_path),
+        "existed_before": existed_before,
+        "previous_content": previous_content,
+        "proposed_content": proposed_content,
+        "diff": diff_preview,
+        "reason": str(reason).strip()[:MAX_CODING_PROPOSAL_REASON_CHARS],
+        "status": CODING_PROPOSAL_PENDING,
+        "created_at": now,
+        "updated_at": now,
+    }
+
+    try:
+        _save_coding_proposal(proposal)
+        _set_coding_pending_proposal(proposal_id, pending=True)
+    except (OSError, ValueError) as exc:
+        return f"No pude guardar la propuesta de coding: {exc}"
+
+    reason_text = proposal["reason"] or "-"
+    return (
+        "Propuesta de coding creada.\n"
+        f"Id: {proposal_id}\n"
+        f"Archivo: {relative_path.as_posix()}\n"
+        f"Motivo: {reason_text}\n"
+        "Estado: pending\n"
+        "Diff:\n"
+        f"{diff_preview}\n"
+        f"Para aplicar: `coding_apply_proposal` con proposal_id={proposal_id}"
+    )
+
+
+def coding_list_proposals(status: str = "pending", limit: int = 20) -> str:
+    """
+    Lista propuestas de coding guardadas.
+
+    Args:
+        status (str): Estado a filtrar: pending, applied, discarded o all.
+        limit (int): Maximo de propuestas a mostrar.
+
+    Returns:
+        str: Resumen de propuestas.
+    """
+    cleaned_status = str(status).strip().lower() or CODING_PROPOSAL_PENDING
+    if cleaned_status not in VALID_CODING_PROPOSAL_STATUS and cleaned_status != "all":
+        return "Estado invalido. Usa pending, applied, discarded o all."
+
+    try:
+        normalized_limit = max(1, min(MAX_CODING_PROPOSAL_LIST_ITEMS, int(limit)))
+    except (TypeError, ValueError):
+        normalized_limit = 20
+
+    workspace_path, workspace_error = _active_coding_workspace()
+    if workspace_error:
+        return workspace_error
+
+    proposals = []
+    for proposal in _iter_coding_proposals():
+        proposal_workspace_text = str(proposal.get("workspace_path", "")).strip()
+        if not proposal_workspace_text:
+            continue
+        proposal_workspace = Path(proposal_workspace_text).resolve()
+        if proposal_workspace != workspace_path:
+            continue
+        proposal_status = str(proposal.get("status", CODING_PROPOSAL_PENDING)).strip()
+        if cleaned_status != "all" and proposal_status != cleaned_status:
+            continue
+        proposals.append(proposal)
+
+    if not proposals:
+        return f"No hay propuestas de coding con estado {cleaned_status} para el workspace activo."
+
+    rendered = []
+    for proposal in proposals[:normalized_limit]:
+        reason = str(proposal.get("reason", "")).strip() or "-"
+        rendered.append(
+            f"[{proposal.get('id', '')}] {proposal.get('status', '')} "
+            f"{proposal.get('relative_path', '')} - {reason}"
+        )
+    if len(proposals) > normalized_limit:
+        rendered.append(f"... {len(proposals) - normalized_limit} propuesta(s) mas.")
+    return "\n".join(rendered)
+
+
+def coding_get_proposal(proposal_id: str) -> str:
+    """
+    Muestra el detalle de una propuesta de coding.
+
+    Args:
+        proposal_id (str): Id o prefijo de la propuesta.
+
+    Returns:
+        str: Metadatos y diff de la propuesta.
+    """
+    proposal, _proposal_path, error = _load_coding_proposal(proposal_id)
+    if error:
+        return error
+
+    workspace_path, workspace_error = _active_coding_workspace()
+    if workspace_error:
+        return workspace_error
+
+    proposal_workspace_text = str(proposal.get("workspace_path", "")).strip()
+    if not proposal_workspace_text:
+        return "La propuesta no registra workspace de codigo."
+    proposal_workspace = Path(proposal_workspace_text).resolve()
+    if proposal_workspace != workspace_path:
+        return (
+            "La propuesta pertenece a otro workspace de codigo.\n"
+            f"Propuesta: {proposal_workspace}\n"
+            f"Activo: {workspace_path}"
+        )
+
+    reason = str(proposal.get("reason", "")).strip() or "-"
+    return (
+        f"Id: {proposal.get('id', '')}\n"
+        f"Estado: {proposal.get('status', '')}\n"
+        f"Archivo: {proposal.get('relative_path', '')}\n"
+        f"Motivo: {reason}\n"
+        f"Creada: {proposal.get('created_at', '')}\n"
+        f"Actualizada: {proposal.get('updated_at', '')}\n\n"
+        "Diff:\n"
+        f"{proposal.get('diff', 'Sin diff guardado.')}"
+    )
+
+
+def coding_apply_proposal(proposal_id: str) -> str:
+    """
+    Aplica una propuesta pendiente del workspace de codigo activo.
+
+    Args:
+        proposal_id (str): Id o prefijo de la propuesta.
+
+    Returns:
+        str: Resultado de aplicar el cambio con checkpoint.
+    """
+    proposal, proposal_path, error = _load_coding_proposal(proposal_id)
+    if error:
+        return error
+
+    if str(proposal.get("status", CODING_PROPOSAL_PENDING)).strip() != CODING_PROPOSAL_PENDING:
+        return f"La propuesta {proposal.get('id', proposal_id)} no esta pendiente."
+
+    workspace_path, workspace_error = _active_coding_workspace()
+    if workspace_error:
+        return workspace_error
+
+    proposal_workspace = Path(str(proposal.get("workspace_path", ""))).resolve()
+    if proposal_workspace != workspace_path:
+        return (
+            "La propuesta pertenece a otro workspace de codigo.\n"
+            f"Propuesta: {proposal_workspace}\n"
+            f"Activo: {workspace_path}"
+        )
+
+    target_path, relative_path, resolve_error = _resolve_coding_path(str(proposal.get("relative_path", "")))
+    if resolve_error:
+        return resolve_error
+
+    write_error = _validate_coding_write_path(relative_path)
+    if write_error:
+        return write_error
+
+    existed_before = bool(proposal.get("existed_before"))
+    previous_content = str(proposal.get("previous_content", ""))
+    proposed_content = str(proposal.get("proposed_content", ""))
+    if existed_before:
+        if not target_path.exists() or not target_path.is_file():
+            return "El archivo original ya no existe como archivo. Genera una propuesta nueva."
+        try:
+            current_content = target_path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError) as exc:
+            return f"No pude verificar el contenido actual antes de aplicar: {exc}"
+        if current_content != previous_content:
+            return "El archivo cambio desde que se creo la propuesta. Descarta esta propuesta y genera una nueva."
+    elif target_path.exists():
+        return "La propuesta creaba un archivo nuevo, pero esa ruta ya existe. Genera una propuesta nueva."
+
+    write_result = _write_text_file_impl(
+        path=str(target_path),
+        content=proposed_content,
+        enforce_coding_guard=False,
+    )
+    if "correctamente en:" not in write_result:
+        return write_result
+
+    proposal["status"] = CODING_PROPOSAL_APPLIED
+    proposal["updated_at"] = datetime.now(timezone.utc).isoformat()
+    try:
+        _save_coding_proposal(proposal, proposal_path)
+        _set_coding_pending_proposal(str(proposal.get("id", proposal_id)), pending=False)
+    except (OSError, ValueError) as exc:
+        return f"Cambio aplicado, pero no pude actualizar la propuesta: {exc}\n\n{write_result}"
+
+    return (
+        f"Propuesta aplicada: {proposal.get('id', proposal_id)}\n"
+        f"Archivo: {relative_path.as_posix()}\n"
+        f"{write_result}"
+    )
+
+
+def coding_discard_proposal(proposal_id: str) -> str:
+    """
+    Descarta una propuesta pendiente sin modificar archivos.
+
+    Args:
+        proposal_id (str): Id o prefijo de la propuesta.
+
+    Returns:
+        str: Confirmacion del descarte.
+    """
+    proposal, proposal_path, error = _load_coding_proposal(proposal_id)
+    if error:
+        return error
+
+    proposal["status"] = CODING_PROPOSAL_DISCARDED
+    proposal["updated_at"] = datetime.now(timezone.utc).isoformat()
+    try:
+        _save_coding_proposal(proposal, proposal_path)
+        _set_coding_pending_proposal(str(proposal.get("id", proposal_id)), pending=False)
+    except (OSError, ValueError) as exc:
+        return f"No pude descartar la propuesta: {exc}"
+
+    return (
+        f"Propuesta descartada: {proposal.get('id', proposal_id)}\n"
+        f"Archivo: {proposal.get('relative_path', '-')}"
+    )
+
+
+def _run_coding_subprocess(command, timeout_seconds: int, shell: bool = False) -> tuple[int | None, str, str]:
+    workspace_path, workspace_error = _active_coding_workspace()
+    if workspace_error:
+        return None, "", workspace_error
+
+    try:
+        normalized_timeout = max(1, min(3600, int(timeout_seconds)))
+    except (TypeError, ValueError):
+        normalized_timeout = 120
+
+    try:
+        completed = subprocess.run(
+            command,
+            cwd=str(workspace_path),
+            shell=shell,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=normalized_timeout,
+        )
+    except subprocess.TimeoutExpired:
+        rendered_command = command if isinstance(command, str) else " ".join(command)
+        return None, rendered_command, f"El comando excedio el timeout de {normalized_timeout} segundos."
+    except OSError as exc:
+        rendered_command = command if isinstance(command, str) else " ".join(command)
+        return None, rendered_command, f"No pude ejecutar el comando: {exc}"
+
+    combined_output = "\n".join(
+        part.strip()
+        for part in (completed.stdout, completed.stderr)
+        if str(part).strip()
+    )
+    if not combined_output:
+        combined_output = "El comando no produjo salida visible."
+    rendered_command = command if isinstance(command, str) else " ".join(command)
+    return completed.returncode, rendered_command, _bounded_text(combined_output, MAX_COMMAND_OUTPUT_CHARS)
+
+
+def coding_git_status() -> str:
+    """
+    Ejecuta `git status --short --branch` en el workspace de codigo activo.
+
+    Returns:
+        str: Estado Git acotado.
+    """
+    exit_code, command, output = _run_coding_subprocess(["git", "status", "--short", "--branch"], 30)
+    if exit_code is None:
+        return output
+    status_line = "Git status OK." if exit_code == 0 else f"Git status con fallos (exit={exit_code})."
+    return f"{status_line}\nComando: {command}\nSalida:\n{output}"
+
+
+def coding_git_diff() -> str:
+    """
+    Ejecuta `git diff -- .` en el workspace de codigo activo.
+
+    Returns:
+        str: Diff Git acotado.
+    """
+    exit_code, command, output = _run_coding_subprocess(["git", "diff", "--", "."], 30)
+    if exit_code is None:
+        return output
+    status_line = "Git diff OK." if exit_code == 0 else f"Git diff con fallos (exit={exit_code})."
+    return f"{status_line}\nComando: {command}\nSalida:\n{output}"
+
+
+def coding_run_validation(command: str = "", timeout_seconds: int = 120) -> str:
+    """
+    Ejecuta una validacion en el workspace de codigo activo.
+
+    Args:
+        command (str): Comando de tests/checks. Si queda vacio, intenta detectar uno seguro.
+        timeout_seconds (int): Timeout maximo de ejecucion.
+
+    Returns:
+        str: Codigo de salida, comando y salida acotada.
+    """
+    workspace_path, workspace_error = _active_coding_workspace()
+    if workspace_error:
+        return workspace_error
+
+    cleaned_command = str(command).strip()
+    if not cleaned_command:
+        if (workspace_path / "scripts" / "check.ps1").exists():
+            cleaned_command = "powershell -NoProfile -ExecutionPolicy Bypass -File scripts\\check.ps1"
+        elif (workspace_path / "pyproject.toml").exists() and (workspace_path / "tests").is_dir():
+            cleaned_command = f'"{sys.executable}" -m unittest discover -s tests'
+        elif (workspace_path / "package.json").exists():
+            cleaned_command = "npm test"
+        else:
+            return (
+                "No encontre una validacion por defecto para este workspace. "
+                "Indica un comando explicito en `command`."
+            )
+
+    exit_code, rendered_command, output = _run_coding_subprocess(
+        cleaned_command,
+        timeout_seconds=timeout_seconds,
+        shell=True,
+    )
+    if exit_code is None:
+        return f"Validacion no ejecutada.\nComando: {rendered_command}\nSalida:\n{output}"
+    status_line = "Validacion OK." if exit_code == 0 else f"Validacion con fallos (exit={exit_code})."
+    return f"{status_line}\nComando: {rendered_command}\nDirectorio: {workspace_path}\nSalida:\n{output}"
 
 
 def list_checkpoints(path: str = "", limit: int = 10) -> str:

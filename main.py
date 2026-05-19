@@ -1,5 +1,11 @@
 from memory import load_state, render_state_summary
 from session import (
+    coding_apply_proposal_text,
+    coding_discard_proposal_text,
+    coding_git_status_text,
+    coding_list_proposals_text,
+    coding_set_workspace_text,
+    coding_workspace_overview_text,
     delete_note_text,
     get_note_text,
     has_pending_user_question,
@@ -33,7 +39,7 @@ def main():
         if not telegram_polling_started:
             print("Servicio de fondo activo: Telegram queda atendido por el servicio.")
         print(f"Objetivo actual: {state['goal']}")
-        print("Comandos: goal, run, auto, status, self, profile, note, notes, task, reply, exit")
+        print("Comandos: goal, run, auto, status, coding, self, profile, note, notes, task, reply, exit")
         if has_pending_user_question(state):
             print(f"Pendiente: {state['awaiting_user_input']['question']}")
         print()
@@ -79,6 +85,50 @@ def main():
             if cmd == "status":
                 state = load_state()
                 print(render_state_summary(state))
+                continue
+
+            if cmd == "coding":
+                print(coding_workspace_overview_text())
+                continue
+
+            if cmd.startswith("coding "):
+                coding_args = cmd.split(maxsplit=2)
+                coding_action = coding_args[1].strip().lower() if len(coding_args) > 1 else ""
+                coding_value = coding_args[2].strip() if len(coding_args) > 2 else ""
+
+                if coding_action == "workspace":
+                    if not coding_value:
+                        try:
+                            coding_value = input("Ruta del repositorio: ").strip()
+                        except (EOFError, KeyboardInterrupt):
+                            print("\nOperacion cancelada.")
+                            continue
+                    print(coding_set_workspace_text(coding_value))
+                    continue
+
+                if coding_action in {"status", "git"}:
+                    print(coding_git_status_text())
+                    continue
+
+                if coding_action in {"proposals", "propuestas"}:
+                    print(coding_list_proposals_text(status="pending", limit=20))
+                    continue
+
+                if coding_action == "apply":
+                    if not coding_value:
+                        print("Uso: coding apply <proposal_id>")
+                        continue
+                    print(coding_apply_proposal_text(coding_value))
+                    continue
+
+                if coding_action in {"discard", "descartar"}:
+                    if not coding_value:
+                        print("Uso: coding discard <proposal_id>")
+                        continue
+                    print(coding_discard_proposal_text(coding_value))
+                    continue
+
+                print("Uso: coding [workspace|status|proposals|apply|discard]")
                 continue
 
             if cmd == "self":

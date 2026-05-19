@@ -525,6 +525,196 @@ class NotesDialog(ThemedDialog):
         self.result = "\n".join(self.activity_messages).strip()
 
 
+class CodingProposalsDialog(ThemedDialog):
+    def __init__(self, parent, apply_callback, discard_callback, detail_callback, list_callback):
+        self.apply_callback = apply_callback
+        self.discard_callback = discard_callback
+        self.detail_callback = detail_callback
+        self.list_callback = list_callback
+        self.proposal_lines = []
+        self.activity_messages = []
+        super().__init__(parent, "Propuestas de coding")
+
+    def body(self, master):
+        self._prepare_body(master)
+        master.columnconfigure(0, weight=0)
+        master.columnconfigure(1, weight=1)
+        master.rowconfigure(0, weight=1)
+
+        list_frame = tk.Frame(master, bd=0, highlightthickness=0)
+        list_frame.grid(row=0, column=0, sticky="nsew", padx=(6, 4), pady=6)
+        list_frame.columnconfigure(0, weight=1)
+        list_frame.rowconfigure(0, weight=1)
+        list_frame.configure(bg=self.theme_palette["bg"])
+
+        self.proposals_list = tk.Listbox(
+            list_frame,
+            width=46,
+            height=18,
+            activestyle="dotbox",
+            exportselection=False,
+        )
+        self.proposals_list.grid(row=0, column=0, sticky="nsew")
+        style_listbox_widget(self.proposals_list, self.theme_palette)
+        self.proposals_list.bind("<<ListboxSelect>>", self._show_selected_proposal)
+
+        proposals_scrollbar = ttk.Scrollbar(
+            list_frame,
+            orient="vertical",
+            command=self.proposals_list.yview,
+            style="Yarbis.Vertical.TScrollbar",
+        )
+        proposals_scrollbar.grid(row=0, column=1, sticky="ns")
+        self.proposals_list.configure(yscrollcommand=proposals_scrollbar.set)
+        style_scrollbar_widget(proposals_scrollbar, self.theme_palette)
+
+        detail_frame = tk.Frame(master, bd=0, highlightthickness=0)
+        detail_frame.grid(row=0, column=1, sticky="nsew", padx=(4, 6), pady=6)
+        detail_frame.columnconfigure(0, weight=1)
+        detail_frame.rowconfigure(0, weight=1)
+        detail_frame.configure(bg=self.theme_palette["bg"])
+
+        self.detail_text = tk.Text(detail_frame, width=58, height=18, wrap="word")
+        self.detail_text.grid(row=0, column=0, sticky="nsew")
+        self._style_text_widget(self.detail_text)
+        self.detail_text.configure(state="disabled")
+
+        detail_scrollbar = ttk.Scrollbar(
+            detail_frame,
+            orient="vertical",
+            command=self.detail_text.yview,
+            style="Yarbis.Vertical.TScrollbar",
+        )
+        detail_scrollbar.grid(row=0, column=1, sticky="ns")
+        self.detail_text.configure(yscrollcommand=detail_scrollbar.set)
+        style_scrollbar_widget(detail_scrollbar, self.theme_palette)
+
+        self._refresh_proposals()
+        return self.proposals_list
+
+    def buttonbox(self):
+        box = ttk.Frame(self)
+        self.apply_button = ttk.Button(
+            box,
+            text="Aplicar",
+            command=self._apply_selected_proposal,
+            style="Accent.TButton",
+        )
+        self.apply_button.pack(side="left", padx=(0, 8))
+        self.discard_button = ttk.Button(
+            box,
+            text="Descartar",
+            command=self._discard_selected_proposal,
+            style="Danger.TButton",
+        )
+        self.discard_button.pack(side="left", padx=(0, 8))
+        ttk.Button(box, text="Refrescar", command=self._refresh_proposals).pack(side="left", padx=(0, 8))
+        ttk.Button(box, text="Cerrar", command=self.ok).pack(side="left")
+
+        self.bind("<Escape>", self.cancel)
+        box.pack(padx=10, pady=(0, 10), anchor="e")
+        self._sync_action_buttons()
+
+    def _set_detail_text(self, content: str):
+        self.detail_text.configure(state="normal")
+        self.detail_text.delete("1.0", "end")
+        self.detail_text.insert("1.0", content)
+        self.detail_text.configure(state="disabled")
+
+    def _selected_line(self) -> str:
+        selection = self.proposals_list.curselection()
+        if not selection:
+            return ""
+        index = int(selection[0])
+        if index < 0 or index >= len(self.proposal_lines):
+            return ""
+        return self.proposal_lines[index]
+
+    @staticmethod
+    def _proposal_id_from_line(line: str) -> str:
+        cleaned = str(line).strip()
+        if not cleaned.startswith("[") or "]" not in cleaned:
+            return ""
+        return cleaned.split("]", 1)[0].strip("[")
+
+    def _sync_action_buttons(self):
+        enabled = "normal" if self._proposal_id_from_line(self._selected_line()) else "disabled"
+        if hasattr(self, "apply_button"):
+            self.apply_button.configure(state=enabled)
+        if hasattr(self, "discard_button"):
+            self.discard_button.configure(state=enabled)
+
+    def _show_selected_proposal(self, _event=None):
+        line = self._selected_line()
+        proposal_id = self._proposal_id_from_line(line)
+        detail = self.detail_callback(proposal_id) if proposal_id else "Selecciona una propuesta pendiente."
+        self._set_detail_text(detail)
+        self._sync_action_buttons()
+
+    def _refresh_proposals(self):
+        selected_id = self._proposal_id_from_line(self._selected_line()) if hasattr(self, "proposals_list") else ""
+        rendered = self.list_callback(status="pending", limit=50)
+        if rendered.startswith("No hay propuestas") or rendered.startswith("No hay workspace"):
+            self.proposal_lines = []
+        else:
+            self.proposal_lines = [line for line in rendered.splitlines() if line.strip().startswith("[")]
+
+        self.proposals_list.delete(0, "end")
+        for line in self.proposal_lines:
+            self.proposals_list.insert("end", line)
+
+        if not self.proposal_lines:
+            self._set_detail_text(rendered)
+            self._sync_action_buttons()
+            return
+
+        next_index = 0
+        if selected_id:
+            for index, line in enumerate(self.proposal_lines):
+                if self._proposal_id_from_line(line) == selected_id:
+                    next_index = index
+                    break
+
+        self.proposals_list.selection_clear(0, "end")
+        self.proposals_list.selection_set(next_index)
+        self.proposals_list.activate(next_index)
+        self.proposals_list.see(next_index)
+        self._show_selected_proposal()
+
+    def _apply_selected_proposal(self):
+        proposal_id = self._proposal_id_from_line(self._selected_line())
+        if not proposal_id:
+            return
+        should_apply = messagebox.askyesno(
+            "Aplicar propuesta",
+            f"Quieres aplicar la propuesta {proposal_id}?",
+            parent=self,
+        )
+        if not should_apply:
+            return
+        result = self.apply_callback(proposal_id)
+        self.activity_messages.append(result)
+        self._refresh_proposals()
+
+    def _discard_selected_proposal(self):
+        proposal_id = self._proposal_id_from_line(self._selected_line())
+        if not proposal_id:
+            return
+        should_discard = messagebox.askyesno(
+            "Descartar propuesta",
+            f"Quieres descartar la propuesta {proposal_id}?",
+            parent=self,
+        )
+        if not should_discard:
+            return
+        result = self.discard_callback(proposal_id)
+        self.activity_messages.append(result)
+        self._refresh_proposals()
+
+    def apply(self):
+        self.result = "\n".join(self.activity_messages).strip()
+
+
 class MemoryImportModeDialog(ThemedDialog):
     MODE_LABELS = {
         "Reemplazar memoria": "replace",
