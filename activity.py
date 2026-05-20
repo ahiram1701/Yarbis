@@ -10,6 +10,7 @@ WORKSPACE_ROOT = Path(__file__).resolve().parent
 RUNTIME_DIR = WORKSPACE_ROOT / ".yarbis_runtime"
 ACTIVITY_LOG_FILE = RUNTIME_DIR / "activity.log"
 EVENTS_FILE = RUNTIME_DIR / "events.jsonl"
+DEFAULT_ACTIVITY_MAX_BYTES = 256 * 1024
 
 _ACTIVITY_LOCK = threading.RLock()
 
@@ -170,10 +171,33 @@ def render_recent_events(limit: int = 80) -> str:
     return "".join(rendered)
 
 
-def read_activity_log() -> str:
+def _read_text_tail(path: Path, max_bytes: int | None = None) -> str:
+    if max_bytes is None:
+        return path.read_text(encoding="utf-8")
+
+    try:
+        normalized_max = max(1, int(max_bytes))
+    except (TypeError, ValueError):
+        normalized_max = DEFAULT_ACTIVITY_MAX_BYTES
+
+    size = path.stat().st_size
+    if size <= normalized_max:
+        return path.read_text(encoding="utf-8")
+
+    with open(path, "rb") as file:
+        file.seek(max(0, size - normalized_max))
+        data = file.read()
+
+    text = data.decode("utf-8", errors="replace")
+    if "\n" in text:
+        text = text.split("\n", 1)[1]
+    return "[historial anterior omitido]\n" + text
+
+
+def read_activity_log(max_bytes: int | None = None) -> str:
     with _ACTIVITY_LOCK:
         try:
-            return ACTIVITY_LOG_FILE.read_text(encoding="utf-8")
+            return _read_text_tail(ACTIVITY_LOG_FILE, max_bytes=max_bytes)
         except FileNotFoundError:
             return ""
         except OSError as exc:
@@ -183,12 +207,27 @@ def read_activity_log() -> str:
             )
 
 
-def read_activity_history(event_limit: int = 80) -> str:
-    human_log = read_activity_log()
+def read_activity_history(event_limit: int = 80, activity_max_bytes: int = DEFAULT_ACTIVITY_MAX_BYTES) -> str:
+    human_log = read_activity_log(max_bytes=activity_max_bytes)
     event_log = render_recent_events(limit=event_limit)
     if human_log and event_log:
         return human_log + "Eventos recientes\n\n" + event_log
     return human_log or event_log
+
+
+def activity_history_signature() -> tuple[tuple[int, int], tuple[int, int]]:
+    def file_signature(path: Path) -> tuple[int, int]:
+        try:
+            stat = path.stat()
+        except OSError:
+            return (0, 0)
+        return (int(stat.st_size), int(stat.st_mtime_ns))
+
+    with _ACTIVITY_LOCK:
+        return (
+            file_signature(ACTIVITY_LOG_FILE),
+            file_signature(EVENTS_FILE),
+        )
 
 
 def clear_activity_log():

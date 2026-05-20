@@ -1,4 +1,5 @@
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import patch
 
@@ -146,13 +147,40 @@ class SessionTestCase(unittest.TestCase):
                 "render_self_knowledge_summary",
                 return_value="Identidad:\n- Nombre: Yarbis.\n\nEntorno actual:\nSistema operativo: demo",
             ) as summary_mock:
-                result = session.run_startup_self_analysis()
+                with patch.object(session, "get_cached_source_signature", return_value="source-sig"):
+                    result = session.run_startup_self_analysis(force=True, background=False)
                 state = memory.load_state()
 
         self.assertIn("Autoanalisis inicial completado", result)
         summary_mock.assert_called_once_with(refresh=True)
         self.assertIn("Nombre: Yarbis", state["self_knowledge"]["summary"])
         self.assertTrue(state["self_knowledge"]["last_analyzed_at"])
+        self.assertEqual(state["self_knowledge"]["source_signature"], "source-sig")
+
+    def test_run_startup_self_analysis_reuses_fresh_cached_summary(self):
+        state_path = TEST_RUNTIME_DIR / "session_self_analysis_cached_state.json"
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+
+        seeded_state = memory.normalize_state({
+            "self_knowledge": {
+                "last_analyzed_at": datetime.now(timezone.utc).isoformat(),
+                "summary": "Autoconocimiento cacheado",
+                "source_signature": "source-sig",
+            },
+        })
+
+        with patch.object(memory, "STATE_FILE", state_path):
+            memory.save_state(seeded_state)
+            with patch.object(
+                session,
+                "render_self_knowledge_summary",
+                side_effect=RuntimeError("no debe refrescar"),
+            ):
+                result = session.run_startup_self_analysis()
+                state = memory.load_state()
+
+        self.assertIn("reutilizado desde cache", result)
+        self.assertEqual(state["self_knowledge"]["summary"], "Autoconocimiento cacheado")
 
     def test_update_ollama_settings_persists_model_and_timeout(self):
         state_path = TEST_RUNTIME_DIR / "session_ollama_state.json"
@@ -179,6 +207,27 @@ class SessionTestCase(unittest.TestCase):
         self.assertEqual(state["ollama"]["api_key_env_var"], "OLLAMA_API_KEY")
         self.assertEqual(state["ollama"]["timeout_seconds"], 900)
 
+    def test_agent_wrappers_load_agent_lazily(self):
+        class FakeAgent:
+            @staticmethod
+            def run_one_cycle(**kwargs):
+                return {"name": "cycle", "kwargs": kwargs}
+
+            @staticmethod
+            def run_autonomous_session(**kwargs):
+                return 3
+
+            @staticmethod
+            def cancel_active_ollama_request():
+                return True
+
+        with patch.object(session, "_load_agent", return_value=FakeAgent) as load_mock:
+            self.assertEqual(session.run_one_cycle(max_steps=1)["kwargs"]["max_steps"], 1)
+            self.assertEqual(session.run_autonomous_session(cycles=3), 3)
+            self.assertTrue(session.cancel_active_ollama_request())
+
+        self.assertEqual(load_mock.call_count, 3)
+
     def test_update_ollama_settings_rejects_invalid_values(self):
         with self.assertRaises(ValueError):
             session.update_ollama_settings("", 900)
@@ -197,14 +246,16 @@ class SessionTestCase(unittest.TestCase):
                 "render_self_knowledge_summary",
                 return_value="Identidad:\n- Nombre: Yarbis.\n\nCodigo fuente:\n- agent.py\n\nEntorno actual:\nSistema operativo: demo\nCPU: demo\nRAM: demo",
             ) as summary_mock:
-                with patch.object(session, "run_cycle_with_output", side_effect=RuntimeError("no debe llamarse")):
-                    result = session.submit_user_reply("hazte un autoanálisis")
-                    state = memory.load_state()
+                with patch.object(session, "get_cached_source_signature", return_value="source-sig"):
+                    with patch.object(session, "run_cycle_with_output", side_effect=RuntimeError("no debe llamarse")):
+                        result = session.submit_user_reply("hazte un autoanálisis")
+                        state = memory.load_state()
 
         self.assertIn("Autoanalisis inicial completado", result)
         self.assertIn("Nombre: Yarbis", result)
         summary_mock.assert_called_once_with(refresh=True)
         self.assertIn("agent.py", state["self_knowledge"]["summary"])
+        self.assertEqual(state["self_knowledge"]["source_signature"], "source-sig")
         self.assertEqual(state["messages"], [])
 
     def test_submit_user_reply_routes_note_requests_without_model_cycle(self):

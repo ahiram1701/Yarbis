@@ -544,3 +544,4 @@ class ToolsTestCase(unittest.TestCase):
         self.assertIn("agent.py", result)
         self.assertIn("Identidad:", state["self_knowledge"]["summary"])
         self.assertTrue(state["self_knowledge"]["last_analyzed_at"])
+        self.assertTrue(state["self_knowledge"]["source_signature"])

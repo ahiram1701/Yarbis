@@ -254,6 +254,21 @@ class MemoryTestCase(unittest.TestCase):
         self.assertEqual(len(recovery_files), 1)
         self.assertIn("No pude leer", state["memory_protection"]["last_error"])
 
+    def test_load_state_does_not_rewrite_unchanged_memory_protection_config(self):
+        _base, state_path, lock_path = self._memory_protection_paths("config-cache")
+
+        with patch.object(memory, "STATE_FILE", state_path):
+            with patch.object(memory, "STATE_LOCK_FILE", lock_path):
+                memory.save_state(memory.default_state())
+                with patch.object(
+                    memory.memory_backup,
+                    "write_json_atomic",
+                    side_effect=AssertionError("no debe escribir config sin cambios"),
+                ):
+                    state = memory.load_state()
+
+        self.assertEqual(state["goal"], memory.DEFAULT_GOAL)
+
     def test_auto_backup_pruning_preserves_manual_backups(self):
         base, state_path, lock_path = self._memory_protection_paths("prune")
         backups_dir = base / ".yarbis_memory_backups"

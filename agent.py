@@ -24,7 +24,6 @@ from memory import (
     render_state_summary,
     state_transaction,
 )
-from self_knowledge import render_self_knowledge_summary
 from tools import (
     add_task,
     agent_overview,
@@ -734,7 +733,15 @@ def build_messages(state):
         include_runtime=False,
         include_last_result=False,
     )
-    self_summary = render_self_knowledge_summary()
+    self_knowledge = state.get("self_knowledge", {})
+    if not isinstance(self_knowledge, dict):
+        self_knowledge = {}
+    self_summary = str(self_knowledge.get("summary", "")).strip()
+    if not self_summary:
+        self_summary = (
+            "Pendiente de autoanalisis. Usa `self` para refrescar identidad, "
+            "codigo fuente, sistema operativo y hardware."
+        )
     temporal_context = _format_local_temporal_context()
 
     messages = [

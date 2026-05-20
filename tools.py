@@ -31,7 +31,7 @@ from memory import (
     state_transaction,
     verify_memory_backups as verify_memory_backups_data,
 )
-from self_knowledge import render_self_knowledge_summary
+from self_knowledge import get_cached_source_signature, render_self_knowledge_summary
 from social_oauth import SocialOAuthError, connect_social_account
 from social_publishing import SocialPublishError, facebook_assisted_url, publish_publication
 
@@ -2215,6 +2215,7 @@ def self_overview(refresh: bool = False) -> str:
     should_refresh = bool(refresh)
     summary = render_self_knowledge_summary(refresh=should_refresh)
     if should_refresh:
+        source_signature = get_cached_source_signature()
         state_transaction(
             "self_overview",
             lambda state: state.__setitem__(
@@ -2222,6 +2223,7 @@ def self_overview(refresh: bool = False) -> str:
                 {
                     "last_analyzed_at": datetime.now(timezone.utc).isoformat(),
                     "summary": summary,
+                    "source_signature": source_signature,
                 },
             ),
         )

@@ -91,6 +91,7 @@ MAX_INTERNET_DOMAIN_ITEMS = 20
 MAX_INTERNET_DOMAIN_CHARS = 120
 MAX_SELF_KNOWLEDGE_SUMMARY_CHARS = 20_000
 MAX_SELF_KNOWLEDGE_TIMESTAMP_CHARS = 80
+MAX_SELF_KNOWLEDGE_SOURCE_SIGNATURE_CHARS = 40_000
 MAX_RUNTIME_OPERATION_LABEL_CHARS = 80
 MAX_RUNTIME_OPERATION_SOURCE_CHARS = 40
 MAX_RUNTIME_TIMESTAMP_CHARS = 80
@@ -241,6 +242,7 @@ def default_state():
         "self_knowledge": {
             "last_analyzed_at": "",
             "summary": "",
+            "source_signature": "",
         },
         "notifications": {
             "enabled": True,
@@ -1064,6 +1066,10 @@ def _normalize_self_knowledge(self_knowledge):
             self_knowledge.get("summary", ""),
             MAX_SELF_KNOWLEDGE_SUMMARY_CHARS,
         ).strip(),
+        "source_signature": _coerce_text(
+            self_knowledge.get("source_signature", ""),
+            MAX_SELF_KNOWLEDGE_SOURCE_SIGNATURE_CHARS,
+        ).strip(),
     }
 
 
@@ -1751,9 +1757,17 @@ def _write_memory_protection_runtime_config(settings: dict) -> None:
             "auto_restore": normalized_settings["auto_restore"],
         }
     }
+    config_path = _memory_protection_config_file()
+    try:
+        existing = json.loads(config_path.read_text(encoding="utf-8"))
+    except (FileNotFoundError, OSError, json.JSONDecodeError):
+        existing = None
+    if existing == payload:
+        return
+
     try:
         memory_backup.write_json_atomic(
-            _memory_protection_config_file(),
+            config_path,
             payload,
             ensure_ascii=True,
             indent=2,

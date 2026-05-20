@@ -20,7 +20,6 @@ except ImportError:  # pragma: no cover - POSIX fallback only.
     fcntl = None
 
 import activity
-from agent import cancel_active_ollama_request, run_autonomous_session, run_one_cycle
 from intent_text import (
     looks_like_affirmative_action_reply as _looks_like_affirmative_action_reply,
     normalize_intent_text as _normalize_intent_text,
@@ -47,7 +46,7 @@ from notifications import (
     send_notification,
     try_link_telegram_chat,
 )
-from self_knowledge import render_self_knowledge_summary
+from self_knowledge import get_cached_source_signature, render_self_knowledge_summary
 from tools import (
     add_task,
     coding_apply_proposal,
@@ -83,6 +82,9 @@ _OPERATION_LOCK_LOCAL = threading.local()
 _OPERATION_LOCK_POLL_SECONDS = 0.25
 _WINDOWS_SYNCHRONIZE = 0x00100000
 _WINDOWS_STILL_ACTIVE = 259
+_STARTUP_SELF_ANALYSIS_MAX_AGE_SECONDS = 300
+_SELF_ANALYSIS_BACKGROUND_LOCK = threading.RLock()
+_SELF_ANALYSIS_BACKGROUND_RUNNING = False
 FACTORY_RESET_RUNTIME_FILES = (
     "service.log",
     "service.stop",
@@ -105,6 +107,24 @@ FACTORY_RESET_RUNTIME_DIRS = (
 
 class SessionOperationBusy(RuntimeError):
     pass
+
+
+def _load_agent():
+    import agent
+
+    return agent
+
+
+def run_one_cycle(*args, **kwargs):
+    return _load_agent().run_one_cycle(*args, **kwargs)
+
+
+def run_autonomous_session(*args, **kwargs):
+    return _load_agent().run_autonomous_session(*args, **kwargs)
+
+
+def cancel_active_ollama_request(*args, **kwargs):
+    return _load_agent().cancel_active_ollama_request(*args, **kwargs)
 
 
 def _prepare_operation_lock_file(handle):
@@ -506,28 +526,127 @@ def is_self_analysis_request(text: str) -> bool:
     return any(phrase in normalized for phrase in direct_phrases)
 
 
-def run_startup_self_analysis() -> str:
-    with SESSION_LOCK:
-        summary = render_self_knowledge_summary(refresh=True)
-        state_transaction(
-            "startup_self_analysis",
-            lambda state: state.__setitem__(
-                "self_knowledge",
-                {
-                    "last_analyzed_at": datetime.now(timezone.utc).isoformat(),
-                    "summary": summary,
-                },
-            ),
+def _self_knowledge_age_seconds(self_knowledge: dict) -> float:
+    analyzed_at = str(self_knowledge.get("last_analyzed_at", "")).strip()
+    if not analyzed_at:
+        return float("inf")
+
+    try:
+        parsed = datetime.fromisoformat(analyzed_at.replace("Z", "+00:00"))
+    except ValueError:
+        return float("inf")
+
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return (datetime.now(timezone.utc) - parsed.astimezone(timezone.utc)).total_seconds()
+
+
+def _self_knowledge_needs_refresh(self_knowledge: dict) -> bool:
+    if not str(self_knowledge.get("summary", "")).strip():
+        return True
+    if not str(self_knowledge.get("source_signature", "")).strip():
+        return True
+    return _self_knowledge_age_seconds(self_knowledge) > _STARTUP_SELF_ANALYSIS_MAX_AGE_SECONDS
+
+
+def _persist_self_knowledge_summary(summary: str) -> None:
+    source_signature = get_cached_source_signature()
+    analyzed_at = datetime.now(timezone.utc).isoformat()
+
+    def mutate(state):
+        state["self_knowledge"] = {
+            "last_analyzed_at": analyzed_at,
+            "summary": summary,
+            "source_signature": source_signature,
+        }
+
+    state_transaction("startup_self_analysis", mutate)
+
+
+def _refresh_self_knowledge_state() -> str:
+    summary = render_self_knowledge_summary(refresh=True)
+    _persist_self_knowledge_summary(summary)
+    return (
+        "Autoanalisis inicial completado. "
+        "Yarbis actualizo identidad, codigo fuente, sistema operativo y hardware."
+    )
+
+
+def _background_self_analysis_worker():
+    global _SELF_ANALYSIS_BACKGROUND_RUNNING
+
+    try:
+        message = _refresh_self_knowledge_state()
+        try:
+            activity.append_activity("Autoanalisis inicial", message)
+        except Exception:
+            pass
+    except Exception as exc:
+        activity.emit_event(
+            "startup_self_analysis_failed",
+            label="Autoanalisis inicial",
+            error=str(exc),
         )
-        return (
-            "Autoanalisis inicial completado. "
-            "Yarbis actualizo identidad, codigo fuente, sistema operativo y hardware."
-        )
+    finally:
+        with _SELF_ANALYSIS_BACKGROUND_LOCK:
+            _SELF_ANALYSIS_BACKGROUND_RUNNING = False
+
+
+def _schedule_startup_self_analysis_refresh() -> bool:
+    global _SELF_ANALYSIS_BACKGROUND_RUNNING
+
+    with _SELF_ANALYSIS_BACKGROUND_LOCK:
+        if _SELF_ANALYSIS_BACKGROUND_RUNNING:
+            return False
+        _SELF_ANALYSIS_BACKGROUND_RUNNING = True
+
+    thread = threading.Thread(
+        target=_background_self_analysis_worker,
+        name="yarbis-startup-self-analysis",
+        daemon=True,
+    )
+    thread.start()
+    return True
+
+
+def run_startup_self_analysis(force: bool = False, background: bool = True) -> str:
+    if force or not background:
+        with SESSION_LOCK:
+            return _refresh_self_knowledge_state()
+
+    state = load_state()
+    self_knowledge = state.get("self_knowledge", {})
+    if not isinstance(self_knowledge, dict):
+        self_knowledge = {}
+
+    summary = str(self_knowledge.get("summary", "")).strip()
+    if not summary:
+        scheduled = _schedule_startup_self_analysis_refresh()
+        if scheduled:
+            return (
+                "Autoanalisis inicial pendiente. "
+                "Yarbis lo refrescara en segundo plano para no bloquear el arranque."
+            )
+        return "Autoanalisis inicial pendiente; el refresh en segundo plano ya esta activo."
+
+    if _self_knowledge_needs_refresh(self_knowledge):
+        scheduled = _schedule_startup_self_analysis_refresh()
+        if scheduled:
+            return (
+                "Autoanalisis inicial reutilizado desde cache. "
+                "Yarbis refrescara identidad, codigo fuente, sistema operativo y hardware en segundo plano."
+            )
+        return "Autoanalisis inicial reutilizado desde cache; el refresh en segundo plano ya esta activo."
+
+    return (
+        "Autoanalisis inicial reutilizado desde cache. "
+        "Yarbis conserva identidad, codigo fuente, sistema operativo y hardware."
+    )
 
 
 def run_self_analysis_with_output(emit_notifications: bool = True) -> str:
     with SESSION_LOCK:
-        message = run_startup_self_analysis()
+        message = run_startup_self_analysis(force=True, background=False)
         state = load_state()
         summary = state.get("self_knowledge", {}).get("summary", "").strip()
         if not summary:

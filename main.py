@@ -26,7 +26,7 @@ from tools import add_task, self_overview, update_profile
 
 
 def main():
-    startup_message = run_startup_self_analysis()
+    startup_message = run_startup_self_analysis(force=False, background=True)
     state = load_state()
     telegram_polling_started = False
     if not is_service_running():

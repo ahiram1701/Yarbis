@@ -37,6 +37,11 @@ def status(
 
 
 class ServiceManagerTestCase(unittest.TestCase):
+    def setUp(self):
+        service_manager._clear_service_status_cache()
+        service_manager._READINESS_CACHE["status"] = None
+        service_manager._READINESS_CACHE["created_at"] = 0.0
+
     def test_get_service_status_reports_missing_service(self):
         missing = completed(
             returncode=1060,
@@ -104,6 +109,33 @@ class ServiceManagerTestCase(unittest.TestCase):
         self.assertFalse(result["autostart_enabled"])
         self.assertEqual(result["start_type"], "demand_start")
         self.assertEqual(result["account_name"], "LocalSystem")
+
+    def test_get_service_status_uses_short_cache_until_forced(self):
+        query = completed(
+            stdout=(
+                "SERVICE_NAME: Yarbis\n"
+                "        TYPE               : 10  WIN32_OWN_PROCESS\n"
+                "        STATE              : 4  RUNNING\n"
+                "        PID                : 4321\n"
+            ),
+        )
+        config = completed(
+            stdout=(
+                "[SC] QueryServiceConfig SUCCESS\n"
+                "        START_TYPE         : 2   AUTO_START\n"
+                "        SERVICE_START_NAME : LocalSystem\n"
+            ),
+        )
+
+        with patch.object(service_manager, "_run_sc", side_effect=[query, config, query, config]) as sc_mock:
+            first = service_manager.get_service_status()
+            second = service_manager.get_service_status()
+            forced = service_manager.get_service_status(force=True)
+
+        self.assertTrue(first["running"])
+        self.assertEqual(second["pid"], 4321)
+        self.assertEqual(forced["pid"], 4321)
+        self.assertEqual(sc_mock.call_count, 4)
 
     def test_install_service_creates_scm_service(self):
         missing = completed(

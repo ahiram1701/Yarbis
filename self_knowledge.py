@@ -516,3 +516,7 @@ def render_self_knowledge_summary(refresh: bool = False) -> str:
     _SELF_KNOWLEDGE_CACHE["text"] = summary
     _SELF_KNOWLEDGE_CACHE["source_signature"] = source_signature
     return summary
+
+
+def get_cached_source_signature() -> str:
+    return str(_SELF_KNOWLEDGE_CACHE.get("source_signature", "") or "")

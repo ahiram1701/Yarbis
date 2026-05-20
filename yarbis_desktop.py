@@ -251,6 +251,7 @@ class YarbisDesktop(tk.Tk):
         self._view_has_pending_question = False
         self._last_summary_text = ""
         self._last_activity_text = ""
+        self._last_activity_signature = None
         self._local_telegram_polling = False
         self._closing = False
         self._first_run_checked = False
@@ -936,8 +937,13 @@ class YarbisDesktop(tk.Tk):
             return True
 
     def _refresh_activity_view(self, force_scroll: bool = False):
+        signature = activity.activity_history_signature()
+        if not force_scroll and signature == self._last_activity_signature:
+            return
+
         content = activity.read_activity_history()
         if content == self._last_activity_text:
+            self._last_activity_signature = signature
             return
 
         should_scroll = force_scroll or self._activity_should_follow_end()
@@ -955,6 +961,7 @@ class YarbisDesktop(tk.Tk):
             self.activity_text.yview_moveto(previous_view)
         self.activity_text.configure(state="disabled")
         self._last_activity_text = content
+        self._last_activity_signature = signature
 
     def _append_activity_fallback(self, title: str, content: str):
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -1538,7 +1545,7 @@ class YarbisDesktop(tk.Tk):
         self.refresh_state_view()
 
     def _toggle_service(self):
-        service_status = get_service_status()
+        service_status = get_service_status(force=True)
         if service_status["running"]:
             self._start_background_job("Servicio", stop_service)
             return
@@ -1581,7 +1588,7 @@ class YarbisDesktop(tk.Tk):
         self._start_background_job("Servicio", self._start_service_with_context_helper)
 
     def _toggle_service_autostart(self):
-        service_status = get_service_status()
+        service_status = get_service_status(force=True)
         if not service_status["installed"]:
             messagebox.showinfo(
                 "Yarbis",
@@ -1607,7 +1614,7 @@ class YarbisDesktop(tk.Tk):
         self.refresh_state_view()
 
     def _remove_service(self):
-        service_status = get_service_status()
+        service_status = get_service_status(force=True)
         if not service_status["installed"]:
             self._append_activity("Servicio", "El servicio de Yarbis no esta instalado en SCM.")
             self.refresh_state_view()
@@ -1639,7 +1646,7 @@ class YarbisDesktop(tk.Tk):
             return
 
         try:
-            service_status = get_service_status()
+            service_status = get_service_status(force=True)
         except Exception as exc:
             messagebox.showwarning("Yarbis", f"No pude revisar el servicio: {exc}", parent=self)
             return
@@ -2014,7 +2021,7 @@ def main():
 
     try:
         clear_activity_for_first_run_if_needed()
-        startup_message = run_startup_self_analysis()
+        startup_message = run_startup_self_analysis(force=False, background=True)
         app = YarbisDesktop()
         app._append_activity("Autoanalisis inicial", startup_message)
         app._append_activity(

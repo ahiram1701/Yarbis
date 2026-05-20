@@ -574,7 +574,7 @@ def run_service_loop(should_stop=None):
     activity.emit_event("service_started", pid=os.getpid())
 
     try:
-        _log(run_startup_self_analysis())
+        _log(run_startup_self_analysis(force=False, background=True))
         start_telegram_polling(event_callback=lambda message: _log(_render_event(message)))
         settings = get_service_proactive_settings()
         next_proactive_at = time.monotonic() + settings["start_delay_seconds"]

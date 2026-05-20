@@ -122,6 +122,33 @@ class ActivityTestCase(unittest.TestCase):
         self.assertIn("Telegram remoto finalizado", rendered)
         self.assertIn("Respuesta enviada.", rendered)
 
+    def test_read_activity_history_can_limit_activity_log_bytes(self):
+        log_path = self._unique_path("activity_history_tail.log")
+        events_path = log_path.with_name("events.jsonl")
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        log_path.write_text("primera linea\n" + ("x" * 200) + "\nultima linea\n", encoding="utf-8")
+
+        with patch.object(activity, "ACTIVITY_LOG_FILE", log_path):
+            with patch.object(activity, "EVENTS_FILE", events_path):
+                rendered = activity.read_activity_history(activity_max_bytes=64)
+
+        self.assertIn("historial anterior omitido", rendered)
+        self.assertIn("ultima linea", rendered)
+        self.assertNotIn("primera linea", rendered)
+
+    def test_activity_history_signature_changes_with_log_file(self):
+        log_path = self._unique_path("activity_signature.log")
+        events_path = log_path.with_name("events.jsonl")
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+
+        with patch.object(activity, "ACTIVITY_LOG_FILE", log_path):
+            with patch.object(activity, "EVENTS_FILE", events_path):
+                before = activity.activity_history_signature()
+                activity.append_activity("Demo", "Contenido")
+                after = activity.activity_history_signature()
+
+        self.assertNotEqual(before, after)
+
 
 if __name__ == "__main__":
     unittest.main()

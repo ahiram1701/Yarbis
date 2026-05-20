@@ -192,6 +192,10 @@ class AgentTestCase(unittest.TestCase):
             "tasks": [{"id": "task-1", "title": "Definir prioridades", "status": "pending"}],
             "notes": [{"id": "note-1", "title": "Rutina", "content": "Planificar cada lunes"}],
             "internet": {"mode": "auto"},
+            "self_knowledge": {
+                "summary": "Codigo fuente:\n- agent.py\n\nEntorno actual:\nArquitectura: AMD64",
+                "source_signature": "source-sig",
+            },
         })
 
         messages = agent.build_messages(state)
