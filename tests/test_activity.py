@@ -6,6 +6,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import activity
+import secrets_redaction
 import yarbis_service
 
 TEST_RUNTIME_DIR = Path.cwd() / "tests_runtime"
@@ -121,6 +122,55 @@ class ActivityTestCase(unittest.TestCase):
         self.assertIn("Eventos recientes", rendered)
         self.assertIn("Telegram remoto finalizado", rendered)
         self.assertIn("Respuesta enviada.", rendered)
+
+    def test_render_recent_events_reuses_redactor_state_load(self):
+        events_path = self._unique_path("events_redactor.jsonl")
+        events_path.parent.mkdir(parents=True, exist_ok=True)
+        secret = "ntfy-secret-value"
+        events_path.write_text(
+            "\n".join(
+                json.dumps({
+                    "timestamp": "2026-05-05T10:00:00+00:00",
+                    "type": "remote_job_finished",
+                    "label": "Telegram",
+                    "content": f"Respuesta {secret} {index}",
+                })
+                for index in range(10)
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        state = {
+            "notifications": {
+                "ntfy": {"token": secret},
+            }
+        }
+
+        with patch.object(activity, "EVENTS_FILE", events_path):
+            with patch.object(secrets_redaction, "_load_current_state", return_value=state) as load_mock:
+                rendered = activity.render_recent_events(limit=10)
+
+        self.assertEqual(load_mock.call_count, 1)
+        self.assertNotIn(secret, rendered)
+        self.assertIn("[redacted]", rendered)
+
+    def test_emit_event_trims_large_events_file(self):
+        events_path = self._unique_path("events_trim.jsonl")
+        events_path.parent.mkdir(parents=True, exist_ok=True)
+        old_lines = [
+            json.dumps({"timestamp": "2026-05-05T10:00:00+00:00", "type": "old", "content": "x" * 80})
+            for _ in range(20)
+        ]
+        events_path.write_text("\n".join(old_lines) + "\n", encoding="utf-8")
+
+        with patch.object(activity, "EVENTS_FILE", events_path):
+            with patch.object(activity, "MAX_EVENTS_FILE_BYTES", 700):
+                with patch.object(activity, "KEEP_EVENTS_FILE_BYTES", 350):
+                    activity.emit_event("new", content="fresh")
+
+        rendered = events_path.read_text(encoding="utf-8")
+        self.assertLessEqual(events_path.stat().st_size, 700)
+        self.assertIn('"type": "new"', rendered)
 
     def test_read_activity_history_can_limit_activity_log_bytes(self):
         log_path = self._unique_path("activity_history_tail.log")

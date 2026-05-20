@@ -284,7 +284,7 @@ def clear_abandoned_runtime_operation() -> bool:
         state["runtime"] = default_state()["runtime"]
         return True
 
-    return bool(state_transaction("runtime_abandoned_operation_clear", mutate))
+    return bool(state_transaction("runtime_abandoned_operation_clear", mutate, create_backup=False))
 
 
 def _set_runtime_thinking(label: str, operation_id: str):
@@ -307,7 +307,7 @@ def _set_runtime_thinking(label: str, operation_id: str):
                 },
             }
 
-        state_transaction("runtime_thinking_start", mutate)
+        state_transaction("runtime_thinking_start", mutate, create_backup=False)
     except Exception:
         pass
 
@@ -332,7 +332,7 @@ def _clear_runtime_thinking():
                 },
             }
 
-        state_transaction("runtime_thinking_clear", mutate)
+        state_transaction("runtime_thinking_clear", mutate, create_backup=False)
     except Exception:
         pass
 
@@ -362,7 +362,7 @@ def request_stop_current_operation(source: str = "usuario") -> str:
         state["runtime"] = runtime
         return label, operation_id
 
-    label, operation_id = state_transaction("runtime_stop_requested", mutate)
+    label, operation_id = state_transaction("runtime_stop_requested", mutate, create_backup=False)
     if not operation_id:
         return "Yarbis no esta pensando ahora."
 

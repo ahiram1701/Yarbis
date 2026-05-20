@@ -593,6 +593,35 @@ class SessionTestCase(unittest.TestCase):
         self.assertEqual(stop_requested["operation_id"], "ciclo-demo")
         self.assertEqual(stop_requested["source"], "telegram")
 
+    def test_request_stop_current_operation_does_not_create_memory_backup(self):
+        base = TEST_RUNTIME_DIR / "session_stop_no_backup"
+        state_path = base / "state.json"
+        lock_path = base / "state.lock"
+        backups_dir = base / ".yarbis_memory_backups"
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+
+        seeded_state = memory.normalize_state({
+            "runtime": {
+                "thinking": {
+                    "active": True,
+                    "label": "Ciclo",
+                    "source": "pid:1234",
+                    "started_at": "2026-05-01T12:00:00+00:00",
+                    "operation_id": "ciclo-demo",
+                },
+            },
+        })
+
+        with patch.object(memory, "STATE_FILE", state_path):
+            with patch.object(memory, "STATE_LOCK_FILE", lock_path):
+                memory.save_state(seeded_state)
+                initial_count = len(list(backups_dir.glob("*.json")))
+                with patch.object(session, "cancel_active_ollama_request", return_value=True):
+                    session.request_stop_current_operation(source="telegram")
+                after_count = len(list(backups_dir.glob("*.json")))
+
+        self.assertEqual(after_count, initial_count)
+
     def test_request_stop_current_operation_reports_idle_state(self):
         state_path = TEST_RUNTIME_DIR / "session_stop_idle_state.json"
         state_path.parent.mkdir(parents=True, exist_ok=True)

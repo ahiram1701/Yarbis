@@ -1,4 +1,5 @@
 import json
+import os
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -38,6 +39,34 @@ class PcContextTestCase(unittest.TestCase):
         with patch.object(pc_context, "SNAPSHOT_FILE", snapshot_path):
             self.assertIsNone(pc_context.load_latest_snapshot(max_age_seconds=60))
             self.assertIsNotNone(pc_context.load_latest_snapshot(max_age_seconds=3600))
+
+    def test_recent_workspace_files_prunes_ignored_directories(self):
+        workspace = TEST_RUNTIME_DIR / "pc_context_workspace"
+        normal_dir = workspace / "src"
+        ignored_dir = workspace / ".venv"
+        normal_dir.mkdir(parents=True, exist_ok=True)
+        ignored_dir.mkdir(parents=True, exist_ok=True)
+        normal_file = normal_dir / "recent.py"
+        ignored_file = ignored_dir / "ignored.py"
+        normal_file.write_text("print('visible')\n", encoding="utf-8")
+        ignored_file.write_text("print('ignored')\n", encoding="utf-8")
+
+        scanned_dirs = []
+        real_scandir = os.scandir
+
+        def tracking_scandir(path):
+            scanned_dirs.append(Path(path).resolve())
+            return real_scandir(path)
+
+        with patch.object(pc_context, "WORKSPACE_ROOT", workspace):
+            with patch.object(pc_context.os, "scandir", side_effect=tracking_scandir):
+                files = pc_context._get_recent_workspace_files()
+
+        self.assertIn("src/recent.py", [item["path"] for item in files])
+        self.assertNotIn(".venv/ignored.py", [item["path"] for item in files])
+        self.assertIn(workspace.resolve(), scanned_dirs)
+        self.assertIn(normal_dir.resolve(), scanned_dirs)
+        self.assertNotIn(ignored_dir.resolve(), scanned_dirs)
 
     def test_render_snapshot_summary_omits_private_details_when_absent(self):
         snapshot = {

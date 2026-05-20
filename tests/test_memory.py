@@ -138,6 +138,36 @@ class MemoryTestCase(unittest.TestCase):
         self.assertEqual([note["id"] for note in state["notes"]], ["note-1"])
         self.assertEqual([task["id"] for task in state["tasks"]], ["task-1"])
 
+    def test_state_transaction_can_skip_auto_backup_for_volatile_writes(self):
+        base, state_path, lock_path = self._memory_protection_paths("transaction-backup-skip")
+        backups_dir = base / ".yarbis_memory_backups"
+
+        with patch.object(memory, "STATE_FILE", state_path):
+            with patch.object(memory, "STATE_LOCK_FILE", lock_path):
+                memory.save_state(memory.default_state())
+                initial_count = len(list(backups_dir.glob("*.json")))
+
+                def mark_thinking(state):
+                    state["runtime"]["thinking"]["active"] = True
+                    state["runtime"]["thinking"]["label"] = "Ciclo"
+
+                memory.state_transaction("runtime_thinking_start", mark_thinking, create_backup=False)
+                after_volatile_count = len(list(backups_dir.glob("*.json")))
+
+                memory.state_transaction(
+                    "save_note",
+                    lambda state: state["notes"].append({
+                        "id": "note-1",
+                        "title": "Dato estable",
+                        "content": "Debe respaldarse.",
+                        "category": "general",
+                    }),
+                )
+                after_durable_count = len(list(backups_dir.glob("*.json")))
+
+        self.assertEqual(after_volatile_count, initial_count)
+        self.assertGreater(after_durable_count, after_volatile_count)
+
     def test_state_transaction_reports_busy_lock_clearly(self):
         state_path = TEST_RUNTIME_DIR / "memory_busy_lock_state.json"
         lock_path = TEST_RUNTIME_DIR / "memory_busy_lock_state.lock"

@@ -1957,7 +1957,7 @@ def save_state(state):
             _save_state_unlocked(state)
 
 
-def state_transaction(label: str, mutator):
+def state_transaction(label: str, mutator, create_backup: bool = True):
     if not callable(mutator):
         raise TypeError("state_transaction requiere un mutator callable.")
 
@@ -1965,7 +1965,7 @@ def state_transaction(label: str, mutator):
         with _state_file_lock(label):
             state = _load_state_unlocked()
             result = mutator(state)
-            _save_state_unlocked(state)
+            _save_state_unlocked(state, create_backup=create_backup)
             return result
 
 

@@ -385,6 +385,32 @@ def _workspace_path_is_ignored(path: Path) -> bool:
     return any(part in IGNORED_WORKSPACE_DIRS for part in relative.parts)
 
 
+def _iter_workspace_files():
+    stack = [WORKSPACE_ROOT]
+    while stack:
+        directory = stack.pop()
+        try:
+            entries = os.scandir(directory)
+        except OSError:
+            continue
+
+        with entries:
+            for entry in entries:
+                path = Path(entry.path)
+                try:
+                    if entry.is_dir(follow_symlinks=False):
+                        if not _workspace_path_is_ignored(path):
+                            stack.append(path)
+                        continue
+                    if not entry.is_file(follow_symlinks=False):
+                        continue
+                except OSError:
+                    continue
+
+                if not _workspace_path_is_ignored(path):
+                    yield path
+
+
 def _get_git_changes() -> dict:
     output = _safe_run_command(["git", "status", "--short", "--untracked-files=normal"], timeout_seconds=2)
     if not output:
@@ -411,14 +437,8 @@ def _get_git_changes() -> dict:
 def _get_recent_workspace_files() -> list[dict]:
     cutoff = time.time() - RECENT_FILE_SECONDS
     candidates = []
-    try:
-        paths = WORKSPACE_ROOT.rglob("*")
-    except OSError:
-        return []
 
-    for path in paths:
-        if not path.is_file() or _workspace_path_is_ignored(path):
-            continue
+    for path in _iter_workspace_files():
         try:
             stat = path.stat()
         except OSError:

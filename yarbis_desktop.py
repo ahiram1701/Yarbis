@@ -4,6 +4,7 @@ import queue
 import subprocess
 import threading
 import tkinter as tk
+import time
 from datetime import datetime
 from pathlib import Path
 from tkinter import filedialog, messagebox, simpledialog, ttk
@@ -168,6 +169,7 @@ def _show_already_running_message():
 
 
 _STATE_SYNC_INTERVAL_MS = 1000
+_HEAVY_STATE_SYNC_INTERVAL_MS = 5000
 _CONTEXT_HELPER_SYNC_MS = 10000
 _WORKSPACE_ROOT = Path(__file__).resolve().parent
 _UPDATE_SCRIPT = _WORKSPACE_ROOT / "scripts" / "update.ps1"
@@ -252,6 +254,10 @@ class YarbisDesktop(tk.Tk):
         self._last_summary_text = ""
         self._last_activity_text = ""
         self._last_activity_signature = None
+        self._last_heavy_state_refresh_at = 0.0
+        self._cached_health_status = None
+        self._cached_readiness_status = None
+        self._cached_context_helper_status = None
         self._local_telegram_polling = False
         self._closing = False
         self._first_run_checked = False
@@ -1028,7 +1034,7 @@ class YarbisDesktop(tk.Tk):
             parent=self,
         )
 
-    def refresh_state_view(self):
+    def refresh_state_view(self, force_heavy: bool = True):
         state = load_state()
         self.goal_var.set(state["goal"])
         self.cycles_var.set(str(state["cycle_count"]))
@@ -1053,9 +1059,26 @@ class YarbisDesktop(tk.Tk):
         else:
             self.coding_var.set("Sin workspace de codigo.")
 
-        health = health_status()
+        now = time.monotonic()
+        refresh_heavy = (
+            force_heavy
+            or self._cached_health_status is None
+            or now - self._last_heavy_state_refresh_at >= (_HEAVY_STATE_SYNC_INTERVAL_MS / 1000)
+        )
+        if refresh_heavy:
+            health = health_status()
+            readiness = readiness_status()
+            helper_status = get_context_helper_status()
+            self._cached_health_status = health
+            self._cached_readiness_status = readiness
+            self._cached_context_helper_status = helper_status
+            self._last_heavy_state_refresh_at = now
+        else:
+            health = self._cached_health_status
+            readiness = self._cached_readiness_status
+            helper_status = self._cached_context_helper_status
+
         self.health_var.set(format_health_status(health))
-        readiness = readiness_status()
         self.readiness_var.set(format_readiness_status(readiness))
         service_status = health["service"]
         proactive_settings = state["service"]["proactive"]
@@ -1068,7 +1091,7 @@ class YarbisDesktop(tk.Tk):
         )
         local_context_settings = state.get("local_context", {})
         local_context_status = "activo" if local_context_enabled(local_context_settings) else "desactivado"
-        helper_text = format_context_helper_status(get_context_helper_status())
+        helper_text = format_context_helper_status(helper_status)
         local_context_text = (
             f"Contexto local {local_context_status} "
             f"(modo={local_context_settings.get('mode', 'safe')}, {helper_text})."
@@ -1110,7 +1133,8 @@ class YarbisDesktop(tk.Tk):
         else:
             self.service_autostart_check.configure(state="disabled")
         self._style_service_autostart_toggle()
-        self._ensure_telegram_polling_matches_service(service_status["running"])
+        if refresh_heavy:
+            self._ensure_telegram_polling_matches_service(service_status["running"])
 
         self._sync_runtime_thinking(state)
 
@@ -1187,7 +1211,7 @@ class YarbisDesktop(tk.Tk):
             self._start_background_job("Primer ciclo", run_cycle_with_output)
 
     def _sync_state_view(self):
-        self.refresh_state_view()
+        self.refresh_state_view(force_heavy=False)
         self.after(_STATE_SYNC_INTERVAL_MS, self._sync_state_view)
 
     def _ensure_telegram_polling_matches_service(self, service_running: bool | None = None):

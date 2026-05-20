@@ -235,7 +235,7 @@ def _mark_proactive_pulse() -> str:
         proactive_state = service_state.setdefault("proactive", {})
         proactive_state["last_pulse_at"] = timestamp
 
-    state_transaction("service_proactive_last_pulse", mutate)
+    state_transaction("service_proactive_last_pulse", mutate, create_backup=False)
     return timestamp
 
 

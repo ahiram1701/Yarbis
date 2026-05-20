@@ -1,6 +1,6 @@
 import os
 import re
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 
 REDACTED = "[redacted]"
 SECRET_ENV_NAMES = (
@@ -96,8 +96,7 @@ def _secret_values(state: dict | None) -> list[str]:
     return unique_values
 
 
-def redact_secrets(text: object, state: dict | None = None) -> str:
-    rendered = str(text)
+def _redact_rendered(rendered: str, secret_values: Iterable[str]) -> str:
     if not rendered:
         return rendered
 
@@ -106,7 +105,20 @@ def redact_secrets(text: object, state: dict | None = None) -> str:
     redacted = _ENV_ASSIGNMENT_RE.sub(rf"\1\2{REDACTED}", redacted)
     redacted = _TOKEN_PARAM_RE.sub(rf"\1\2{REDACTED}", redacted)
 
-    for value in _secret_values(state):
+    for value in secret_values:
         redacted = redacted.replace(value, REDACTED)
 
     return _TELEGRAM_TOKEN_RE.sub(REDACTED, redacted)
+
+
+def build_secret_redactor(state: dict | None = None) -> Callable[[object], str]:
+    secret_values = _secret_values(state)
+
+    def redact(text: object) -> str:
+        return _redact_rendered(str(text), secret_values)
+
+    return redact
+
+
+def redact_secrets(text: object, state: dict | None = None) -> str:
+    return _redact_rendered(str(text), _secret_values(state))
