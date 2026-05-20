@@ -4,6 +4,7 @@ import os
 import re
 import sys
 import threading
+import time
 from collections.abc import Mapping
 from datetime import datetime, timezone
 from types import SimpleNamespace
@@ -94,6 +95,8 @@ from tools import (
 
 DEFAULT_MODEL = DEFAULT_OLLAMA_MODEL
 DEFAULT_EMPTY_RESPONSE_RETRIES = 1
+DEFAULT_OPENROUTER_HTTP_RETRIES = 1
+DEFAULT_OPENROUTER_RETRY_DELAY_SECONDS = 1.0
 WAITING_FOR_INSTRUCTIONS_QUESTION = "Que instruccion quieres que siga ahora?"
 NON_ACTIONABLE_RETRY_MESSAGE = (
     "El ultimo mensaje del usuario ya autoriza avanzar con la propuesta anterior. "
@@ -164,6 +167,17 @@ def _get_env_int(name: str, default: int) -> int:
         return default
 
 
+def _get_env_float(name: str, default: float) -> float:
+    raw_value = os.getenv(name, "").strip()
+    if not raw_value:
+        return default
+
+    try:
+        return float(raw_value)
+    except ValueError:
+        return default
+
+
 MODEL = os.getenv("YARBIS_MODEL", DEFAULT_MODEL).strip() or DEFAULT_MODEL
 MODEL_PROVIDER = os.getenv("YARBIS_MODEL_PROVIDER", MODEL_PROVIDER_OLLAMA).strip().lower()
 if MODEL_PROVIDER not in VALID_MODEL_PROVIDERS:
@@ -201,6 +215,21 @@ EMPTY_RESPONSE_RETRIES = max(
     0,
     _get_env_int("YARBIS_EMPTY_RESPONSE_RETRIES", DEFAULT_EMPTY_RESPONSE_RETRIES),
 )
+OPENROUTER_HTTP_RETRIES = max(
+    0,
+    min(3, _get_env_int("YARBIS_OPENROUTER_HTTP_RETRIES", DEFAULT_OPENROUTER_HTTP_RETRIES)),
+)
+OPENROUTER_RETRY_DELAY_SECONDS = max(
+    0.0,
+    min(
+        10.0,
+        _get_env_float(
+            "YARBIS_OPENROUTER_RETRY_DELAY_SECONDS",
+            DEFAULT_OPENROUTER_RETRY_DELAY_SECONDS,
+        ),
+    ),
+)
+OPENROUTER_TRANSIENT_HTTP_CODES = {429, 500, 502, 503, 504}
 
 
 def _env_list(name: str) -> list[str]:
@@ -419,6 +448,42 @@ def _openrouter_tool_calls(raw_tool_calls) -> list:
     return normalized
 
 
+class OpenRouterHTTPError(RuntimeError):
+    def __init__(self, status_code: int, message: str, raw_message: str = ""):
+        self.status_code = int(status_code)
+        self.raw_message = str(raw_message or message).strip()
+        self.message = str(message).strip() or self.raw_message or "error HTTP"
+        super().__init__(self._render_message())
+
+    def _render_message(self) -> str:
+        if self.status_code == 429:
+            return "OpenRouter HTTP 429: limite temporal del proveedor o modelo"
+        return f"OpenRouter HTTP {self.status_code}: {self.message}"
+
+
+class OpenRouterRateLimitError(RuntimeError):
+    def __init__(self, models: list[str] | None = None):
+        self.models = [str(model).strip() for model in (models or []) if str(model).strip()]
+        suffix = f" Modelos intentados: {', '.join(self.models)}." if self.models else ""
+        super().__init__("OpenRouter aplico un limite temporal del proveedor o modelo." + suffix)
+
+
+def _openrouter_retry_after_seconds(exc: urllib_error.HTTPError, attempt: int) -> float:
+    retry_after = ""
+    headers = getattr(exc, "headers", None)
+    if headers is not None:
+        try:
+            retry_after = str(headers.get("Retry-After", "")).strip()
+        except Exception:
+            retry_after = ""
+    if retry_after:
+        try:
+            return max(0.0, min(10.0, float(retry_after)))
+        except ValueError:
+            pass
+    return min(10.0, OPENROUTER_RETRY_DELAY_SECONDS * max(1, attempt + 1))
+
+
 class OpenRouterClient:
     def __init__(self, host: str, timeout_seconds: int, api_key_env_var: str, api_key: str = ""):
         self.host = _normalize_openrouter_host(host)
@@ -455,15 +520,29 @@ class OpenRouterClient:
             method="POST",
         )
 
-        try:
-            with request.urlopen(http_request, timeout=self.timeout_seconds) as response:
-                response_body = response.read().decode("utf-8", errors="replace")
-        except urllib_error.HTTPError as exc:
-            error_body = exc.read().decode("utf-8", errors="replace")
-            error_message = _openrouter_error_message(error_body) or error_body or str(exc)
-            raise RuntimeError(f"OpenRouter HTTP {exc.code}: {error_message}") from exc
-        except urllib_error.URLError as exc:
-            raise RuntimeError(f"OpenRouter no respondio: {exc}") from exc
+        response_body = ""
+        for attempt in range(OPENROUTER_HTTP_RETRIES + 1):
+            try:
+                with request.urlopen(http_request, timeout=self.timeout_seconds) as response:
+                    response_body = response.read().decode("utf-8", errors="replace")
+                break
+            except urllib_error.HTTPError as exc:
+                try:
+                    error_body = exc.read().decode("utf-8", errors="replace")
+                finally:
+                    close_error = getattr(exc, "close", None)
+                    if callable(close_error):
+                        close_error()
+                openrouter_error = _openrouter_http_error(exc.code, error_body)
+                if (
+                    openrouter_error.status_code in OPENROUTER_TRANSIENT_HTTP_CODES
+                    and attempt < OPENROUTER_HTTP_RETRIES
+                ):
+                    time.sleep(_openrouter_retry_after_seconds(exc, attempt))
+                    continue
+                raise openrouter_error from exc
+            except urllib_error.URLError as exc:
+                raise RuntimeError(f"OpenRouter no respondio: {exc}") from exc
 
         data = json.loads(response_body)
         choices = data.get("choices", []) if isinstance(data, dict) else []
@@ -491,6 +570,14 @@ def _openrouter_error_message(error_body: str) -> str:
     if isinstance(error, dict):
         return str(error.get("message", "")).strip()
     return str(data.get("message", "")).strip()
+
+
+def _openrouter_http_error(status_code: int, error_body: str) -> OpenRouterHTTPError:
+    raw_message = _openrouter_error_message(error_body) or str(error_body).strip()
+    message = raw_message
+    if int(status_code) == 429 and "provider returned error" in raw_message.lower():
+        message = "limite temporal del proveedor/modelo solicitado"
+    return OpenRouterHTTPError(status_code, message, raw_message=raw_message)
 
 
 def _build_openrouter_client(host: str, timeout_seconds: int, api_key_env_var: str, api_key: str = ""):
@@ -1272,6 +1359,17 @@ def _is_timeout_error(exc: Exception) -> bool:
     return False
 
 
+def _openrouter_rate_limit_error(exc: Exception):
+    for chained in _exception_chain(exc):
+        if isinstance(chained, OpenRouterRateLimitError):
+            return chained
+        if isinstance(chained, OpenRouterHTTPError) and chained.status_code == 429:
+            return chained
+        if "openrouter http 429" in str(chained).strip().lower():
+            return chained
+    return None
+
+
 def _format_chat_error(exc: Exception) -> str:
     provider_label = "OpenRouter" if MODEL_PROVIDER == MODEL_PROVIDER_OPENROUTER else "Ollama"
     host_value = OPENROUTER_HOST if MODEL_PROVIDER == MODEL_PROVIDER_OPENROUTER else OLLAMA_HOST
@@ -1293,6 +1391,26 @@ def _format_chat_error(exc: Exception) -> str:
         _api_key, key_source = _openrouter_api_key(OPENROUTER_API_KEY_ENV_VAR, OPENROUTER_API_KEY)
         if not _api_key:
             cloud_hint = f"\nDefine `{key_source}` para usar OpenRouter."
+        rate_limit_error = _openrouter_rate_limit_error(exc)
+        if rate_limit_error is not None:
+            models = getattr(rate_limit_error, "models", None) or [MODEL]
+            model_text = ", ".join(models) if models else MODEL
+            fallback_hint = (
+                "\nTambien puedes configurar fallbacks de OpenRouter desde Modelo y timeout "
+                "o con `/openrouter fallback modelo1, modelo2`."
+                if not fallback_models
+                else ""
+            )
+            return (
+                "OpenRouter aplico un limite temporal del proveedor/modelo (HTTP 429).\n"
+                f"Host OpenRouter: {host_text}.\n"
+                f"Modelo(s) intentado(s): {model_text}."
+                f"{fallback_text}\n"
+                "Ya hice el reintento breve configurado. Para reducir que se repita, "
+                "espera unos minutos, cambia a un modelo con mas capacidad/rate limit, "
+                "agrega fallbacks de OpenRouter o vuelve temporalmente a Ollama."
+                f"{fallback_hint}{cloud_hint}"
+            )
     elif _host_uses_ollama_cloud(OLLAMA_HOST) and not os.getenv(OLLAMA_API_KEY_ENV_VAR, "").strip():
         cloud_hint = (
             f"\nPara Ollama Cloud directo, define `{OLLAMA_API_KEY_ENV_VAR}` "
@@ -1436,6 +1554,7 @@ def _chat_with_model_candidates(
     **kwargs,
 ):
     errors = []
+    caught_exceptions = []
     last_exc = None
     for model_name in model_candidates:
         try:
@@ -1449,8 +1568,16 @@ def _chat_with_model_candidates(
             if _stop_requested_for_operation(operation_id=operation_id):
                 raise
             last_exc = exc
+            caught_exceptions.append(exc)
             errors.append(f"{model_name}: {exc}")
 
+    if (
+        MODEL_PROVIDER == MODEL_PROVIDER_OPENROUTER
+        and errors
+        and len(errors) == len(caught_exceptions)
+        and all(_openrouter_rate_limit_error(exc) is not None for exc in caught_exceptions)
+    ):
+        raise OpenRouterRateLimitError(model_candidates)
     if len(errors) > 1:
         raise RuntimeError("Todos los modelos configurados fallaron: " + " | ".join(errors))
     if last_exc is not None:

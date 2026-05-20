@@ -1,8 +1,10 @@
 import json
+import io
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
+from urllib.error import HTTPError
 from unittest.mock import Mock, patch
 
 import agent
@@ -293,6 +295,152 @@ class AgentTestCase(unittest.TestCase):
         self.assertEqual(payload["tools"][0]["function"]["name"], "sample_tool")
         self.assertEqual(response.message.tool_calls[0].id, "call-1")
         self.assertEqual(response.message.tool_calls[0].function.name, "add_task")
+
+    def test_openrouter_client_retries_http_429_once(self):
+        class FakeResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def read(self):
+                return json.dumps({
+                    "choices": [
+                        {"message": {"content": "ok", "tool_calls": []}}
+                    ]
+                }).encode("utf-8")
+
+        error_body = json.dumps({
+            "error": {"message": "Provider returned error"}
+        }).encode("utf-8")
+        http_error = HTTPError(
+            "https://openrouter.ai/api/v1/chat/completions",
+            429,
+            "Too Many Requests",
+            {"Retry-After": "0"},
+            io.BytesIO(error_body),
+        )
+
+        with patch.dict(agent.os.environ, {}, clear=True):
+            with patch.object(agent.request, "urlopen", side_effect=[http_error, FakeResponse()]) as urlopen_mock:
+                with patch.object(agent.time, "sleep") as sleep_mock:
+                    response = agent.OpenRouterClient(
+                        "https://openrouter.ai/api/v1",
+                        30,
+                        "OPENROUTER_API_KEY",
+                        api_key="stored-openrouter-key",
+                    ).chat(
+                        model="openai/gpt-demo",
+                        messages=[{"role": "user", "content": "hola"}],
+                    )
+
+        self.assertEqual(response.message.content, "ok")
+        self.assertEqual(urlopen_mock.call_count, 2)
+        sleep_mock.assert_called_once()
+
+    def test_run_one_cycle_tries_openrouter_fallback_after_rate_limit(self):
+        state_path = TEST_RUNTIME_DIR / "agent_openrouter_fallback_state.json"
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+        final_response = SimpleNamespace(
+            message=SimpleNamespace(content="Fallback OpenRouter", tool_calls=[])
+        )
+        fake_client = SimpleNamespace(
+            chat=Mock(side_effect=[
+                agent.OpenRouterHTTPError(429, "Provider returned error"),
+                final_response,
+            ])
+        )
+        old_runtime = (
+            agent.client,
+            agent._client_signature,
+            agent._client_timeout_seconds,
+            agent.MODEL_PROVIDER,
+            agent.MODEL,
+        )
+        seeded_state = memory.normalize_state({
+            "model_provider": {
+                "default": "openrouter",
+                "openrouter": {
+                    "model": "openai/rate-limited",
+                    "fallback_models": ["anthropic/claude-demo"],
+                    "host": "https://openrouter.ai/api/v1",
+                    "api_key": "stored-openrouter-key",
+                    "timeout_seconds": 900,
+                },
+            },
+        })
+
+        try:
+            with patch.object(memory, "STATE_FILE", state_path):
+                memory.save_state(seeded_state)
+                with patch.dict(agent.os.environ, {}, clear=True):
+                    with patch.object(agent, "_build_openrouter_client", return_value=fake_client):
+                        result = agent.run_one_cycle(max_steps=1)
+        finally:
+            (
+                agent.client,
+                agent._client_signature,
+                agent._client_timeout_seconds,
+                agent.MODEL_PROVIDER,
+                agent.MODEL,
+            ) = old_runtime
+
+        self.assertEqual(result["status"], "final")
+        self.assertEqual(result["content"], "Fallback OpenRouter")
+        self.assertEqual(
+            [call.kwargs["model"] for call in fake_client.chat.call_args_list],
+            ["openai/rate-limited", "anthropic/claude-demo"],
+        )
+
+    def test_run_one_cycle_explains_openrouter_rate_limit_without_raw_provider_error(self):
+        state_path = TEST_RUNTIME_DIR / "agent_openrouter_429_state.json"
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+        fake_client = SimpleNamespace(
+            chat=Mock(side_effect=agent.OpenRouterHTTPError(429, "Provider returned error"))
+        )
+        old_runtime = (
+            agent.client,
+            agent._client_signature,
+            agent._client_timeout_seconds,
+            agent.MODEL_PROVIDER,
+            agent.MODEL,
+        )
+        seeded_state = memory.normalize_state({
+            "model_provider": {
+                "default": "openrouter",
+                "openrouter": {
+                    "model": "openai/rate-limited",
+                    "fallback_models": ["anthropic/rate-limited"],
+                    "host": "https://openrouter.ai/api/v1",
+                    "api_key": "stored-openrouter-key",
+                    "timeout_seconds": 900,
+                },
+            },
+        })
+
+        try:
+            with patch.object(memory, "STATE_FILE", state_path):
+                memory.save_state(seeded_state)
+                with patch.dict(agent.os.environ, {}, clear=True):
+                    with patch.object(agent, "_build_openrouter_client", return_value=fake_client):
+                        result = agent.run_one_cycle(max_steps=1)
+                state = memory.load_state()
+        finally:
+            (
+                agent.client,
+                agent._client_signature,
+                agent._client_timeout_seconds,
+                agent.MODEL_PROVIDER,
+                agent.MODEL,
+            ) = old_runtime
+
+        self.assertEqual(result["status"], "error")
+        self.assertIn("HTTP 429", result["content"])
+        self.assertIn("limite temporal", result["content"])
+        self.assertIn("fallbacks", result["content"].lower())
+        self.assertNotIn("Provider returned error", result["content"])
+        self.assertNotIn("Provider returned error", state["last_result"])
 
     def test_build_messages_includes_personal_context(self):
         state = memory.normalize_state({
