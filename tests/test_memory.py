@@ -200,6 +200,13 @@ class MemoryTestCase(unittest.TestCase):
                     },
                 },
             },
+            "model_provider": {
+                "default": "openrouter",
+                "openrouter": {
+                    "model": "openai/gpt-demo",
+                    "api_key": "openrouter-secret",
+                },
+            },
             "memory_protection": {
                 "mirror_dir": str(mirror_dir),
                 "retention": {
@@ -229,6 +236,10 @@ class MemoryTestCase(unittest.TestCase):
         self.assertEqual(package["state"]["notifications"]["telegram"]["bot_token"], "[redacted]")
         self.assertEqual(
             package["state"]["notifications"]["telegram"]["pending_power_confirmation"]["token"],
+            "[redacted]",
+        )
+        self.assertEqual(
+            package["state"]["model_provider"]["openrouter"]["api_key"],
             "[redacted]",
         )
 
@@ -461,6 +472,7 @@ class MemoryTestCase(unittest.TestCase):
                     "model": "openai/gpt-demo",
                     "fallback_models": "anthropic/claude-demo, openai/gpt-demo",
                     "host": "https://openrouter.ai/api/v1/chat/completions",
+                    "api_key": "openrouter-secret",
                     "api_key_env_var": "OPENROUTER_API_KEY",
                     "timeout_seconds": 1200,
                 },
@@ -480,6 +492,10 @@ class MemoryTestCase(unittest.TestCase):
         self.assertEqual(
             normalized["model_provider"]["openrouter"]["api_key_env_var"],
             "OPENROUTER_API_KEY",
+        )
+        self.assertEqual(
+            normalized["model_provider"]["openrouter"]["api_key"],
+            "openrouter-secret",
         )
 
     def test_normalize_state_sanitizes_runtime_thinking_state(self):

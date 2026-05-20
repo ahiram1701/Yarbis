@@ -473,6 +473,7 @@ class ServiceManagerTestCase(unittest.TestCase):
                 "default": "openrouter",
                 "openrouter": {
                     "model": "openai/gpt-demo",
+                    "api_key": "stored-openrouter-key",
                     "api_key_env_var": "OPENROUTER_API_KEY",
                     "timeout_seconds": 900,
                 },
@@ -491,7 +492,7 @@ class ServiceManagerTestCase(unittest.TestCase):
                 ):
                     with patch.object(service_manager, "_ollama_model_names", side_effect=AssertionError("no ollama list")):
                         with patch.object(service_manager.shutil, "which", return_value="dotnet"):
-                            with patch.dict(service_manager.os.environ, {"OPENROUTER_API_KEY": "test-key"}, clear=False):
+                            with patch.dict(service_manager.os.environ, {}, clear=True):
                                 result = service_manager.readiness_status(force=True)
                                 rendered = service_manager.format_readiness_status(result, compact=False)
 

@@ -10,13 +10,15 @@ SECRET_ENV_NAMES = (
     "YARBIS_LINKEDIN_CLIENT_SECRET",
     "YARBIS_FACEBOOK_ACCESS_TOKEN",
     "YARBIS_LINKEDIN_ACCESS_TOKEN",
+    "YARBIS_OPENROUTER_API_KEY",
 )
 _TELEGRAM_BOT_URL_RE = re.compile(r"/bot([^/\s]+)/")
 _TELEGRAM_TOKEN_RE = re.compile(r"\b\d{5,}:[A-Za-z0-9_-]{3,}\b")
 _BEARER_RE = re.compile(r"\bBearer\s+[A-Za-z0-9._~+/=-]{4,}", re.IGNORECASE)
 _ENV_ASSIGNMENT_RE = re.compile(
     r"\b(YARBIS_TELEGRAM_BOT_TOKEN|YARBIS_NTFY_TOKEN|YARBIS_META_APP_SECRET|"
-    r"YARBIS_LINKEDIN_CLIENT_SECRET|YARBIS_FACEBOOK_ACCESS_TOKEN|YARBIS_LINKEDIN_ACCESS_TOKEN)"
+    r"YARBIS_LINKEDIN_CLIENT_SECRET|YARBIS_FACEBOOK_ACCESS_TOKEN|YARBIS_LINKEDIN_ACCESS_TOKEN|"
+    r"YARBIS_OPENROUTER_API_KEY)"
     r"(\s*[:=]\s*)([^\s,;]+)",
     re.IGNORECASE,
 )
@@ -62,6 +64,12 @@ def _state_secret_values(state: dict | None) -> Iterable[str]:
                 yield load_secret(token_ref)
             except Exception:
                 continue
+
+    model_provider = state.get("model_provider", {}) if isinstance(state, dict) else {}
+    if isinstance(model_provider, dict):
+        openrouter = model_provider.get("openrouter", {})
+        if isinstance(openrouter, dict):
+            yield str(openrouter.get("api_key", "")).strip()
 
 
 def _load_current_state() -> dict:

@@ -71,6 +71,7 @@ DEFAULT_OPENROUTER_MODEL = ""
 DEFAULT_OPENROUTER_HOST = "https://openrouter.ai/api/v1"
 DEFAULT_OPENROUTER_API_KEY_ENV_VAR = "OPENROUTER_API_KEY"
 DEFAULT_OPENROUTER_TIMEOUT_SECONDS = DEFAULT_OLLAMA_TIMEOUT_SECONDS
+MAX_OPENROUTER_API_KEY_CHARS = 512
 MIN_OLLAMA_TIMEOUT_SECONDS = 1
 MAX_OLLAMA_TIMEOUT_SECONDS = 24 * 60 * 60
 MAX_OLLAMA_MODEL_CHARS = 120
@@ -216,6 +217,7 @@ def default_state():
                 "model": DEFAULT_OPENROUTER_MODEL,
                 "fallback_models": [],
                 "host": DEFAULT_OPENROUTER_HOST,
+                "api_key": "",
                 "api_key_env_var": DEFAULT_OPENROUTER_API_KEY_ENV_VAR,
                 "timeout_seconds": DEFAULT_OPENROUTER_TIMEOUT_SECONDS,
             },
@@ -617,6 +619,7 @@ def _normalize_provider_settings(
     host_char_limit: int,
     api_key_env_char_limit: int,
     fallback_limit: int,
+    api_key_char_limit: int | None = None,
     allow_empty_model: bool = False,
     strip_ollama_api: bool = False,
 ) -> dict:
@@ -673,13 +676,19 @@ def _normalize_provider_settings(
     except (TypeError, ValueError):
         timeout_seconds = defaults["timeout_seconds"]
 
-    return {
+    normalized = {
         "model": model,
         "fallback_models": fallback_models,
         "host": host,
         "api_key_env_var": api_key_env_var,
         "timeout_seconds": timeout_seconds,
     }
+    if api_key_char_limit is not None:
+        normalized["api_key"] = _coerce_text(
+            settings.get("api_key", defaults.get("api_key", "")),
+            api_key_char_limit,
+        ).strip()
+    return normalized
 
 
 def _normalize_ollama(ollama):
@@ -704,6 +713,7 @@ def _normalize_openrouter(openrouter):
         host_char_limit=MAX_OPENROUTER_HOST_CHARS,
         api_key_env_char_limit=MAX_OPENROUTER_API_KEY_ENV_VAR_CHARS,
         fallback_limit=MAX_OPENROUTER_FALLBACK_MODELS,
+        api_key_char_limit=MAX_OPENROUTER_API_KEY_CHARS,
         allow_empty_model=True,
     )
 

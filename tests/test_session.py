@@ -220,6 +220,7 @@ class SessionTestCase(unittest.TestCase):
                 1200,
                 host="https://openrouter.ai/api/v1/chat/completions",
                 fallback_models="anthropic/claude-demo",
+                api_key="openrouter-secret",
                 api_key_env_var="OPENROUTER_API_KEY",
             )
             state = memory.load_state()
@@ -235,6 +236,8 @@ class SessionTestCase(unittest.TestCase):
             state["model_provider"]["openrouter"]["host"],
             "https://openrouter.ai/api/v1",
         )
+        self.assertEqual(state["model_provider"]["openrouter"]["api_key"], "openrouter-secret")
+        self.assertIn("API key: guardada", result)
         self.assertEqual(state["ollama"]["model"], memory.DEFAULT_OLLAMA_MODEL)
 
     def test_update_model_provider_persists_without_losing_provider_settings(self):

@@ -450,6 +450,7 @@ def health_status(force_service: bool = False) -> dict:
             "model": str(openrouter.get("model", DEFAULT_OPENROUTER_MODEL)).strip(),
             "fallback_models": openrouter.get("fallback_models", []),
             "host": str(openrouter.get("host", DEFAULT_OPENROUTER_HOST)).strip() or DEFAULT_OPENROUTER_HOST,
+            "api_key_configured": bool(str(openrouter.get("api_key", "")).strip()),
             "api_key_env_var": (
                 str(openrouter.get("api_key_env_var", DEFAULT_OPENROUTER_API_KEY_ENV_VAR)).strip()
                 or DEFAULT_OPENROUTER_API_KEY_ENV_VAR
@@ -581,9 +582,11 @@ def _model_provider_settings(state: dict) -> tuple[str, dict, dict, dict]:
     return provider, active, ollama, openrouter
 
 
-def _openrouter_api_key_present(api_key_env_var: str) -> tuple[bool, str]:
+def _openrouter_api_key_present(api_key_env_var: str, api_key: str = "") -> tuple[bool, str]:
     if os.getenv("YARBIS_OPENROUTER_API_KEY", "").strip():
         return True, "YARBIS_OPENROUTER_API_KEY"
+    if str(api_key).strip():
+        return True, "API key guardada en Yarbis"
     cleaned_env_var = str(api_key_env_var).strip() or DEFAULT_OPENROUTER_API_KEY_ENV_VAR
     return bool(os.getenv(cleaned_env_var, "").strip()), cleaned_env_var
 
@@ -685,7 +688,10 @@ def readiness_status(force: bool = False) -> dict:
             str(openrouter.get("api_key_env_var", DEFAULT_OPENROUTER_API_KEY_ENV_VAR)).strip()
             or DEFAULT_OPENROUTER_API_KEY_ENV_VAR
         )
-        api_key_present, key_source = _openrouter_api_key_present(api_key_env_var)
+        api_key_present, key_source = _openrouter_api_key_present(
+            api_key_env_var,
+            openrouter.get("api_key", ""),
+        )
         if not model:
             items.append(_readiness_item(
                 "model_provider",

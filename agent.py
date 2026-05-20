@@ -176,6 +176,7 @@ OLLAMA_API_KEY_ENV_VAR = (
 )
 OPENROUTER_FALLBACK_MODELS = []
 OPENROUTER_HOST = os.getenv("YARBIS_OPENROUTER_HOST", DEFAULT_OPENROUTER_HOST).strip() or DEFAULT_OPENROUTER_HOST
+OPENROUTER_API_KEY = ""
 OPENROUTER_API_KEY_ENV_VAR = (
     os.getenv("YARBIS_OPENROUTER_API_KEY_ENV_VAR", DEFAULT_OPENROUTER_API_KEY_ENV_VAR).strip()
     or DEFAULT_OPENROUTER_API_KEY_ENV_VAR
@@ -255,18 +256,26 @@ def _normalize_openrouter_host(host: str) -> str:
     return cleaned.rstrip("/")
 
 
-def _openrouter_api_key(api_key_env_var: str) -> tuple[str, str]:
+def _openrouter_api_key(api_key_env_var: str, configured_api_key: str = "") -> tuple[str, str]:
     direct_key = os.getenv("YARBIS_OPENROUTER_API_KEY", "").strip()
     if direct_key:
         return direct_key, "YARBIS_OPENROUTER_API_KEY"
+    saved_key = str(configured_api_key).strip()
+    if saved_key:
+        return saved_key, "API key guardada en Yarbis"
     cleaned_env_var = str(api_key_env_var).strip() or DEFAULT_OPENROUTER_API_KEY_ENV_VAR
     return os.getenv(cleaned_env_var, "").strip(), cleaned_env_var
 
 
-def _openrouter_client_signature(host: str, timeout_seconds: int, api_key_env_var: str) -> tuple:
+def _openrouter_client_signature(
+    host: str,
+    timeout_seconds: int,
+    api_key_env_var: str,
+    api_key: str = "",
+) -> tuple:
     cleaned_host = _normalize_openrouter_host(host)
-    api_key, key_source = _openrouter_api_key(api_key_env_var)
-    return cleaned_host, int(timeout_seconds), str(api_key_env_var).strip(), key_source, api_key
+    resolved_api_key, key_source = _openrouter_api_key(api_key_env_var, api_key)
+    return cleaned_host, int(timeout_seconds), str(api_key_env_var).strip(), key_source, resolved_api_key
 
 
 def _json_type_for_annotation(annotation) -> dict:
@@ -411,13 +420,14 @@ def _openrouter_tool_calls(raw_tool_calls) -> list:
 
 
 class OpenRouterClient:
-    def __init__(self, host: str, timeout_seconds: int, api_key_env_var: str):
+    def __init__(self, host: str, timeout_seconds: int, api_key_env_var: str, api_key: str = ""):
         self.host = _normalize_openrouter_host(host)
         self.timeout_seconds = int(timeout_seconds)
         self.api_key_env_var = str(api_key_env_var).strip() or DEFAULT_OPENROUTER_API_KEY_ENV_VAR
+        self.api_key = str(api_key).strip()
 
     def chat(self, **kwargs):
-        api_key, key_source = _openrouter_api_key(self.api_key_env_var)
+        api_key, key_source = _openrouter_api_key(self.api_key_env_var, self.api_key)
         if not api_key:
             raise RuntimeError(f"Falta API key de OpenRouter. Define `{key_source}`.")
 
@@ -483,8 +493,8 @@ def _openrouter_error_message(error_body: str) -> str:
     return str(data.get("message", "")).strip()
 
 
-def _build_openrouter_client(host: str, timeout_seconds: int, api_key_env_var: str):
-    return OpenRouterClient(host, timeout_seconds, api_key_env_var)
+def _build_openrouter_client(host: str, timeout_seconds: int, api_key_env_var: str, api_key: str = ""):
+    return OpenRouterClient(host, timeout_seconds, api_key_env_var, api_key=api_key)
 
 
 client = _build_ollama_client(
@@ -761,6 +771,7 @@ def _runtime_client_signature(settings: dict) -> tuple:
                 settings.get("host", DEFAULT_OPENROUTER_HOST),
                 settings.get("timeout_seconds", DEFAULT_OPENROUTER_TIMEOUT_SECONDS),
                 settings.get("api_key_env_var", DEFAULT_OPENROUTER_API_KEY_ENV_VAR),
+                settings.get("api_key", ""),
             ),
         )
     return (
@@ -779,6 +790,7 @@ def _build_model_client(settings: dict):
             settings.get("host", DEFAULT_OPENROUTER_HOST),
             settings.get("timeout_seconds", DEFAULT_OPENROUTER_TIMEOUT_SECONDS),
             settings.get("api_key_env_var", DEFAULT_OPENROUTER_API_KEY_ENV_VAR),
+            settings.get("api_key", ""),
         )
     return _build_ollama_client(
         settings.get("host", DEFAULT_OLLAMA_HOST),
@@ -801,6 +813,7 @@ def cancel_active_ollama_request() -> bool:
                 if MODEL_PROVIDER == MODEL_PROVIDER_OPENROUTER
                 else OLLAMA_TIMEOUT_SECONDS
             ),
+            "api_key": OPENROUTER_API_KEY,
             "api_key_env_var": (
                 OPENROUTER_API_KEY_ENV_VAR
                 if MODEL_PROVIDER == MODEL_PROVIDER_OPENROUTER
@@ -909,6 +922,7 @@ def _resolve_model_runtime_settings(
         default_model = DEFAULT_OPENROUTER_MODEL
         default_host = DEFAULT_OPENROUTER_HOST
         default_api_key_env_var = DEFAULT_OPENROUTER_API_KEY_ENV_VAR
+        default_api_key = ""
         default_timeout = DEFAULT_OPENROUTER_TIMEOUT_SECONDS
         fallback_env_name = "YARBIS_OPENROUTER_FALLBACK_MODELS"
         host_env_name = "YARBIS_OPENROUTER_HOST"
@@ -920,6 +934,7 @@ def _resolve_model_runtime_settings(
         default_model = DEFAULT_MODEL
         default_host = DEFAULT_OLLAMA_HOST
         default_api_key_env_var = DEFAULT_OLLAMA_API_KEY_ENV_VAR
+        default_api_key = ""
         default_timeout = DEFAULT_OLLAMA_TIMEOUT_SECONDS
         fallback_env_name = "YARBIS_OLLAMA_FALLBACK_MODELS"
         host_env_name = "YARBIS_OLLAMA_HOST"
@@ -940,6 +955,7 @@ def _resolve_model_runtime_settings(
         str(provider_settings.get("api_key_env_var", default_api_key_env_var)).strip()
         or default_api_key_env_var
     )
+    api_key = str(provider_settings.get("api_key", default_api_key)).strip()
     timeout_seconds = _normalize_timeout_seconds(
         provider_settings.get("timeout_seconds", default_timeout),
         default=default_timeout,
@@ -989,6 +1005,7 @@ def _resolve_model_runtime_settings(
         "fallback_models": model_candidates[1:],
         "models": model_candidates,
         "host": host,
+        "api_key": api_key,
         "api_key_env_var": api_key_env_var,
         "timeout_seconds": timeout_seconds,
     }
@@ -1009,7 +1026,8 @@ def _apply_model_runtime_settings(
 ):
     global MODEL, MODEL_PROVIDER
     global OLLAMA_FALLBACK_MODELS, OLLAMA_HOST, OLLAMA_API_KEY_ENV_VAR, OLLAMA_TIMEOUT_SECONDS
-    global OPENROUTER_FALLBACK_MODELS, OPENROUTER_HOST, OPENROUTER_API_KEY_ENV_VAR, OPENROUTER_TIMEOUT_SECONDS
+    global OPENROUTER_FALLBACK_MODELS, OPENROUTER_HOST, OPENROUTER_API_KEY
+    global OPENROUTER_API_KEY_ENV_VAR, OPENROUTER_TIMEOUT_SECONDS
     global client, _client_signature, _client_timeout_seconds
 
     settings = _resolve_model_runtime_settings(
@@ -1023,6 +1041,7 @@ def _apply_model_runtime_settings(
     if provider == MODEL_PROVIDER_OPENROUTER:
         OPENROUTER_FALLBACK_MODELS = settings["fallback_models"]
         OPENROUTER_HOST = settings["host"]
+        OPENROUTER_API_KEY = settings.get("api_key", "")
         OPENROUTER_API_KEY_ENV_VAR = settings["api_key_env_var"]
         OPENROUTER_TIMEOUT_SECONDS = settings["timeout_seconds"]
     else:
@@ -1271,7 +1290,7 @@ def _format_chat_error(exc: Exception) -> str:
     fallback_text = f" Fallbacks configurados: {', '.join(fallback_models)}." if fallback_models else ""
     cloud_hint = ""
     if MODEL_PROVIDER == MODEL_PROVIDER_OPENROUTER:
-        _api_key, key_source = _openrouter_api_key(OPENROUTER_API_KEY_ENV_VAR)
+        _api_key, key_source = _openrouter_api_key(OPENROUTER_API_KEY_ENV_VAR, OPENROUTER_API_KEY)
         if not _api_key:
             cloud_hint = f"\nDefine `{key_source}` para usar OpenRouter."
     elif _host_uses_ollama_cloud(OLLAMA_HOST) and not os.getenv(OLLAMA_API_KEY_ENV_VAR, "").strip():

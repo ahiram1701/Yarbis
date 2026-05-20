@@ -486,6 +486,7 @@ class OllamaSettingsDialog(ThemedDialog):
                 "model": DEFAULT_OPENROUTER_MODEL,
                 "fallback_models": [],
                 "host": DEFAULT_OPENROUTER_HOST,
+                "api_key": "",
                 "api_key_env_var": DEFAULT_OPENROUTER_API_KEY_ENV_VAR,
                 "timeout_seconds": DEFAULT_OPENROUTER_TIMEOUT_SECONDS,
             }
@@ -494,6 +495,7 @@ class OllamaSettingsDialog(ThemedDialog):
                 "model": DEFAULT_OLLAMA_MODEL,
                 "fallback_models": [],
                 "host": DEFAULT_OLLAMA_HOST,
+                "api_key": "",
                 "api_key_env_var": DEFAULT_OLLAMA_API_KEY_ENV_VAR,
                 "timeout_seconds": DEFAULT_OLLAMA_TIMEOUT_SECONDS,
             }
@@ -520,6 +522,7 @@ class OllamaSettingsDialog(ThemedDialog):
             "model": self.model_entry.get().strip(),
             "fallback_models": self.fallback_entry.get().strip(),
             "host": self.host_entry.get().strip(),
+            "api_key": self.api_key_entry.get().strip(),
             "api_key_env_var": self.api_key_env_entry.get().strip(),
             "timeout_seconds": self.timeout_spin.get().strip(),
         }
@@ -549,6 +552,9 @@ class OllamaSettingsDialog(ThemedDialog):
             0,
             str(settings.get("api_key_env_var", api_default)).strip() or api_default,
         )
+        self.api_key_entry.configure(state="normal")
+        self.api_key_entry.delete(0, "end")
+        self.api_key_entry.insert(0, str(settings.get("api_key", "")).strip())
         self.timeout_spin.delete(0, "end")
         self.timeout_spin.insert(0, str(settings.get("timeout_seconds", timeout_default)))
         self.host_help_var.set(
@@ -557,9 +563,12 @@ class OllamaSettingsDialog(ThemedDialog):
             else "Base compatible con OpenAI. Normalmente https://openrouter.ai/api/v1."
         )
         self.api_help_var.set(
-            "Tambien puedes definir YARBIS_OPENROUTER_API_KEY como API key directa."
+            "La API key directa se guarda localmente; env sigue siendo util para overrides."
             if provider == MODEL_PROVIDER_OPENROUTER
             else ""
+        )
+        self.api_key_entry.configure(
+            state="normal" if provider == MODEL_PROVIDER_OPENROUTER else "disabled"
         )
         self._loaded_provider = provider
 
@@ -621,16 +630,20 @@ class OllamaSettingsDialog(ThemedDialog):
         ttk.Label(master, text="API key env").grid(row=9, column=0, sticky="w", padx=6, pady=(10, 2))
         self.api_key_env_entry = ttk.Entry(master, width=44)
         self.api_key_env_entry.grid(row=10, column=0, columnspan=2, sticky="ew", padx=6)
+
+        ttk.Label(master, text="API key directa").grid(row=11, column=0, sticky="w", padx=6, pady=(10, 2))
+        self.api_key_entry = ttk.Entry(master, width=44, show="*")
+        self.api_key_entry.grid(row=12, column=0, columnspan=2, sticky="ew", padx=6)
         ttk.Label(
             master,
             textvariable=self.api_help_var,
             foreground=self.theme_palette["muted"],
             wraplength=360,
-        ).grid(row=11, column=0, columnspan=2, sticky="w", padx=6, pady=(3, 0))
+        ).grid(row=13, column=0, columnspan=2, sticky="w", padx=6, pady=(3, 0))
 
-        ttk.Label(master, text="Timeout").grid(row=12, column=0, sticky="w", padx=6, pady=(10, 2))
+        ttk.Label(master, text="Timeout").grid(row=14, column=0, sticky="w", padx=6, pady=(10, 2))
         timeout_row = ttk.Frame(master)
-        timeout_row.grid(row=13, column=0, sticky="w", padx=6, pady=(0, 6))
+        timeout_row.grid(row=15, column=0, sticky="w", padx=6, pady=(0, 6))
         self.timeout_spin = ttk.Spinbox(
             timeout_row,
             from_=MIN_OLLAMA_TIMEOUT_SECONDS,
@@ -658,7 +671,7 @@ class OllamaSettingsDialog(ThemedDialog):
                 text="Hay variables de entorno YARBIS_* activas; esas pueden tener prioridad.",
                 foreground=self.theme_palette["muted"],
                 wraplength=360,
-            ).grid(row=14, column=0, columnspan=2, sticky="w", padx=6, pady=(4, 6))
+            ).grid(row=16, column=0, columnspan=2, sticky="w", padx=6, pady=(4, 6))
 
         master.columnconfigure(0, weight=1)
         self._load_provider_fields(initial_provider)
@@ -673,6 +686,7 @@ class OllamaSettingsDialog(ThemedDialog):
             "model": self.model_entry.get().strip(),
             "fallback_models": self.fallback_entry.get().strip(),
             "host": self.host_entry.get().strip(),
+            "api_key": self.api_key_entry.get().strip(),
             "api_key_env_var": self.api_key_env_entry.get().strip(),
             "timeout_seconds": self.timeout_spin.get().strip(),
         }

@@ -540,6 +540,7 @@ def _openrouter_settings_reply(prefix: str = "Configuracion actual de OpenRouter
         f"Modelo: {settings.get('model', '') or '-'}\n"
         f"Fallbacks: {fallback_text}\n"
         f"Host: {settings.get('host') or DEFAULT_OPENROUTER_HOST}\n"
+        f"API key: {'guardada' if settings.get('api_key') else 'no configurada'}\n"
         f"API key env: {settings.get('api_key_env_var') or DEFAULT_OPENROUTER_API_KEY_ENV_VAR}\n"
         f"Timeout: {settings.get('timeout_seconds', '')} segundos"
     )

@@ -15,6 +15,7 @@ SECRET_PATHS = (
     "notifications.ntfy.token",
     "notifications.telegram.bot_token",
     "notifications.telegram.pending_power_confirmation.token",
+    "model_provider.openrouter.api_key",
 )
 AUTO_BACKUP_REASON = "auto_state_change"
 

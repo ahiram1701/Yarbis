@@ -68,6 +68,13 @@ class MemoryTransferTestCase(unittest.TestCase):
                     },
                 },
             },
+            "model_provider": {
+                "default": "openrouter",
+                "openrouter": {
+                    "model": "openai/gpt-demo",
+                    "api_key": f"openrouter-{label}",
+                },
+            },
         })
 
     def test_create_backup_redacts_secrets_by_default(self):
@@ -93,6 +100,10 @@ class MemoryTransferTestCase(unittest.TestCase):
             package["state"]["notifications"]["telegram"]["pending_power_confirmation"]["token"],
             memory_transfer.REDACTED_VALUE,
         )
+        self.assertEqual(
+            package["state"]["model_provider"]["openrouter"]["api_key"],
+            memory_transfer.REDACTED_VALUE,
+        )
 
     def test_create_backup_can_include_secrets(self):
         state_path, backups_dir = self._paths("include-secrets")
@@ -108,6 +119,7 @@ class MemoryTransferTestCase(unittest.TestCase):
         self.assertEqual(package["redacted_paths"], [])
         self.assertEqual(package["state"]["notifications"]["ntfy"]["token"], "ntfy-Secreto")
         self.assertEqual(package["state"]["notifications"]["telegram"]["bot_token"], "123456:Secreto")
+        self.assertEqual(package["state"]["model_provider"]["openrouter"]["api_key"], "openrouter-Secreto")
 
     def test_replace_import_preserves_destination_secrets_for_redacted_backup(self):
         state_path, backups_dir = self._paths("replace")

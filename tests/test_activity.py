@@ -143,8 +143,18 @@ class ActivityTestCase(unittest.TestCase):
         state = {
             "notifications": {
                 "ntfy": {"token": secret},
-            }
+            },
+            "model_provider": {
+                "openrouter": {"api_key": "openrouter-secret-value"},
+            },
         }
+        events_path.write_text(
+            events_path.read_text(encoding="utf-8").replace(
+                "Respuesta ntfy-secret-value",
+                "Respuesta ntfy-secret-value openrouter-secret-value",
+            ),
+            encoding="utf-8",
+        )
 
         with patch.object(activity, "EVENTS_FILE", events_path):
             with patch.object(secrets_redaction, "_load_current_state", return_value=state) as load_mock:
@@ -152,6 +162,7 @@ class ActivityTestCase(unittest.TestCase):
 
         self.assertEqual(load_mock.call_count, 1)
         self.assertNotIn(secret, rendered)
+        self.assertNotIn("openrouter-secret-value", rendered)
         self.assertIn("[redacted]", rendered)
 
     def test_emit_event_trims_large_events_file(self):

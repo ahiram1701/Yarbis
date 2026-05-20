@@ -1407,6 +1407,7 @@ class YarbisDesktop(tk.Tk):
             if provider == MODEL_PROVIDER_OPENROUTER:
                 result = update_openrouter_settings(**dialog.result)
             else:
+                dialog.result.pop("api_key", None)
                 result = update_ollama_settings(**dialog.result)
             provider_result = update_model_provider(provider)
             result = f"{provider_result}\n{result}"

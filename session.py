@@ -34,6 +34,7 @@ from memory import (
     DEFAULT_OPENROUTER_HOST,
     DEFAULT_OPENROUTER_MODEL,
     DEFAULT_OPENROUTER_TIMEOUT_SECONDS,
+    MAX_OPENROUTER_API_KEY_CHARS,
     MAX_OLLAMA_MODEL_CHARS,
     MODEL_PROVIDER_OLLAMA,
     MODEL_PROVIDER_OPENROUTER,
@@ -872,6 +873,7 @@ def get_openrouter_settings() -> dict:
         "model": DEFAULT_OPENROUTER_MODEL,
         "fallback_models": [],
         "host": DEFAULT_OPENROUTER_HOST,
+        "api_key": "",
         "api_key_env_var": DEFAULT_OPENROUTER_API_KEY_ENV_VAR,
         "timeout_seconds": DEFAULT_OPENROUTER_TIMEOUT_SECONDS,
     }
@@ -963,6 +965,7 @@ def update_openrouter_settings(
     timeout_seconds: int,
     host: str | None = None,
     fallback_models=None,
+    api_key: str | None = None,
     api_key_env_var: str | None = None,
     set_default: bool = True,
 ) -> str:
@@ -985,6 +988,13 @@ def update_openrouter_settings(
         if api_key_env_var is not None
         else str(current_settings.get("api_key_env_var", DEFAULT_OPENROUTER_API_KEY_ENV_VAR)).strip()
     ) or DEFAULT_OPENROUTER_API_KEY_ENV_VAR
+    cleaned_api_key = (
+        str(api_key).strip()
+        if api_key is not None
+        else str(current_settings.get("api_key", "")).strip()
+    )
+    if len(cleaned_api_key) > MAX_OPENROUTER_API_KEY_CHARS:
+        raise ValueError("La API key de OpenRouter es demasiado larga.")
     cleaned_fallback_models = _parse_fallback_models(
         fallback_models,
         current=current_settings.get("fallback_models", []),
@@ -993,6 +1003,7 @@ def update_openrouter_settings(
         "model": cleaned_model,
         "fallback_models": cleaned_fallback_models,
         "host": cleaned_host,
+        "api_key": cleaned_api_key,
         "api_key_env_var": cleaned_api_key_env_var,
         "timeout_seconds": cleaned_timeout,
     }
@@ -1014,6 +1025,7 @@ def update_openrouter_settings(
         f"Modelo: {settings['model']}\n"
         f"Fallbacks: {fallback_text}\n"
         f"Host: {settings['host']}\n"
+        f"API key: {'guardada' if settings.get('api_key') else 'no configurada'}\n"
         f"API key env: {settings['api_key_env_var']}\n"
         f"Timeout: {settings['timeout_seconds']} segundos"
     )
