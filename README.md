@@ -1,6 +1,6 @@
 # Yarbis
 
-Yarbis es un agente local para convertir un objetivo general en trabajo accionable usando Ollama, memoria persistente, herramientas de filesystem/sistema, busqueda web controlada, navegador automatizable y notificaciones opcionales.
+Yarbis es un agente local para convertir un objetivo general en trabajo accionable usando Ollama u OpenRouter, memoria persistente, herramientas de filesystem/sistema, busqueda web controlada, navegador automatizable y notificaciones opcionales.
 
 Funciona en tres modos:
 
@@ -38,8 +38,8 @@ Yarbis ya funciona como agente personal local:
 - Windows para la app de escritorio, notificaciones nativas y arranque con Windows
 - Python 3.11 o superior
 - .NET SDK 8 para compilar el host nativo del servicio SCM
-- Ollama ejecutandose localmente, o acceso directo a Ollama Cloud
-- un modelo disponible en Ollama; por defecto se usa `qwen3.5:2b`
+- Ollama ejecutandose localmente, acceso directo a Ollama Cloud, u OpenRouter con API key
+- un modelo disponible en el proveedor elegido; por defecto inicial se usa Ollama con `qwen3.5:2b`
 - Microsoft Edge/Chrome o Chromium instalado para automatizacion con Playwright
 - permisos de administrador para instalar, quitar o reconfigurar el servicio en SCM
 
@@ -200,7 +200,7 @@ La interfaz de escritorio permite:
 
 - completar un primer uso guiado cuando aun no hay objetivo
 - cambiar el objetivo
-- cambiar el modelo de Ollama y el timeout
+- cambiar proveedor, modelo y timeout
 - ejecutar un ciclo
 - ejecutar modo autonomo indicando de 1 a 20 ciclos
 - responder preguntas pendientes
@@ -257,9 +257,9 @@ Si el servicio se detiene mientras procesa una respuesta del usuario, esa respue
 
 Puedes ajustar el pulso desde la app con `Servicio` -> `Configurar pulso`. Los cambios se guardan en `state.json`; el servicio los lee en caliente para el intervalo y los ciclos. La espera inicial aplica al siguiente arranque del servicio. Tambien puedes ajustar las senales locales desde `Servicio` -> `Contexto local`; el observador se activa o detiene mientras la app de escritorio esta abierta.
 
-El modelo de Ollama, host, fallbacks y timeout tambien se pueden cambiar desde la app con `Modelo` -> `Modelo y timeout`. Esos cambios se guardan en `state.json` y se aplican al siguiente ciclo, tanto en la app como en el servicio.
+El proveedor por defecto y su modelo tambien se pueden cambiar desde la app con `Modelo` -> `Modelo y timeout`. Ollama sigue siendo el default inicial; OpenRouter queda disponible con configuracion separada de modelo, host, fallbacks, API key env y timeout. Esos cambios se guardan en `state.json` y se aplican al siguiente ciclo, tanto en la app como en el servicio.
 
-Cuando Yarbis aparece como `Pensando`, el boton `Detener pensando` solicita parar la operacion en curso. Si hay una llamada activa a Ollama, Yarbis cierra el cliente local y el ciclo termina como detenido en cuanto la llamada libera el control.
+Cuando Yarbis aparece como `Pensando`, el boton `Detener pensando` solicita parar la operacion en curso. Si hay una llamada activa al proveedor de modelo, Yarbis cierra o reemplaza el cliente y el ciclo termina como detenido en cuanto la llamada libera el control.
 
 ## Uso por terminal
 
@@ -388,13 +388,16 @@ Comandos disponibles por Telegram:
 - `/run`: ejecuta un ciclo
 - `/auto`: ejecuta modo autonomo con los ciclos por defecto
 - `/auto 3`: ejecuta el numero indicado de ciclos
+- `/proveedor ollama`: usa Ollama como proveedor por defecto
+- `/proveedor openrouter`: usa OpenRouter como proveedor por defecto
 - `/modelo llama3.2:3b`: cambia el modelo de Ollama
-- `/timeout 900`: cambia el timeout de Ollama en segundos; tambien acepta valores como `15m`
+- `/timeout 900`: cambia el timeout del proveedor activo en segundos; tambien acepta valores como `15m`
 - `/ollama llama3.2:3b 900`: cambia modelo y timeout juntos
 - `/ollama local gpt-oss:120b-cloud`: usa el daemon local de Ollama; puede mezclar modelos locales y cloud si hiciste `ollama signin`
 - `/ollama cloud gpt-oss:120b`: usa `https://ollama.com` directo; requiere `OLLAMA_API_KEY`
 - `/ollama host https://ollama.com`: cambia solo el host
 - `/ollama fallback qwen3.5:2b, gpt-oss:120b-cloud`: configura modelos de respaldo en orden
+- `/openrouter proveedor/modelo`: configura OpenRouter y lo usa como proveedor por defecto
 - `/notas`: lista notas persistentes
 - `/notas personal`: lista notas de una categoria
 - `/nota crear Titulo | contenido | categoria`: guarda una nota
@@ -471,6 +474,9 @@ $env:YARBIS_OLLAMA_HOST=""
 $env:YARBIS_OLLAMA_API_KEY_ENV_VAR="OLLAMA_API_KEY"
 $env:OLLAMA_API_KEY="ollama_cloud_api_key"
 $env:YARBIS_OLLAMA_TIMEOUT_SECONDS="900"
+$env:YARBIS_MODEL_PROVIDER="ollama"
+$env:YARBIS_OPENROUTER_HOST="https://openrouter.ai/api/v1"
+$env:YARBIS_OPENROUTER_API_KEY="openrouter_api_key"
 $env:YARBIS_EMPTY_RESPONSE_RETRIES="1"
 ```
 
@@ -481,7 +487,9 @@ Para usar cloud hay dos rutas:
 - Mantener host local vacio, ejecutar `ollama signin` y usar modelos con sufijo cloud, por ejemplo `gpt-oss:120b-cloud`. Esta es la forma mas comoda para mezclar modelo local primario y fallback cloud desde el mismo daemon.
 - Configurar `YARBIS_OLLAMA_HOST="https://ollama.com"` o poner ese host en la app, definir `OLLAMA_API_KEY`, y usar el nombre cloud directo, por ejemplo `gpt-oss:120b`.
 
-Para uso diario, prefiere el boton `Modelo y timeout` de la app o los comandos de Telegram `/modelo`, `/timeout` y `/ollama`. Las variables `YARBIS_MODEL`, `YARBIS_OLLAMA_FALLBACK_MODELS`, `YARBIS_OLLAMA_HOST`, `YARBIS_OLLAMA_API_KEY_ENV_VAR` y `YARBIS_OLLAMA_TIMEOUT_SECONDS` quedan como override avanzado y, si estan definidas, pueden tener prioridad sobre lo guardado en la interfaz o Telegram.
+Para usar OpenRouter, selecciona `openrouter` en `Modelo y timeout`, define un modelo en formato de proveedor/ruta y configura `YARBIS_OPENROUTER_API_KEY` (o la variable indicada en `api_key_env_var`, por defecto `OPENROUTER_API_KEY`). El readiness valida API key y modelo, y no ejecuta `ollama list` cuando OpenRouter es el proveedor activo.
+
+Para uso diario, prefiere el boton `Modelo y timeout` de la app o los comandos de Telegram `/proveedor`, `/modelo`, `/timeout`, `/ollama` y `/openrouter`. Las variables `YARBIS_MODEL_PROVIDER`, `YARBIS_MODEL`, `YARBIS_OLLAMA_FALLBACK_MODELS`, `YARBIS_OLLAMA_HOST`, `YARBIS_OLLAMA_API_KEY_ENV_VAR`, `YARBIS_OLLAMA_TIMEOUT_SECONDS`, `YARBIS_OPENROUTER_HOST`, `YARBIS_OPENROUTER_API_KEY` y `YARBIS_OPENROUTER_TIMEOUT_SECONDS` quedan como override avanzado y, si estan definidas, pueden tener prioridad sobre lo guardado en la interfaz o Telegram.
 
 Servicio proactivo, como override avanzado de la configuracion guardada:
 
@@ -589,7 +597,7 @@ Los respaldos automaticos siempre redactan `notifications.ntfy.token`, `notifica
 Para trasplantar memoria hay dos modos:
 
 - `replace`: crea primero un respaldo local del estado actual y luego sustituye `state.json`. Si el respaldo origen tenia secretos redactados, conserva los secretos actuales del destino.
-- `merge`: crea primero un respaldo local y fusiona perfil, notas, tareas, mensajes, plan y autoconocimiento sin reemplazar configuracion local como Ollama, internet, notificaciones, UI, servicio o contexto local.
+- `merge`: crea primero un respaldo local y fusiona perfil, notas, tareas, mensajes, plan y autoconocimiento sin reemplazar configuracion local como modelo/proveedor, internet, notificaciones, UI, servicio o contexto local.
 
 Desde la app de escritorio usa `Memoria` -> `Proteccion`, `Respaldar memoria`, `Trasplantar memoria` o `Verificar respaldos`. Desde lenguaje natural, el agente usa `memory_protection_status`, `update_memory_protection_settings`, `verify_memory_backups`, `create_memory_backup`, `list_memory_backups`, `inspect_memory_backup` e `import_memory_backup`.
 
@@ -685,7 +693,7 @@ Ese resumen incluye:
 - host y modelo de equipo cuando Windows lo reporta
 - CPU, RAM, disco del workspace y GPU cuando Windows lo reporta
 - version de Python, ejecutable, PID y cwd
-- modelo Ollama configurado
+- proveedor/modelo configurado
 
 Durante una sesion, puedes pedir:
 
@@ -714,7 +722,7 @@ El servicio usa `.yarbis_runtime/` para PID y log. La marca `.yarbis_runtime/ser
 
 ## Estructura principal
 
-- `agent.py`: prompt, tool loop, ciclos autonomos y comunicacion con Ollama
+- `agent.py`: prompt, tool loop, ciclos autonomos y comunicacion con el proveedor de modelo
 - `main.py`: interfaz de terminal
 - `yarbis_desktop.py`: interfaz grafica Tkinter
 - `ui_theme.py`, `ui_dialogs.py`, `ui_settings_dialogs.py`: tema y dialogos de la UI
@@ -745,7 +753,7 @@ El servicio usa `.yarbis_runtime/` para PID y log. La marca `.yarbis_runtime/ser
 
 Yarbis escribe actividad humana en `.yarbis_runtime/activity.log` y eventos estructurados en `.yarbis_runtime/events.jsonl`. Los eventos incluyen `operation_id` cuando aplican a ciclos, respuestas, pulsos proactivos o jobs remotos de Telegram, y pasan por redaccion de secretos antes de guardarse.
 
-La funcion `health_status()` de `service_manager.py` reporta servicio, Telegram, pulso proactivo, operacion activa y modelo Ollama. La UI muestra un resumen de ese health en el panel principal.
+La funcion `health_status()` de `service_manager.py` reporta servicio, Telegram, pulso proactivo, operacion activa y proveedor/modelo activo. La UI muestra un resumen de ese health en el panel principal.
 
 ## Tests
 
@@ -773,7 +781,7 @@ Ruff esta configurado solo con reglas seguras iniciales.
 
 ## Limitaciones actuales
 
-- La autonomia depende del modelo disponible en Ollama local/cloud y de la calidad del objetivo inicial.
+- La autonomia depende del modelo disponible en el proveedor configurado y de la calidad del objetivo inicial.
 - Telegram procesa mensajes de texto, no adjuntos.
 - La automatizacion de navegador requiere Playwright y un navegador Chromium/Edge disponible.
 - Calendario y correo se integran con archivos `.ics`, `mailto:` y manejadores locales; no leen buzones ni calendarios cloud por OAuth.

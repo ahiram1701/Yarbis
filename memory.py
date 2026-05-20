@@ -58,11 +58,19 @@ DEFAULT_SERVICE_PROACTIVE_INTERVAL_SECONDS = 30 * 60
 DEFAULT_SERVICE_PROACTIVE_CYCLES = 1
 DEFAULT_SERVICE_PROACTIVE_START_DELAY_SECONDS = 60
 DEFAULT_SERVICE_PROACTIVE_MODEL = ""
+MODEL_PROVIDER_OLLAMA = "ollama"
+MODEL_PROVIDER_OPENROUTER = "openrouter"
+DEFAULT_MODEL_PROVIDER = MODEL_PROVIDER_OLLAMA
+VALID_MODEL_PROVIDERS = {MODEL_PROVIDER_OLLAMA, MODEL_PROVIDER_OPENROUTER}
 DEFAULT_OLLAMA_MODEL = "qwen3.5:2b"
 DEFAULT_OLLAMA_HOST = ""
 DEFAULT_OLLAMA_CLOUD_HOST = "https://ollama.com"
 DEFAULT_OLLAMA_API_KEY_ENV_VAR = "OLLAMA_API_KEY"
 DEFAULT_OLLAMA_TIMEOUT_SECONDS = 900
+DEFAULT_OPENROUTER_MODEL = ""
+DEFAULT_OPENROUTER_HOST = "https://openrouter.ai/api/v1"
+DEFAULT_OPENROUTER_API_KEY_ENV_VAR = "OPENROUTER_API_KEY"
+DEFAULT_OPENROUTER_TIMEOUT_SECONDS = DEFAULT_OLLAMA_TIMEOUT_SECONDS
 MIN_OLLAMA_TIMEOUT_SECONDS = 1
 MAX_OLLAMA_TIMEOUT_SECONDS = 24 * 60 * 60
 MAX_OLLAMA_MODEL_CHARS = 120
@@ -70,6 +78,10 @@ MAX_SERVICE_PROACTIVE_MODEL_CHARS = MAX_OLLAMA_MODEL_CHARS
 MAX_OLLAMA_HOST_CHARS = 240
 MAX_OLLAMA_API_KEY_ENV_VAR_CHARS = 80
 MAX_OLLAMA_FALLBACK_MODELS = 8
+MAX_OPENROUTER_MODEL_CHARS = MAX_OLLAMA_MODEL_CHARS
+MAX_OPENROUTER_HOST_CHARS = MAX_OLLAMA_HOST_CHARS
+MAX_OPENROUTER_API_KEY_ENV_VAR_CHARS = MAX_OLLAMA_API_KEY_ENV_VAR_CHARS
+MAX_OPENROUTER_FALLBACK_MODELS = MAX_OLLAMA_FALLBACK_MODELS
 VALID_TASK_STATUS = {"pending", "in_progress", "blocked", "done"}
 VALID_TASK_PRIORITY = {"alta", "media", "baja"}
 VALID_UI_THEME = {"light", "dark"}
@@ -190,6 +202,23 @@ def default_state():
             "host": DEFAULT_OLLAMA_HOST,
             "api_key_env_var": DEFAULT_OLLAMA_API_KEY_ENV_VAR,
             "timeout_seconds": DEFAULT_OLLAMA_TIMEOUT_SECONDS,
+        },
+        "model_provider": {
+            "default": DEFAULT_MODEL_PROVIDER,
+            "ollama": {
+                "model": DEFAULT_OLLAMA_MODEL,
+                "fallback_models": [],
+                "host": DEFAULT_OLLAMA_HOST,
+                "api_key_env_var": DEFAULT_OLLAMA_API_KEY_ENV_VAR,
+                "timeout_seconds": DEFAULT_OLLAMA_TIMEOUT_SECONDS,
+            },
+            "openrouter": {
+                "model": DEFAULT_OPENROUTER_MODEL,
+                "fallback_models": [],
+                "host": DEFAULT_OPENROUTER_HOST,
+                "api_key_env_var": DEFAULT_OPENROUTER_API_KEY_ENV_VAR,
+                "timeout_seconds": DEFAULT_OPENROUTER_TIMEOUT_SECONDS,
+            },
         },
         "service": {
             "proactive": {
@@ -380,6 +409,10 @@ def _normalize_message(message):
     if tool_name:
         normalized["tool_name"] = str(tool_name)
 
+    tool_call_id = message.get("tool_call_id")
+    if tool_call_id:
+        normalized["tool_call_id"] = str(tool_call_id)
+
     tool_calls = message.get("tool_calls")
     if tool_calls:
         normalized["tool_calls"] = tool_calls
@@ -565,32 +598,52 @@ def _normalize_coding(coding):
     }
 
 
-def _normalize_ollama(ollama):
-    defaults = default_state()["ollama"]
-    if not isinstance(ollama, dict):
-        ollama = {}
+def _normalize_provider_host(host, default: str, max_chars: int, *, strip_ollama_api: bool = False) -> str:
+    cleaned = _coerce_text(host, max_chars).strip()
+    if not cleaned:
+        return str(default).strip().rstrip("/")
+    if strip_ollama_api and cleaned.endswith("/api"):
+        cleaned = cleaned[:-4].rstrip("/")
+    if cleaned.endswith("/chat/completions"):
+        cleaned = cleaned[: -len("/chat/completions")].rstrip("/")
+    return cleaned.rstrip("/")
 
+
+def _normalize_provider_settings(
+    settings,
+    defaults: dict,
+    *,
+    model_char_limit: int,
+    host_char_limit: int,
+    api_key_env_char_limit: int,
+    fallback_limit: int,
+    allow_empty_model: bool = False,
+    strip_ollama_api: bool = False,
+) -> dict:
+    if not isinstance(settings, dict):
+        settings = {}
+
+    default_model = defaults["model"]
     model = _coerce_text(
-        ollama.get("model", defaults["model"]),
-        MAX_OLLAMA_MODEL_CHARS,
+        settings.get("model", default_model),
+        model_char_limit,
     ).strip()
-    if not model:
-        model = defaults["model"]
+    if not model and not allow_empty_model:
+        model = default_model
 
-    host = _coerce_text(
-        ollama.get("host", defaults["host"]),
-        MAX_OLLAMA_HOST_CHARS,
-    ).strip()
-    if host.endswith("/api"):
-        host = host[:-4].rstrip("/")
-    host = host.rstrip("/")
+    host = _normalize_provider_host(
+        settings.get("host", defaults["host"]),
+        defaults["host"],
+        host_char_limit,
+        strip_ollama_api=strip_ollama_api,
+    )
 
     api_key_env_var = _coerce_text(
-        ollama.get("api_key_env_var", defaults["api_key_env_var"]),
-        MAX_OLLAMA_API_KEY_ENV_VAR_CHARS,
+        settings.get("api_key_env_var", defaults["api_key_env_var"]),
+        api_key_env_char_limit,
     ).strip() or defaults["api_key_env_var"]
 
-    raw_fallback_models = ollama.get("fallback_models", defaults["fallback_models"])
+    raw_fallback_models = settings.get("fallback_models", defaults["fallback_models"])
     if isinstance(raw_fallback_models, str):
         fallback_candidates = re.split(r"[,;\n]+", raw_fallback_models)
     elif isinstance(raw_fallback_models, list):
@@ -599,14 +652,14 @@ def _normalize_ollama(ollama):
         fallback_candidates = []
 
     fallback_models = []
-    seen_models = {model}
+    seen_models = {model} if model else set()
     for candidate in fallback_candidates:
-        fallback_model = _coerce_text(candidate, MAX_OLLAMA_MODEL_CHARS).strip()
+        fallback_model = _coerce_text(candidate, model_char_limit).strip()
         if not fallback_model or fallback_model in seen_models:
             continue
         fallback_models.append(fallback_model)
         seen_models.add(fallback_model)
-        if len(fallback_models) >= MAX_OLLAMA_FALLBACK_MODELS:
+        if len(fallback_models) >= fallback_limit:
             break
 
     try:
@@ -614,7 +667,7 @@ def _normalize_ollama(ollama):
             MIN_OLLAMA_TIMEOUT_SECONDS,
             min(
                 MAX_OLLAMA_TIMEOUT_SECONDS,
-                int(ollama.get("timeout_seconds", defaults["timeout_seconds"])),
+                int(settings.get("timeout_seconds", defaults["timeout_seconds"])),
             ),
         )
     except (TypeError, ValueError):
@@ -626,6 +679,55 @@ def _normalize_ollama(ollama):
         "host": host,
         "api_key_env_var": api_key_env_var,
         "timeout_seconds": timeout_seconds,
+    }
+
+
+def _normalize_ollama(ollama):
+    defaults = default_state()["ollama"]
+    return _normalize_provider_settings(
+        ollama,
+        defaults,
+        model_char_limit=MAX_OLLAMA_MODEL_CHARS,
+        host_char_limit=MAX_OLLAMA_HOST_CHARS,
+        api_key_env_char_limit=MAX_OLLAMA_API_KEY_ENV_VAR_CHARS,
+        fallback_limit=MAX_OLLAMA_FALLBACK_MODELS,
+        strip_ollama_api=True,
+    )
+
+
+def _normalize_openrouter(openrouter):
+    defaults = default_state()["model_provider"]["openrouter"]
+    return _normalize_provider_settings(
+        openrouter,
+        defaults,
+        model_char_limit=MAX_OPENROUTER_MODEL_CHARS,
+        host_char_limit=MAX_OPENROUTER_HOST_CHARS,
+        api_key_env_char_limit=MAX_OPENROUTER_API_KEY_ENV_VAR_CHARS,
+        fallback_limit=MAX_OPENROUTER_FALLBACK_MODELS,
+        allow_empty_model=True,
+    )
+
+
+def _normalize_model_provider(state):
+    defaults = default_state()["model_provider"]
+    source = state.get("model_provider", {}) if isinstance(state, dict) else {}
+    if not isinstance(source, dict):
+        source = {}
+
+    default_provider = str(source.get("default", defaults["default"])).strip().lower()
+    if default_provider not in VALID_MODEL_PROVIDERS:
+        default_provider = defaults["default"]
+
+    legacy_ollama = state.get("ollama", {}) if isinstance(state, dict) else {}
+    # The top-level key remains a compatibility surface for older callers.
+    # If both copies exist, prefer the legacy key and mirror it into model_provider.
+    ollama_source = legacy_ollama if isinstance(legacy_ollama, dict) else source.get("ollama", {})
+    openrouter_source = source.get("openrouter", {})
+
+    return {
+        "default": default_provider,
+        "ollama": _normalize_ollama(ollama_source),
+        "openrouter": _normalize_openrouter(openrouter_source),
     }
 
 
@@ -1438,7 +1540,8 @@ def normalize_state(state):
     normalized["autonomy"] = _normalize_autonomy(state.get("autonomy", {}))
     normalized["coding"] = _normalize_coding(state.get("coding", {}))
     normalized["memory_protection"] = _normalize_memory_protection(state.get("memory_protection", {}))
-    normalized["ollama"] = _normalize_ollama(state.get("ollama", {}))
+    normalized["model_provider"] = _normalize_model_provider(state)
+    normalized["ollama"] = dict(normalized["model_provider"][MODEL_PROVIDER_OLLAMA])
     normalized["service"] = _normalize_service(state.get("service", {}))
     normalized["ui"] = _normalize_ui(state.get("ui", {}))
     normalized["runtime"] = _normalize_runtime(state.get("runtime", {}))
@@ -1481,6 +1584,9 @@ def render_state_summary(
 ) -> str:
     normalized = normalize_state(state)
     profile = normalized["profile"]
+    model_provider = normalized["model_provider"]
+    active_provider_name = model_provider["default"]
+    active_model_settings = model_provider[active_provider_name]
     pending_tasks = [
         task for task in normalized["tasks"]
         if task["status"] in {"pending", "in_progress", "blocked"}
@@ -1507,6 +1613,14 @@ def render_state_summary(
             f"propuestas_pendientes={len(normalized['coding']['pending_proposal_ids'])}"
         ),
         (
+            "Proveedor de modelo: "
+            f"{active_provider_name}, "
+            f"modelo={active_model_settings['model'] or '-'}, "
+            f"fallbacks={', '.join(active_model_settings['fallback_models']) or '-'}, "
+            f"host={active_model_settings['host'] or 'local'}, "
+            f"timeout={active_model_settings['timeout_seconds']}s"
+        ),
+        (
             "Ollama: "
             f"modelo={normalized['ollama']['model']}, "
             f"fallbacks={', '.join(normalized['ollama']['fallback_models']) or '-'}, "
@@ -1516,7 +1630,7 @@ def render_state_summary(
         (
             "Pulso proactivo: "
             f"{'activo' if normalized['service']['proactive']['enabled'] else 'desactivado'}, "
-            f"modelo={normalized['service']['proactive']['model'] or 'Ollama principal'}, "
+            f"modelo={normalized['service']['proactive']['model'] or 'modelo principal'}, "
             f"{normalized['service']['proactive']['cycles']} ciclo(s) cada "
             f"{normalized['service']['proactive']['interval_seconds']}s, "
             f"espera inicial {normalized['service']['proactive']['start_delay_seconds']}s"

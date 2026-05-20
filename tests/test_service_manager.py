@@ -463,3 +463,37 @@ class ServiceManagerTestCase(unittest.TestCase):
 
         self.assertTrue(result["ready"])
         self.assertIn("Cloud directo", rendered)
+
+    def test_readiness_status_accepts_openrouter_without_ollama_list(self):
+        state_path = TEST_RUNTIME_DIR / "service_manager_openrouter_readiness_state.json"
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+        seeded_state = memory.normalize_state({
+            "goal": "Usar Yarbis con OpenRouter",
+            "model_provider": {
+                "default": "openrouter",
+                "openrouter": {
+                    "model": "openai/gpt-demo",
+                    "api_key_env_var": "OPENROUTER_API_KEY",
+                    "timeout_seconds": 900,
+                },
+            },
+        })
+
+        service_manager._READINESS_CACHE["status"] = None
+        service_manager._READINESS_CACHE["created_at"] = 0.0
+        with patch.object(memory, "STATE_FILE", state_path):
+            memory.save_state(seeded_state)
+            with patch.object(service_manager, "_dependency_available", return_value=True):
+                with patch.object(
+                    service_manager,
+                    "_safe_service_status",
+                    return_value=status(installed=False, running=False),
+                ):
+                    with patch.object(service_manager, "_ollama_model_names", side_effect=AssertionError("no ollama list")):
+                        with patch.object(service_manager.shutil, "which", return_value="dotnet"):
+                            with patch.dict(service_manager.os.environ, {"OPENROUTER_API_KEY": "test-key"}, clear=False):
+                                result = service_manager.readiness_status(force=True)
+                                rendered = service_manager.format_readiness_status(result, compact=False)
+
+        self.assertTrue(result["ready"])
+        self.assertIn("OpenRouter activo", rendered)

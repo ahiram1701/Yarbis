@@ -25,12 +25,20 @@ from intent_text import (
     normalize_intent_text as _normalize_intent_text,
 )
 from memory import (
+    DEFAULT_MODEL_PROVIDER,
     DEFAULT_OLLAMA_API_KEY_ENV_VAR,
     DEFAULT_OLLAMA_HOST,
     DEFAULT_OLLAMA_MODEL,
     DEFAULT_OLLAMA_TIMEOUT_SECONDS,
+    DEFAULT_OPENROUTER_API_KEY_ENV_VAR,
+    DEFAULT_OPENROUTER_HOST,
+    DEFAULT_OPENROUTER_MODEL,
+    DEFAULT_OPENROUTER_TIMEOUT_SECONDS,
     MAX_OLLAMA_MODEL_CHARS,
+    MODEL_PROVIDER_OLLAMA,
+    MODEL_PROVIDER_OPENROUTER,
     VALID_LOCAL_CONTEXT_MODES,
+    VALID_MODEL_PROVIDERS,
     MAX_OLLAMA_TIMEOUT_SECONDS,
     MIN_OLLAMA_TIMEOUT_SECONDS,
     default_state,
@@ -785,27 +793,25 @@ def update_ui_theme(theme: str) -> str:
         return f"Tema actualizado a {cleaned_theme}."
 
 
-def get_ollama_settings() -> dict:
-    return load_state().get("ollama", {
-        "model": DEFAULT_OLLAMA_MODEL,
-        "fallback_models": [],
-        "host": DEFAULT_OLLAMA_HOST,
-        "api_key_env_var": DEFAULT_OLLAMA_API_KEY_ENV_VAR,
-        "timeout_seconds": DEFAULT_OLLAMA_TIMEOUT_SECONDS,
-    })
+def _provider_label(provider: str) -> str:
+    return "OpenRouter" if provider == MODEL_PROVIDER_OPENROUTER else "Ollama"
 
 
-def update_ollama_settings(
-    model: str,
-    timeout_seconds: int,
-    host: str | None = None,
-    fallback_models=None,
-    api_key_env_var: str | None = None,
-) -> str:
-    cleaned_model = str(model).strip()
-    if not cleaned_model:
-        raise ValueError("El modelo no puede quedar vacio.")
+def _parse_fallback_models(fallback_models, current=None) -> list[str]:
+    if fallback_models is None:
+        return list(current or [])
+    if isinstance(fallback_models, str):
+        return [
+            item.strip()
+            for item in re.split(r"[,;\n]+", fallback_models)
+            if item.strip()
+        ]
+    if isinstance(fallback_models, list):
+        return [str(item).strip() for item in fallback_models if str(item).strip()]
+    return []
 
+
+def _parse_model_timeout(timeout_seconds: int) -> int:
     try:
         cleaned_timeout = int(timeout_seconds)
     except (TypeError, ValueError) as exc:
@@ -816,16 +822,100 @@ def update_ollama_settings(
             "El timeout debe estar entre "
             f"{MIN_OLLAMA_TIMEOUT_SECONDS} y {MAX_OLLAMA_TIMEOUT_SECONDS} segundos."
         )
+    return cleaned_timeout
+
+
+def _normalize_provider_host(host: str, *, default: str = "", strip_ollama_api: bool = False) -> str:
+    cleaned_host = str(host).strip()
+    if not cleaned_host:
+        return str(default).strip().rstrip("/")
+    if strip_ollama_api and cleaned_host.endswith("/api"):
+        cleaned_host = cleaned_host[:-4].rstrip("/")
+    if cleaned_host.endswith("/chat/completions"):
+        cleaned_host = cleaned_host[: -len("/chat/completions")].rstrip("/")
+    return cleaned_host.rstrip("/")
+
+
+def get_model_provider_settings() -> dict:
+    state = load_state()
+    settings = state.get("model_provider", {})
+    if not isinstance(settings, dict):
+        settings = default_state()["model_provider"]
+    return settings
+
+
+def get_default_model_provider() -> str:
+    provider = str(get_model_provider_settings().get("default", DEFAULT_MODEL_PROVIDER)).strip().lower()
+    return provider if provider in VALID_MODEL_PROVIDERS else DEFAULT_MODEL_PROVIDER
+
+
+def get_ollama_settings() -> dict:
+    state = load_state()
+    model_provider = state.get("model_provider", {}) if isinstance(state, dict) else {}
+    if isinstance(model_provider, dict) and isinstance(model_provider.get("ollama"), dict):
+        return model_provider["ollama"]
+    return state.get("ollama", {
+        "model": DEFAULT_OLLAMA_MODEL,
+        "fallback_models": [],
+        "host": DEFAULT_OLLAMA_HOST,
+        "api_key_env_var": DEFAULT_OLLAMA_API_KEY_ENV_VAR,
+        "timeout_seconds": DEFAULT_OLLAMA_TIMEOUT_SECONDS,
+    })
+
+
+def get_openrouter_settings() -> dict:
+    model_provider = get_model_provider_settings()
+    settings = model_provider.get("openrouter", {})
+    if isinstance(settings, dict):
+        return settings
+    return {
+        "model": DEFAULT_OPENROUTER_MODEL,
+        "fallback_models": [],
+        "host": DEFAULT_OPENROUTER_HOST,
+        "api_key_env_var": DEFAULT_OPENROUTER_API_KEY_ENV_VAR,
+        "timeout_seconds": DEFAULT_OPENROUTER_TIMEOUT_SECONDS,
+    }
+
+
+def update_model_provider(default_provider: str) -> str:
+    cleaned_provider = str(default_provider).strip().lower()
+    if cleaned_provider not in VALID_MODEL_PROVIDERS:
+        raise ValueError("Proveedor invalido. Usa 'ollama' u 'openrouter'.")
+
+    def mutate(state):
+        model_provider = state.setdefault("model_provider", {})
+        model_provider["default"] = cleaned_provider
+        model_provider.setdefault("ollama", state.get("ollama", default_state()["ollama"]))
+        model_provider.setdefault("openrouter", default_state()["model_provider"]["openrouter"])
+        state["ollama"] = model_provider["ollama"]
+
+    state_transaction("update_model_provider", mutate)
+    return f"Proveedor por defecto actualizado: {_provider_label(cleaned_provider)}."
+
+
+def update_ollama_settings(
+    model: str,
+    timeout_seconds: int,
+    host: str | None = None,
+    fallback_models=None,
+    api_key_env_var: str | None = None,
+    set_default: bool = True,
+) -> str:
+    cleaned_model = str(model).strip()
+    if not cleaned_model:
+        raise ValueError("El modelo no puede quedar vacio.")
+
+    cleaned_timeout = _parse_model_timeout(timeout_seconds)
 
     current_settings = get_ollama_settings()
     cleaned_host = (
-        str(host).strip()
+        _normalize_provider_host(host, strip_ollama_api=True)
         if host is not None
-        else str(current_settings.get("host", DEFAULT_OLLAMA_HOST)).strip()
+        else _normalize_provider_host(
+            current_settings.get("host", DEFAULT_OLLAMA_HOST),
+            strip_ollama_api=True,
+        )
     )
-    if cleaned_host.endswith("/api"):
-        cleaned_host = cleaned_host[:-4].rstrip("/")
-    cleaned_host = cleaned_host.rstrip("/")
 
     cleaned_api_key_env_var = (
         str(api_key_env_var).strip()
@@ -833,33 +923,28 @@ def update_ollama_settings(
         else str(current_settings.get("api_key_env_var", DEFAULT_OLLAMA_API_KEY_ENV_VAR)).strip()
     ) or DEFAULT_OLLAMA_API_KEY_ENV_VAR
 
-    if fallback_models is None:
-        cleaned_fallback_models = current_settings.get("fallback_models", [])
-    elif isinstance(fallback_models, str):
-        cleaned_fallback_models = [
-            item.strip()
-            for item in re.split(r"[,;\n]+", fallback_models)
-            if item.strip()
-        ]
-    elif isinstance(fallback_models, list):
-        cleaned_fallback_models = [str(item).strip() for item in fallback_models if str(item).strip()]
-    else:
-        cleaned_fallback_models = []
-
-    state_transaction(
-        "update_ollama_settings",
-        lambda state: state.__setitem__(
-            "ollama",
-            {
-                "model": cleaned_model,
-                "fallback_models": cleaned_fallback_models,
-                "host": cleaned_host,
-                "api_key_env_var": cleaned_api_key_env_var,
-                "timeout_seconds": cleaned_timeout,
-            },
-        ),
+    cleaned_fallback_models = _parse_fallback_models(
+        fallback_models,
+        current=current_settings.get("fallback_models", []),
     )
-    settings = load_state()["ollama"]
+    next_settings = {
+        "model": cleaned_model,
+        "fallback_models": cleaned_fallback_models,
+        "host": cleaned_host,
+        "api_key_env_var": cleaned_api_key_env_var,
+        "timeout_seconds": cleaned_timeout,
+    }
+
+    def mutate(state):
+        model_provider = state.setdefault("model_provider", {})
+        model_provider["ollama"] = dict(next_settings)
+        if set_default:
+            model_provider["default"] = MODEL_PROVIDER_OLLAMA
+        model_provider.setdefault("openrouter", default_state()["model_provider"]["openrouter"])
+        state["ollama"] = dict(next_settings)
+
+    state_transaction("update_ollama_settings", mutate)
+    settings = load_state()["model_provider"]["ollama"]
     host_text = settings["host"] or "local"
     fallback_text = ", ".join(settings["fallback_models"]) or "-"
 
@@ -868,6 +953,67 @@ def update_ollama_settings(
         f"Modelo: {settings['model']}\n"
         f"Fallbacks: {fallback_text}\n"
         f"Host: {host_text}\n"
+        f"API key env: {settings['api_key_env_var']}\n"
+        f"Timeout: {settings['timeout_seconds']} segundos"
+    )
+
+
+def update_openrouter_settings(
+    model: str,
+    timeout_seconds: int,
+    host: str | None = None,
+    fallback_models=None,
+    api_key_env_var: str | None = None,
+    set_default: bool = True,
+) -> str:
+    cleaned_model = str(model).strip()
+    if not cleaned_model:
+        raise ValueError("El modelo de OpenRouter no puede quedar vacio.")
+
+    cleaned_timeout = _parse_model_timeout(timeout_seconds)
+    current_settings = get_openrouter_settings()
+    cleaned_host = (
+        _normalize_provider_host(host, default=DEFAULT_OPENROUTER_HOST)
+        if host is not None
+        else _normalize_provider_host(
+            current_settings.get("host", DEFAULT_OPENROUTER_HOST),
+            default=DEFAULT_OPENROUTER_HOST,
+        )
+    )
+    cleaned_api_key_env_var = (
+        str(api_key_env_var).strip()
+        if api_key_env_var is not None
+        else str(current_settings.get("api_key_env_var", DEFAULT_OPENROUTER_API_KEY_ENV_VAR)).strip()
+    ) or DEFAULT_OPENROUTER_API_KEY_ENV_VAR
+    cleaned_fallback_models = _parse_fallback_models(
+        fallback_models,
+        current=current_settings.get("fallback_models", []),
+    )
+    next_settings = {
+        "model": cleaned_model,
+        "fallback_models": cleaned_fallback_models,
+        "host": cleaned_host,
+        "api_key_env_var": cleaned_api_key_env_var,
+        "timeout_seconds": cleaned_timeout,
+    }
+
+    def mutate(state):
+        model_provider = state.setdefault("model_provider", {})
+        model_provider["openrouter"] = dict(next_settings)
+        if set_default:
+            model_provider["default"] = MODEL_PROVIDER_OPENROUTER
+        model_provider.setdefault("ollama", state.get("ollama", default_state()["ollama"]))
+        state["ollama"] = model_provider["ollama"]
+
+    state_transaction("update_openrouter_settings", mutate)
+    settings = load_state()["model_provider"]["openrouter"]
+    fallback_text = ", ".join(settings["fallback_models"]) or "-"
+
+    return (
+        "Configuracion de OpenRouter actualizada.\n"
+        f"Modelo: {settings['model']}\n"
+        f"Fallbacks: {fallback_text}\n"
+        f"Host: {settings['host']}\n"
         f"API key env: {settings['api_key_env_var']}\n"
         f"Timeout: {settings['timeout_seconds']} segundos"
     )

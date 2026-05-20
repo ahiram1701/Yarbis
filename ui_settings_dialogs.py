@@ -7,8 +7,14 @@ from memory import (
     DEFAULT_OLLAMA_HOST,
     DEFAULT_OLLAMA_MODEL,
     DEFAULT_OLLAMA_TIMEOUT_SECONDS,
+    DEFAULT_OPENROUTER_API_KEY_ENV_VAR,
+    DEFAULT_OPENROUTER_HOST,
+    DEFAULT_OPENROUTER_MODEL,
+    DEFAULT_OPENROUTER_TIMEOUT_SECONDS,
     DEFAULT_SERVICE_PROACTIVE_MODEL,
     MAX_OLLAMA_TIMEOUT_SECONDS,
+    MODEL_PROVIDER_OLLAMA,
+    MODEL_PROVIDER_OPENROUTER,
     MIN_OLLAMA_TIMEOUT_SECONDS,
 )
 from ui_dialogs import ThemedDialog
@@ -471,57 +477,160 @@ class ServiceInstallDialog(ThemedDialog):
 class OllamaSettingsDialog(ThemedDialog):
     def __init__(self, parent, initial_settings: dict):
         self.initial_settings = initial_settings
+        self._loaded_provider = ""
         super().__init__(parent, "Modelo y timeout")
+
+    def _initial_provider_settings(self, provider: str) -> dict:
+        if provider == MODEL_PROVIDER_OPENROUTER:
+            defaults = {
+                "model": DEFAULT_OPENROUTER_MODEL,
+                "fallback_models": [],
+                "host": DEFAULT_OPENROUTER_HOST,
+                "api_key_env_var": DEFAULT_OPENROUTER_API_KEY_ENV_VAR,
+                "timeout_seconds": DEFAULT_OPENROUTER_TIMEOUT_SECONDS,
+            }
+        else:
+            defaults = {
+                "model": DEFAULT_OLLAMA_MODEL,
+                "fallback_models": [],
+                "host": DEFAULT_OLLAMA_HOST,
+                "api_key_env_var": DEFAULT_OLLAMA_API_KEY_ENV_VAR,
+                "timeout_seconds": DEFAULT_OLLAMA_TIMEOUT_SECONDS,
+            }
+
+        if isinstance(self.initial_settings, dict) and (
+            "default" in self.initial_settings or provider in self.initial_settings
+        ):
+            source = self.initial_settings.get(provider, {})
+        else:
+            source = self.initial_settings if provider == MODEL_PROVIDER_OLLAMA else {}
+        if not isinstance(source, dict):
+            source = {}
+        settings = dict(defaults)
+        settings.update(source)
+        return settings
+
+    def _fallback_text(self, fallback_models) -> str:
+        if isinstance(fallback_models, list):
+            return ", ".join(str(item).strip() for item in fallback_models if str(item).strip())
+        return str(fallback_models).strip()
+
+    def _current_form_settings(self) -> dict:
+        return {
+            "model": self.model_entry.get().strip(),
+            "fallback_models": self.fallback_entry.get().strip(),
+            "host": self.host_entry.get().strip(),
+            "api_key_env_var": self.api_key_env_entry.get().strip(),
+            "timeout_seconds": self.timeout_spin.get().strip(),
+        }
+
+    def _load_provider_fields(self, provider: str):
+        settings = self._provider_settings[provider]
+        model_default = DEFAULT_OPENROUTER_MODEL if provider == MODEL_PROVIDER_OPENROUTER else DEFAULT_OLLAMA_MODEL
+        api_default = (
+            DEFAULT_OPENROUTER_API_KEY_ENV_VAR
+            if provider == MODEL_PROVIDER_OPENROUTER
+            else DEFAULT_OLLAMA_API_KEY_ENV_VAR
+        )
+        timeout_default = (
+            DEFAULT_OPENROUTER_TIMEOUT_SECONDS
+            if provider == MODEL_PROVIDER_OPENROUTER
+            else DEFAULT_OLLAMA_TIMEOUT_SECONDS
+        )
+
+        self.model_entry.delete(0, "end")
+        self.model_entry.insert(0, str(settings.get("model", model_default)).strip())
+        self.fallback_entry.delete(0, "end")
+        self.fallback_entry.insert(0, self._fallback_text(settings.get("fallback_models", [])))
+        self.host_entry.delete(0, "end")
+        self.host_entry.insert(0, str(settings.get("host", "")).strip())
+        self.api_key_env_entry.delete(0, "end")
+        self.api_key_env_entry.insert(
+            0,
+            str(settings.get("api_key_env_var", api_default)).strip() or api_default,
+        )
+        self.timeout_spin.delete(0, "end")
+        self.timeout_spin.insert(0, str(settings.get("timeout_seconds", timeout_default)))
+        self.host_help_var.set(
+            "Vacio = local. Usa https://ollama.com para Cloud directo."
+            if provider == MODEL_PROVIDER_OLLAMA
+            else "Base compatible con OpenAI. Normalmente https://openrouter.ai/api/v1."
+        )
+        self.api_help_var.set(
+            "Tambien puedes definir YARBIS_OPENROUTER_API_KEY como API key directa."
+            if provider == MODEL_PROVIDER_OPENROUTER
+            else ""
+        )
+        self._loaded_provider = provider
+
+    def _provider_changed(self, _event=None):
+        if self._loaded_provider:
+            self._provider_settings[self._loaded_provider] = self._current_form_settings()
+        provider = self.provider_var.get().strip().lower()
+        if provider not in {MODEL_PROVIDER_OLLAMA, MODEL_PROVIDER_OPENROUTER}:
+            provider = MODEL_PROVIDER_OLLAMA
+            self.provider_var.set(provider)
+        self._load_provider_fields(provider)
 
     def body(self, master):
         self._prepare_body(master)
-        model = str(self.initial_settings.get("model", DEFAULT_OLLAMA_MODEL)).strip()
-        fallback_models = self.initial_settings.get("fallback_models", [])
-        if isinstance(fallback_models, list):
-            fallback_models = ", ".join(str(item).strip() for item in fallback_models if str(item).strip())
-        else:
-            fallback_models = str(fallback_models).strip()
-        host = str(self.initial_settings.get("host", DEFAULT_OLLAMA_HOST)).strip()
-        api_key_env_var = (
-            str(self.initial_settings.get("api_key_env_var", DEFAULT_OLLAMA_API_KEY_ENV_VAR)).strip()
-            or DEFAULT_OLLAMA_API_KEY_ENV_VAR
-        )
-        timeout_seconds = str(
-            self.initial_settings.get(
-                "timeout_seconds",
-                DEFAULT_OLLAMA_TIMEOUT_SECONDS,
-            )
-        )
+        initial_provider = str(
+            self.initial_settings.get("default", MODEL_PROVIDER_OLLAMA)
+            if isinstance(self.initial_settings, dict)
+            else MODEL_PROVIDER_OLLAMA
+        ).strip().lower()
+        if initial_provider not in {MODEL_PROVIDER_OLLAMA, MODEL_PROVIDER_OPENROUTER}:
+            initial_provider = MODEL_PROVIDER_OLLAMA
+        self._provider_settings = {
+            MODEL_PROVIDER_OLLAMA: self._initial_provider_settings(MODEL_PROVIDER_OLLAMA),
+            MODEL_PROVIDER_OPENROUTER: self._initial_provider_settings(MODEL_PROVIDER_OPENROUTER),
+        }
+        self.provider_var = tk.StringVar(value=initial_provider)
+        self.host_help_var = tk.StringVar()
+        self.api_help_var = tk.StringVar()
 
-        ttk.Label(master, text="Modelo").grid(row=0, column=0, sticky="w", padx=6, pady=(6, 2))
+        ttk.Label(master, text="Proveedor por defecto").grid(row=0, column=0, sticky="w", padx=6, pady=(6, 2))
+        self.provider_combo = ttk.Combobox(
+            master,
+            textvariable=self.provider_var,
+            values=(MODEL_PROVIDER_OLLAMA, MODEL_PROVIDER_OPENROUTER),
+            state="readonly",
+            width=20,
+        )
+        self.provider_combo.grid(row=1, column=0, columnspan=2, sticky="ew", padx=6)
+        self.provider_combo.bind("<<ComboboxSelected>>", self._provider_changed)
+
+        ttk.Label(master, text="Modelo").grid(row=2, column=0, sticky="w", padx=6, pady=(10, 2))
         self.model_entry = ttk.Entry(master, width=44)
-        self.model_entry.grid(row=1, column=0, columnspan=2, sticky="ew", padx=6)
-        self.model_entry.insert(0, model or DEFAULT_OLLAMA_MODEL)
+        self.model_entry.grid(row=3, column=0, columnspan=2, sticky="ew", padx=6)
 
-        ttk.Label(master, text="Fallbacks").grid(row=2, column=0, sticky="w", padx=6, pady=(10, 2))
+        ttk.Label(master, text="Fallbacks").grid(row=4, column=0, sticky="w", padx=6, pady=(10, 2))
         self.fallback_entry = ttk.Entry(master, width=44)
-        self.fallback_entry.grid(row=3, column=0, columnspan=2, sticky="ew", padx=6)
-        self.fallback_entry.insert(0, fallback_models)
+        self.fallback_entry.grid(row=5, column=0, columnspan=2, sticky="ew", padx=6)
 
-        ttk.Label(master, text="Host").grid(row=4, column=0, sticky="w", padx=6, pady=(10, 2))
+        ttk.Label(master, text="Host").grid(row=6, column=0, sticky="w", padx=6, pady=(10, 2))
         self.host_entry = ttk.Entry(master, width=44)
-        self.host_entry.grid(row=5, column=0, columnspan=2, sticky="ew", padx=6)
-        self.host_entry.insert(0, host)
+        self.host_entry.grid(row=7, column=0, columnspan=2, sticky="ew", padx=6)
         ttk.Label(
             master,
-            text="Vacio = local. Usa https://ollama.com para Cloud directo.",
+            textvariable=self.host_help_var,
             foreground=self.theme_palette["muted"],
             wraplength=360,
-        ).grid(row=6, column=0, columnspan=2, sticky="w", padx=6, pady=(3, 0))
+        ).grid(row=8, column=0, columnspan=2, sticky="w", padx=6, pady=(3, 0))
 
-        ttk.Label(master, text="API key env").grid(row=7, column=0, sticky="w", padx=6, pady=(10, 2))
+        ttk.Label(master, text="API key env").grid(row=9, column=0, sticky="w", padx=6, pady=(10, 2))
         self.api_key_env_entry = ttk.Entry(master, width=44)
-        self.api_key_env_entry.grid(row=8, column=0, columnspan=2, sticky="ew", padx=6)
-        self.api_key_env_entry.insert(0, api_key_env_var)
+        self.api_key_env_entry.grid(row=10, column=0, columnspan=2, sticky="ew", padx=6)
+        ttk.Label(
+            master,
+            textvariable=self.api_help_var,
+            foreground=self.theme_palette["muted"],
+            wraplength=360,
+        ).grid(row=11, column=0, columnspan=2, sticky="w", padx=6, pady=(3, 0))
 
-        ttk.Label(master, text="Timeout").grid(row=9, column=0, sticky="w", padx=6, pady=(10, 2))
+        ttk.Label(master, text="Timeout").grid(row=12, column=0, sticky="w", padx=6, pady=(10, 2))
         timeout_row = ttk.Frame(master)
-        timeout_row.grid(row=10, column=0, sticky="w", padx=6, pady=(0, 6))
+        timeout_row.grid(row=13, column=0, sticky="w", padx=6, pady=(0, 6))
         self.timeout_spin = ttk.Spinbox(
             timeout_row,
             from_=MIN_OLLAMA_TIMEOUT_SECONDS,
@@ -531,29 +640,36 @@ class OllamaSettingsDialog(ThemedDialog):
             style="Yarbis.TSpinbox",
         )
         self.timeout_spin.pack(side="left")
-        self.timeout_spin.delete(0, "end")
-        self.timeout_spin.insert(0, timeout_seconds)
         ttk.Label(timeout_row, text="s").pack(side="left", padx=(6, 0))
 
         if (
             os.getenv("YARBIS_MODEL")
+            or os.getenv("YARBIS_MODEL_PROVIDER")
             or os.getenv("YARBIS_OLLAMA_TIMEOUT_SECONDS")
             or os.getenv("YARBIS_OLLAMA_HOST")
             or os.getenv("YARBIS_OLLAMA_FALLBACK_MODELS")
             or os.getenv("YARBIS_OLLAMA_API_KEY_ENV_VAR")
+            or os.getenv("YARBIS_OPENROUTER_API_KEY")
+            or os.getenv("YARBIS_OPENROUTER_HOST")
+            or os.getenv("YARBIS_OPENROUTER_TIMEOUT_SECONDS")
         ):
             ttk.Label(
                 master,
                 text="Hay variables de entorno YARBIS_* activas; esas pueden tener prioridad.",
                 foreground=self.theme_palette["muted"],
                 wraplength=360,
-            ).grid(row=11, column=0, columnspan=2, sticky="w", padx=6, pady=(4, 6))
+            ).grid(row=14, column=0, columnspan=2, sticky="w", padx=6, pady=(4, 6))
 
         master.columnconfigure(0, weight=1)
+        self._load_provider_fields(initial_provider)
         return self.model_entry
 
     def apply(self):
+        provider = self.provider_var.get().strip().lower()
+        if provider not in {MODEL_PROVIDER_OLLAMA, MODEL_PROVIDER_OPENROUTER}:
+            provider = MODEL_PROVIDER_OLLAMA
         self.result = {
+            "provider": provider,
             "model": self.model_entry.get().strip(),
             "fallback_models": self.fallback_entry.get().strip(),
             "host": self.host_entry.get().strip(),

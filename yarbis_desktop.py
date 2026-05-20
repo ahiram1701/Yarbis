@@ -13,6 +13,8 @@ import activity
 from memory import (
     DEFAULT_OLLAMA_MODEL,
     DEFAULT_OLLAMA_TIMEOUT_SECONDS,
+    MODEL_PROVIDER_OLLAMA,
+    MODEL_PROVIDER_OPENROUTER,
     load_state,
     render_state_summary,
 )
@@ -35,6 +37,7 @@ from session import (
     coding_set_workspace_text,
     create_memory_backup_text,
     get_local_context_settings,
+    get_model_provider_settings,
     get_notification_settings,
     get_ollama_settings,
     get_service_proactive_settings,
@@ -59,7 +62,9 @@ from session import (
     update_local_context_settings,
     update_notification_settings,
     update_goal,
+    update_model_provider,
     update_ollama_settings,
+    update_openrouter_settings,
     update_memory_protection_settings_text,
     update_profile_text,
     update_service_proactive_settings,
@@ -293,7 +298,7 @@ class YarbisDesktop(tk.Tk):
         ttk.Label(summary, text="Tema").grid(row=2, column=0, sticky="w", padx=10, pady=4)
         ttk.Label(summary, textvariable=self.theme_var).grid(row=2, column=1, sticky="w", pady=4)
 
-        ttk.Label(summary, text="Ollama").grid(row=3, column=0, sticky="w", padx=10, pady=4)
+        ttk.Label(summary, text="Modelo").grid(row=3, column=0, sticky="w", padx=10, pady=4)
         ttk.Label(summary, textvariable=self.ollama_var, wraplength=780).grid(
             row=3,
             column=1,
@@ -1038,14 +1043,24 @@ class YarbisDesktop(tk.Tk):
         state = load_state()
         self.goal_var.set(state["goal"])
         self.cycles_var.set(str(state["cycle_count"]))
-        ollama_settings = state.get("ollama", {})
-        fallback_models = ollama_settings.get("fallback_models", [])
+        model_provider = state.get("model_provider", {})
+        if not isinstance(model_provider, dict):
+            model_provider = {}
+        active_provider = str(model_provider.get("default", MODEL_PROVIDER_OLLAMA)).strip().lower()
+        if active_provider not in {MODEL_PROVIDER_OLLAMA, MODEL_PROVIDER_OPENROUTER}:
+            active_provider = MODEL_PROVIDER_OLLAMA
+        model_settings = model_provider.get(active_provider, state.get("ollama", {}))
+        if not isinstance(model_settings, dict):
+            model_settings = {}
+        fallback_models = model_settings.get("fallback_models", [])
         fallback_text = f", +{len(fallback_models)} fallback(s)" if fallback_models else ""
-        host_text = ollama_settings.get("host") or "local"
+        host_text = model_settings.get("host") or "local"
+        provider_label = "OpenRouter" if active_provider == MODEL_PROVIDER_OPENROUTER else "Ollama"
+        model_name = model_settings.get("model") or ("sin modelo" if active_provider == MODEL_PROVIDER_OPENROUTER else DEFAULT_OLLAMA_MODEL)
         self.ollama_var.set(
-            f"{ollama_settings.get('model', DEFAULT_OLLAMA_MODEL)}{fallback_text} "
+            f"{provider_label}: {model_name}{fallback_text} "
             f"@ {host_text} "
-            f"({ollama_settings.get('timeout_seconds', DEFAULT_OLLAMA_TIMEOUT_SECONDS)}s)"
+            f"({model_settings.get('timeout_seconds', DEFAULT_OLLAMA_TIMEOUT_SECONDS)}s)"
         )
         coding_settings = state.get("coding", {})
         coding_workspace = str(coding_settings.get("workspace_path", "")).strip()
@@ -1383,17 +1398,23 @@ class YarbisDesktop(tk.Tk):
         self.status_var.set("Listo.")
 
     def _edit_ollama_settings(self):
-        dialog = OllamaSettingsDialog(self, initial_settings=get_ollama_settings())
+        dialog = OllamaSettingsDialog(self, initial_settings=get_model_provider_settings())
         if dialog.result is None:
             return
 
         try:
-            result = update_ollama_settings(**dialog.result)
+            provider = dialog.result.pop("provider", MODEL_PROVIDER_OLLAMA)
+            if provider == MODEL_PROVIDER_OPENROUTER:
+                result = update_openrouter_settings(**dialog.result)
+            else:
+                result = update_ollama_settings(**dialog.result)
+            provider_result = update_model_provider(provider)
+            result = f"{provider_result}\n{result}"
         except ValueError as exc:
             messagebox.showwarning("Yarbis", str(exc), parent=self)
             return
 
-        self._append_activity("Ollama", result)
+        self._append_activity("Modelo", result)
         readiness_status(force=True)
         self.refresh_state_view()
 

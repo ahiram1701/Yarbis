@@ -1,8 +1,9 @@
+import json
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import agent
 import memory
@@ -184,6 +185,111 @@ class AgentTestCase(unittest.TestCase):
             [call.kwargs["model"] for call in chat_mock.call_args_list],
             ["modelo-local-roto:latest", "gpt-oss:120b-cloud"],
         )
+
+    def test_run_one_cycle_uses_openrouter_provider(self):
+        state_path = TEST_RUNTIME_DIR / "agent_openrouter_state.json"
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+        final_response = SimpleNamespace(
+            message=SimpleNamespace(content="Respuesta OpenRouter", tool_calls=[])
+        )
+        fake_client = SimpleNamespace(chat=Mock(return_value=final_response))
+        old_runtime = (
+            agent.client,
+            agent._client_signature,
+            agent._client_timeout_seconds,
+            agent.MODEL_PROVIDER,
+            agent.MODEL,
+        )
+
+        seeded_state = memory.normalize_state({
+            "model_provider": {
+                "default": "openrouter",
+                "openrouter": {
+                    "model": "openai/gpt-demo",
+                    "fallback_models": ["anthropic/claude-demo"],
+                    "host": "https://openrouter.ai/api/v1",
+                    "api_key_env_var": "OPENROUTER_API_KEY",
+                    "timeout_seconds": 900,
+                },
+            },
+        })
+
+        try:
+            with patch.object(memory, "STATE_FILE", state_path):
+                memory.save_state(seeded_state)
+                with patch.dict(agent.os.environ, {"OPENROUTER_API_KEY": "test-key"}, clear=True):
+                    with patch.object(agent, "_build_openrouter_client", return_value=fake_client) as build_mock:
+                        result = agent.run_one_cycle(max_steps=1)
+        finally:
+            (
+                agent.client,
+                agent._client_signature,
+                agent._client_timeout_seconds,
+                agent.MODEL_PROVIDER,
+                agent.MODEL,
+            ) = old_runtime
+
+        self.assertEqual(result["status"], "final")
+        build_mock.assert_called_once_with(
+            "https://openrouter.ai/api/v1",
+            900,
+            "OPENROUTER_API_KEY",
+        )
+        self.assertEqual(fake_client.chat.call_args.kwargs["model"], "openai/gpt-demo")
+        self.assertEqual(agent.MODEL_PROVIDER, old_runtime[3])
+
+    def test_openrouter_client_normalizes_chat_completion_response_and_tool_calls(self):
+        class FakeResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def read(self):
+                return json.dumps({
+                    "choices": [
+                        {
+                            "message": {
+                                "content": "",
+                                "tool_calls": [
+                                    {
+                                        "id": "call-1",
+                                        "function": {
+                                            "name": "add_task",
+                                            "arguments": "{\"title\":\"Demo\"}",
+                                        },
+                                    }
+                                ],
+                            }
+                        }
+                    ]
+                }).encode("utf-8")
+
+        def sample_tool(title: str, done: bool = False):
+            """Guarda una tarea."""
+            return title
+
+        with patch.dict(agent.os.environ, {"YARBIS_OPENROUTER_API_KEY": "test-key"}, clear=True):
+            with patch.object(agent.request, "urlopen", return_value=FakeResponse()) as urlopen_mock:
+                response = agent.OpenRouterClient(
+                    "https://openrouter.ai/api/v1/chat/completions",
+                    30,
+                    "OPENROUTER_API_KEY",
+                ).chat(
+                    model="openai/gpt-demo",
+                    messages=[{"role": "user", "content": "hola"}],
+                    tools=[sample_tool],
+                )
+
+        request_arg = urlopen_mock.call_args.args[0]
+        payload = json.loads(request_arg.data.decode("utf-8"))
+        self.assertEqual(request_arg.full_url, "https://openrouter.ai/api/v1/chat/completions")
+        self.assertEqual(request_arg.get_header("Authorization"), "Bearer test-key")
+        self.assertEqual(payload["model"], "openai/gpt-demo")
+        self.assertEqual(payload["tools"][0]["function"]["name"], "sample_tool")
+        self.assertEqual(response.message.tool_calls[0].id, "call-1")
+        self.assertEqual(response.message.tool_calls[0].function.name, "add_task")
 
     def test_build_messages_includes_personal_context(self):
         state = memory.normalize_state({

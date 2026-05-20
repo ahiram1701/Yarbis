@@ -1,10 +1,13 @@
 import json
+import inspect
 import os
 import re
 import sys
 import threading
 from collections.abc import Mapping
 from datetime import datetime, timezone
+from types import SimpleNamespace
+from urllib import error as urllib_error, request
 from urllib.parse import urlparse
 
 from ollama import Client
@@ -18,8 +21,15 @@ from memory import (
     DEFAULT_OLLAMA_API_KEY_ENV_VAR,
     DEFAULT_OLLAMA_HOST,
     DEFAULT_OLLAMA_TIMEOUT_SECONDS,
+    DEFAULT_OPENROUTER_API_KEY_ENV_VAR,
+    DEFAULT_OPENROUTER_HOST,
+    DEFAULT_OPENROUTER_MODEL,
+    DEFAULT_OPENROUTER_TIMEOUT_SECONDS,
     MAX_OLLAMA_TIMEOUT_SECONDS,
     MIN_OLLAMA_TIMEOUT_SECONDS,
+    MODEL_PROVIDER_OLLAMA,
+    MODEL_PROVIDER_OPENROUTER,
+    VALID_MODEL_PROVIDERS,
     load_state,
     render_state_summary,
     state_transaction,
@@ -155,11 +165,20 @@ def _get_env_int(name: str, default: int) -> int:
 
 
 MODEL = os.getenv("YARBIS_MODEL", DEFAULT_MODEL).strip() or DEFAULT_MODEL
+MODEL_PROVIDER = os.getenv("YARBIS_MODEL_PROVIDER", MODEL_PROVIDER_OLLAMA).strip().lower()
+if MODEL_PROVIDER not in VALID_MODEL_PROVIDERS:
+    MODEL_PROVIDER = MODEL_PROVIDER_OLLAMA
 OLLAMA_FALLBACK_MODELS = []
 OLLAMA_HOST = os.getenv("YARBIS_OLLAMA_HOST", DEFAULT_OLLAMA_HOST).strip() or DEFAULT_OLLAMA_HOST
 OLLAMA_API_KEY_ENV_VAR = (
     os.getenv("YARBIS_OLLAMA_API_KEY_ENV_VAR", DEFAULT_OLLAMA_API_KEY_ENV_VAR).strip()
     or DEFAULT_OLLAMA_API_KEY_ENV_VAR
+)
+OPENROUTER_FALLBACK_MODELS = []
+OPENROUTER_HOST = os.getenv("YARBIS_OPENROUTER_HOST", DEFAULT_OPENROUTER_HOST).strip() or DEFAULT_OPENROUTER_HOST
+OPENROUTER_API_KEY_ENV_VAR = (
+    os.getenv("YARBIS_OPENROUTER_API_KEY_ENV_VAR", DEFAULT_OPENROUTER_API_KEY_ENV_VAR).strip()
+    or DEFAULT_OPENROUTER_API_KEY_ENV_VAR
 )
 OLLAMA_TIMEOUT_SECONDS = _get_env_int(
     "YARBIS_OLLAMA_TIMEOUT_SECONDS",
@@ -168,6 +187,14 @@ OLLAMA_TIMEOUT_SECONDS = _get_env_int(
 OLLAMA_TIMEOUT_SECONDS = max(
     MIN_OLLAMA_TIMEOUT_SECONDS,
     min(MAX_OLLAMA_TIMEOUT_SECONDS, OLLAMA_TIMEOUT_SECONDS),
+)
+OPENROUTER_TIMEOUT_SECONDS = _get_env_int(
+    "YARBIS_OPENROUTER_TIMEOUT_SECONDS",
+    DEFAULT_OPENROUTER_TIMEOUT_SECONDS,
+)
+OPENROUTER_TIMEOUT_SECONDS = max(
+    MIN_OLLAMA_TIMEOUT_SECONDS,
+    min(MAX_OLLAMA_TIMEOUT_SECONDS, OPENROUTER_TIMEOUT_SECONDS),
 )
 EMPTY_RESPONSE_RETRIES = max(
     0,
@@ -190,6 +217,8 @@ def _normalize_host(host: str) -> str:
     cleaned = str(host).strip()
     if cleaned.endswith("/api"):
         cleaned = cleaned[:-4].rstrip("/")
+    if cleaned.endswith("/chat/completions"):
+        cleaned = cleaned[: -len("/chat/completions")].rstrip("/")
     return cleaned.rstrip("/")
 
 
@@ -219,15 +248,257 @@ def _build_ollama_client(host: str, timeout_seconds: int, api_key_env_var: str):
     return Client(**kwargs)
 
 
+def _normalize_openrouter_host(host: str) -> str:
+    cleaned = str(host).strip() or DEFAULT_OPENROUTER_HOST
+    if cleaned.endswith("/chat/completions"):
+        cleaned = cleaned[: -len("/chat/completions")].rstrip("/")
+    return cleaned.rstrip("/")
+
+
+def _openrouter_api_key(api_key_env_var: str) -> tuple[str, str]:
+    direct_key = os.getenv("YARBIS_OPENROUTER_API_KEY", "").strip()
+    if direct_key:
+        return direct_key, "YARBIS_OPENROUTER_API_KEY"
+    cleaned_env_var = str(api_key_env_var).strip() or DEFAULT_OPENROUTER_API_KEY_ENV_VAR
+    return os.getenv(cleaned_env_var, "").strip(), cleaned_env_var
+
+
+def _openrouter_client_signature(host: str, timeout_seconds: int, api_key_env_var: str) -> tuple:
+    cleaned_host = _normalize_openrouter_host(host)
+    api_key, key_source = _openrouter_api_key(api_key_env_var)
+    return cleaned_host, int(timeout_seconds), str(api_key_env_var).strip(), key_source, api_key
+
+
+def _json_type_for_annotation(annotation) -> dict:
+    if annotation in {bool, "bool"}:
+        return {"type": "boolean"}
+    if annotation in {int, "int"}:
+        return {"type": "integer"}
+    if annotation in {float, "float"}:
+        return {"type": "number"}
+    if annotation in {dict, "dict"}:
+        return {"type": "object"}
+    if annotation in {list, tuple, set, "list", "tuple", "set"}:
+        return {"type": "array", "items": {"type": "string"}}
+
+    origin = getattr(annotation, "__origin__", None)
+    if origin in {list, tuple, set}:
+        return {"type": "array", "items": {"type": "string"}}
+    if origin is dict:
+        return {"type": "object"}
+    return {"type": "string"}
+
+
+def _openrouter_tool_schema(tool) -> dict:
+    name = getattr(tool, "__name__", "tool")
+    doc = inspect.getdoc(tool) or ""
+    description = doc.splitlines()[0].strip() if doc else name
+    properties = {}
+    required = []
+    try:
+        signature = inspect.signature(tool)
+    except (TypeError, ValueError):
+        signature = None
+
+    if signature is not None:
+        for parameter_name, parameter in signature.parameters.items():
+            if parameter.kind in {
+                inspect.Parameter.VAR_POSITIONAL,
+                inspect.Parameter.VAR_KEYWORD,
+            }:
+                continue
+            properties[parameter_name] = _json_type_for_annotation(parameter.annotation)
+            if parameter.default is inspect.Parameter.empty:
+                required.append(parameter_name)
+
+    return {
+        "type": "function",
+        "function": {
+            "name": name,
+            "description": description,
+            "parameters": {
+                "type": "object",
+                "properties": properties,
+                "required": required,
+                "additionalProperties": False,
+            },
+        },
+    }
+
+
+def _openrouter_tools(tools) -> list[dict]:
+    return [_openrouter_tool_schema(tool) for tool in (tools or [])]
+
+
+def _tool_call_field(tool_call, field_name: str, default=""):
+    if isinstance(tool_call, dict):
+        return tool_call.get(field_name, default)
+    return getattr(tool_call, field_name, default)
+
+
+def _tool_call_function_field(tool_call, field_name: str, default=""):
+    function = _tool_call_field(tool_call, "function", {})
+    if isinstance(function, dict):
+        return function.get(field_name, default)
+    return getattr(function, field_name, default)
+
+
+def _openrouter_messages(messages: list[dict]) -> list[dict]:
+    converted = []
+    fallback_call_index = 0
+    for message in messages or []:
+        if not isinstance(message, dict):
+            continue
+        role = str(message.get("role", "user")).strip()
+        content = str(message.get("content", ""))
+        if role == "tool":
+            tool_call_id = str(message.get("tool_call_id", "")).strip()
+            if tool_call_id:
+                converted.append({
+                    "role": "tool",
+                    "tool_call_id": tool_call_id,
+                    "content": content,
+                })
+            else:
+                tool_name = str(message.get("tool_name", "tool")).strip() or "tool"
+                converted.append({
+                    "role": "user",
+                    "content": f"Resultado previo de {tool_name}: {content}",
+                })
+            continue
+
+        if role not in {"system", "user", "assistant"}:
+            role = "user"
+
+        item = {"role": role, "content": content}
+        if role == "assistant" and message.get("tool_calls"):
+            tool_calls = []
+            for raw_tool_call in message.get("tool_calls") or []:
+                call_id = str(_tool_call_field(raw_tool_call, "id", "")).strip()
+                if not call_id:
+                    fallback_call_index += 1
+                    call_id = f"call_{fallback_call_index}"
+                tool_calls.append({
+                    "id": call_id,
+                    "type": "function",
+                    "function": {
+                        "name": str(_tool_call_function_field(raw_tool_call, "name", "")).strip(),
+                        "arguments": _tool_call_function_field(raw_tool_call, "arguments", "{}"),
+                    },
+                })
+            if tool_calls:
+                item["tool_calls"] = tool_calls
+        converted.append(item)
+    return converted
+
+
+def _openrouter_tool_calls(raw_tool_calls) -> list:
+    normalized = []
+    for raw_tool_call in raw_tool_calls or []:
+        if not isinstance(raw_tool_call, dict):
+            continue
+        function = raw_tool_call.get("function", {})
+        if not isinstance(function, dict):
+            function = {}
+        normalized.append(SimpleNamespace(
+            id=str(raw_tool_call.get("id", "")).strip(),
+            function=SimpleNamespace(
+                name=str(function.get("name", "")).strip(),
+                arguments=function.get("arguments", "{}"),
+            ),
+        ))
+    return normalized
+
+
+class OpenRouterClient:
+    def __init__(self, host: str, timeout_seconds: int, api_key_env_var: str):
+        self.host = _normalize_openrouter_host(host)
+        self.timeout_seconds = int(timeout_seconds)
+        self.api_key_env_var = str(api_key_env_var).strip() or DEFAULT_OPENROUTER_API_KEY_ENV_VAR
+
+    def chat(self, **kwargs):
+        api_key, key_source = _openrouter_api_key(self.api_key_env_var)
+        if not api_key:
+            raise RuntimeError(f"Falta API key de OpenRouter. Define `{key_source}`.")
+
+        model = str(kwargs.get("model", "")).strip()
+        if not model:
+            raise RuntimeError("No hay modelo OpenRouter configurado.")
+
+        payload = {
+            "model": model,
+            "messages": _openrouter_messages(kwargs.get("messages", [])),
+        }
+        tools = kwargs.get("tools")
+        if tools:
+            payload["tools"] = _openrouter_tools(tools)
+
+        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        url = f"{self.host}/chat/completions"
+        http_request = request.Request(
+            url,
+            data=body,
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+            },
+            method="POST",
+        )
+
+        try:
+            with request.urlopen(http_request, timeout=self.timeout_seconds) as response:
+                response_body = response.read().decode("utf-8", errors="replace")
+        except urllib_error.HTTPError as exc:
+            error_body = exc.read().decode("utf-8", errors="replace")
+            error_message = _openrouter_error_message(error_body) or error_body or str(exc)
+            raise RuntimeError(f"OpenRouter HTTP {exc.code}: {error_message}") from exc
+        except urllib_error.URLError as exc:
+            raise RuntimeError(f"OpenRouter no respondio: {exc}") from exc
+
+        data = json.loads(response_body)
+        choices = data.get("choices", []) if isinstance(data, dict) else []
+        if not choices:
+            raise RuntimeError("OpenRouter devolvio una respuesta sin choices.")
+        message = choices[0].get("message", {}) if isinstance(choices[0], dict) else {}
+        if not isinstance(message, dict):
+            message = {}
+        return SimpleNamespace(
+            message=SimpleNamespace(
+                content=message.get("content") or "",
+                tool_calls=_openrouter_tool_calls(message.get("tool_calls", [])),
+            )
+        )
+
+
+def _openrouter_error_message(error_body: str) -> str:
+    try:
+        data = json.loads(error_body)
+    except json.JSONDecodeError:
+        return ""
+    if not isinstance(data, dict):
+        return ""
+    error = data.get("error")
+    if isinstance(error, dict):
+        return str(error.get("message", "")).strip()
+    return str(data.get("message", "")).strip()
+
+
+def _build_openrouter_client(host: str, timeout_seconds: int, api_key_env_var: str):
+    return OpenRouterClient(host, timeout_seconds, api_key_env_var)
+
+
 client = _build_ollama_client(
     OLLAMA_HOST,
     OLLAMA_TIMEOUT_SECONDS,
     OLLAMA_API_KEY_ENV_VAR,
 )
-_client_signature = _ollama_client_signature(
-    OLLAMA_HOST,
-    OLLAMA_TIMEOUT_SECONDS,
-    OLLAMA_API_KEY_ENV_VAR,
+_client_signature = (
+    MODEL_PROVIDER_OLLAMA,
+    *_ollama_client_signature(
+        OLLAMA_HOST,
+        OLLAMA_TIMEOUT_SECONDS,
+        OLLAMA_API_KEY_ENV_VAR,
+    ),
 )
 _client_timeout_seconds = OLLAMA_TIMEOUT_SECONDS
 _client_lock = threading.RLock()
@@ -470,26 +741,75 @@ def _close_ollama_client(ollama_client) -> None:
         close()
 
 
+def _close_model_client(model_client) -> None:
+    try:
+        close = getattr(model_client, "close", None)
+        if callable(close):
+            close()
+            return
+        _close_ollama_client(model_client)
+    except Exception:
+        pass
+
+
+def _runtime_client_signature(settings: dict) -> tuple:
+    provider = settings.get("provider", MODEL_PROVIDER_OLLAMA)
+    if provider == MODEL_PROVIDER_OPENROUTER:
+        return (
+            provider,
+            *_openrouter_client_signature(
+                settings.get("host", DEFAULT_OPENROUTER_HOST),
+                settings.get("timeout_seconds", DEFAULT_OPENROUTER_TIMEOUT_SECONDS),
+                settings.get("api_key_env_var", DEFAULT_OPENROUTER_API_KEY_ENV_VAR),
+            ),
+        )
+    return (
+        MODEL_PROVIDER_OLLAMA,
+        *_ollama_client_signature(
+            settings.get("host", DEFAULT_OLLAMA_HOST),
+            settings.get("timeout_seconds", DEFAULT_OLLAMA_TIMEOUT_SECONDS),
+            settings.get("api_key_env_var", DEFAULT_OLLAMA_API_KEY_ENV_VAR),
+        ),
+    )
+
+
+def _build_model_client(settings: dict):
+    if settings.get("provider") == MODEL_PROVIDER_OPENROUTER:
+        return _build_openrouter_client(
+            settings.get("host", DEFAULT_OPENROUTER_HOST),
+            settings.get("timeout_seconds", DEFAULT_OPENROUTER_TIMEOUT_SECONDS),
+            settings.get("api_key_env_var", DEFAULT_OPENROUTER_API_KEY_ENV_VAR),
+        )
+    return _build_ollama_client(
+        settings.get("host", DEFAULT_OLLAMA_HOST),
+        settings.get("timeout_seconds", DEFAULT_OLLAMA_TIMEOUT_SECONDS),
+        settings.get("api_key_env_var", DEFAULT_OLLAMA_API_KEY_ENV_VAR),
+    )
+
+
 def cancel_active_ollama_request() -> bool:
     global client, _client_signature, _client_timeout_seconds
 
     with _client_lock:
         old_client = client
-        try:
-            _close_ollama_client(old_client)
-        except Exception:
-            pass
-        client = _build_ollama_client(
-            OLLAMA_HOST,
-            OLLAMA_TIMEOUT_SECONDS,
-            OLLAMA_API_KEY_ENV_VAR,
-        )
-        _client_signature = _ollama_client_signature(
-            OLLAMA_HOST,
-            OLLAMA_TIMEOUT_SECONDS,
-            OLLAMA_API_KEY_ENV_VAR,
-        )
-        _client_timeout_seconds = OLLAMA_TIMEOUT_SECONDS
+        _close_model_client(old_client)
+        settings = {
+            "provider": MODEL_PROVIDER,
+            "host": OPENROUTER_HOST if MODEL_PROVIDER == MODEL_PROVIDER_OPENROUTER else OLLAMA_HOST,
+            "timeout_seconds": (
+                OPENROUTER_TIMEOUT_SECONDS
+                if MODEL_PROVIDER == MODEL_PROVIDER_OPENROUTER
+                else OLLAMA_TIMEOUT_SECONDS
+            ),
+            "api_key_env_var": (
+                OPENROUTER_API_KEY_ENV_VAR
+                if MODEL_PROVIDER == MODEL_PROVIDER_OPENROUTER
+                else OLLAMA_API_KEY_ENV_VAR
+            ),
+        }
+        client = _build_model_client(settings)
+        _client_signature = _runtime_client_signature(settings)
+        _client_timeout_seconds = settings["timeout_seconds"]
         return True
 
 
@@ -543,46 +863,113 @@ def _tool_call_proves_action(tool_name: str, output) -> bool:
     )
 
 
-def _resolve_ollama_runtime_settings(state=None, model_override: str | None = None) -> dict:
+def _provider_settings_from_state(state: dict, provider: str) -> dict:
+    model_provider = state.get("model_provider", {}) if isinstance(state, dict) else {}
+    if not isinstance(model_provider, dict):
+        model_provider = {}
+    if provider == MODEL_PROVIDER_OPENROUTER:
+        settings = model_provider.get("openrouter", {})
+        return settings if isinstance(settings, dict) else {}
+    settings = model_provider.get("ollama", state.get("ollama", {}))
+    return settings if isinstance(settings, dict) else {}
+
+
+def _default_provider_from_state(state: dict) -> str:
+    model_provider = state.get("model_provider", {}) if isinstance(state, dict) else {}
+    if not isinstance(model_provider, dict):
+        model_provider = {}
+    provider = str(model_provider.get("default", MODEL_PROVIDER_OLLAMA)).strip().lower()
+    if provider not in VALID_MODEL_PROVIDERS:
+        provider = MODEL_PROVIDER_OLLAMA
+    env_provider = os.getenv("YARBIS_MODEL_PROVIDER", "").strip().lower()
+    if env_provider in VALID_MODEL_PROVIDERS:
+        provider = env_provider
+    return provider
+
+
+def _resolve_model_runtime_settings(
+    state=None,
+    model_override: str | None = None,
+    provider_override: str | None = None,
+) -> dict:
     if state is None:
         state = load_state()
 
-    ollama = state.get("ollama", {}) if isinstance(state, dict) else {}
-    if not isinstance(ollama, dict):
-        ollama = {}
+    provider = _default_provider_from_state(state if isinstance(state, dict) else {})
+    cleaned_provider_override = str(provider_override or "").strip().lower()
+    if cleaned_provider_override:
+        provider = cleaned_provider_override if cleaned_provider_override in VALID_MODEL_PROVIDERS else provider
 
-    model = str(ollama.get("model", DEFAULT_MODEL)).strip() or DEFAULT_MODEL
+    provider_settings = _provider_settings_from_state(
+        state if isinstance(state, dict) else {},
+        provider,
+    )
+
+    if provider == MODEL_PROVIDER_OPENROUTER:
+        default_model = DEFAULT_OPENROUTER_MODEL
+        default_host = DEFAULT_OPENROUTER_HOST
+        default_api_key_env_var = DEFAULT_OPENROUTER_API_KEY_ENV_VAR
+        default_timeout = DEFAULT_OPENROUTER_TIMEOUT_SECONDS
+        fallback_env_name = "YARBIS_OPENROUTER_FALLBACK_MODELS"
+        host_env_name = "YARBIS_OPENROUTER_HOST"
+        api_key_env_name = "YARBIS_OPENROUTER_API_KEY_ENV_VAR"
+        timeout_env_name = "YARBIS_OPENROUTER_TIMEOUT_SECONDS"
+        host_normalizer = _normalize_openrouter_host
+    else:
+        provider = MODEL_PROVIDER_OLLAMA
+        default_model = DEFAULT_MODEL
+        default_host = DEFAULT_OLLAMA_HOST
+        default_api_key_env_var = DEFAULT_OLLAMA_API_KEY_ENV_VAR
+        default_timeout = DEFAULT_OLLAMA_TIMEOUT_SECONDS
+        fallback_env_name = "YARBIS_OLLAMA_FALLBACK_MODELS"
+        host_env_name = "YARBIS_OLLAMA_HOST"
+        api_key_env_name = "YARBIS_OLLAMA_API_KEY_ENV_VAR"
+        timeout_env_name = "YARBIS_OLLAMA_TIMEOUT_SECONDS"
+        host_normalizer = _normalize_host
+
+    model = str(provider_settings.get("model", default_model)).strip()
+    if not model and default_model:
+        model = default_model
     fallback_models = [
         str(candidate).strip()
-        for candidate in ollama.get("fallback_models", [])
+        for candidate in provider_settings.get("fallback_models", [])
         if str(candidate).strip()
     ]
-    host = _normalize_host(ollama.get("host", DEFAULT_OLLAMA_HOST))
+    host = host_normalizer(provider_settings.get("host", default_host))
     api_key_env_var = (
-        str(ollama.get("api_key_env_var", DEFAULT_OLLAMA_API_KEY_ENV_VAR)).strip()
-        or DEFAULT_OLLAMA_API_KEY_ENV_VAR
+        str(provider_settings.get("api_key_env_var", default_api_key_env_var)).strip()
+        or default_api_key_env_var
     )
     timeout_seconds = _normalize_timeout_seconds(
-        ollama.get("timeout_seconds", DEFAULT_OLLAMA_TIMEOUT_SECONDS),
+        provider_settings.get("timeout_seconds", default_timeout),
+        default=default_timeout,
     )
 
     env_model = os.getenv("YARBIS_MODEL", "").strip()
     if env_model:
         model = env_model
+    provider_model_env = (
+        "YARBIS_OPENROUTER_MODEL"
+        if provider == MODEL_PROVIDER_OPENROUTER
+        else "YARBIS_OLLAMA_MODEL"
+    )
+    env_provider_model = os.getenv(provider_model_env, "").strip()
+    if env_provider_model:
+        model = env_provider_model
 
-    env_fallback_models = _env_list("YARBIS_OLLAMA_FALLBACK_MODELS")
+    env_fallback_models = _env_list(fallback_env_name)
     if env_fallback_models:
         fallback_models = env_fallback_models
 
-    env_host = os.getenv("YARBIS_OLLAMA_HOST", "").strip()
+    env_host = os.getenv(host_env_name, "").strip()
     if env_host:
-        host = _normalize_host(env_host)
+        host = host_normalizer(env_host)
 
-    env_api_key_env_var = os.getenv("YARBIS_OLLAMA_API_KEY_ENV_VAR", "").strip()
+    env_api_key_env_var = os.getenv(api_key_env_name, "").strip()
     if env_api_key_env_var:
         api_key_env_var = env_api_key_env_var
 
-    env_timeout = os.getenv("YARBIS_OLLAMA_TIMEOUT_SECONDS", "").strip()
+    env_timeout = os.getenv(timeout_env_name, "").strip()
     if env_timeout:
         timeout_seconds = _normalize_timeout_seconds(env_timeout, timeout_seconds)
 
@@ -596,47 +983,72 @@ def _resolve_ollama_runtime_settings(state=None, model_override: str | None = No
             model_candidates.append(candidate)
 
     return {
-        "model": model_candidates[0] if model_candidates else DEFAULT_MODEL,
+        "provider": provider,
+        "provider_label": "OpenRouter" if provider == MODEL_PROVIDER_OPENROUTER else "Ollama",
+        "model": model_candidates[0] if model_candidates else model,
         "fallback_models": model_candidates[1:],
-        "models": model_candidates or [DEFAULT_MODEL],
+        "models": model_candidates,
         "host": host,
         "api_key_env_var": api_key_env_var,
         "timeout_seconds": timeout_seconds,
     }
 
 
-def _apply_ollama_runtime_settings(state=None, model_override: str | None = None):
-    global MODEL, OLLAMA_FALLBACK_MODELS, OLLAMA_HOST, OLLAMA_API_KEY_ENV_VAR
-    global OLLAMA_TIMEOUT_SECONDS, client, _client_signature, _client_timeout_seconds
+def _resolve_ollama_runtime_settings(state=None, model_override: str | None = None) -> dict:
+    return _resolve_model_runtime_settings(
+        state,
+        model_override=model_override,
+        provider_override=MODEL_PROVIDER_OLLAMA,
+    )
 
-    settings = _resolve_ollama_runtime_settings(state, model_override=model_override)
+
+def _apply_model_runtime_settings(
+    state=None,
+    model_override: str | None = None,
+    provider_override: str | None = None,
+):
+    global MODEL, MODEL_PROVIDER
+    global OLLAMA_FALLBACK_MODELS, OLLAMA_HOST, OLLAMA_API_KEY_ENV_VAR, OLLAMA_TIMEOUT_SECONDS
+    global OPENROUTER_FALLBACK_MODELS, OPENROUTER_HOST, OPENROUTER_API_KEY_ENV_VAR, OPENROUTER_TIMEOUT_SECONDS
+    global client, _client_signature, _client_timeout_seconds
+
+    settings = _resolve_model_runtime_settings(
+        state,
+        model_override=model_override,
+        provider_override=provider_override,
+    )
+    provider = settings["provider"]
+    MODEL_PROVIDER = provider
     MODEL = settings["model"]
-    OLLAMA_FALLBACK_MODELS = settings["fallback_models"]
-    OLLAMA_HOST = settings["host"]
-    OLLAMA_API_KEY_ENV_VAR = settings["api_key_env_var"]
-    OLLAMA_TIMEOUT_SECONDS = settings["timeout_seconds"]
+    if provider == MODEL_PROVIDER_OPENROUTER:
+        OPENROUTER_FALLBACK_MODELS = settings["fallback_models"]
+        OPENROUTER_HOST = settings["host"]
+        OPENROUTER_API_KEY_ENV_VAR = settings["api_key_env_var"]
+        OPENROUTER_TIMEOUT_SECONDS = settings["timeout_seconds"]
+    else:
+        OLLAMA_FALLBACK_MODELS = settings["fallback_models"]
+        OLLAMA_HOST = settings["host"]
+        OLLAMA_API_KEY_ENV_VAR = settings["api_key_env_var"]
+        OLLAMA_TIMEOUT_SECONDS = settings["timeout_seconds"]
 
     with _client_lock:
-        signature = _ollama_client_signature(
-            OLLAMA_HOST,
-            OLLAMA_TIMEOUT_SECONDS,
-            OLLAMA_API_KEY_ENV_VAR,
-        )
+        signature = _runtime_client_signature(settings)
         if _client_signature != signature:
-            try:
-                _close_ollama_client(client)
-            except Exception:
-                pass
-            client = _build_ollama_client(
-                OLLAMA_HOST,
-                OLLAMA_TIMEOUT_SECONDS,
-                OLLAMA_API_KEY_ENV_VAR,
-            )
+            _close_model_client(client)
+            client = _build_model_client(settings)
             _client_signature = signature
-            _client_timeout_seconds = OLLAMA_TIMEOUT_SECONDS
+            _client_timeout_seconds = settings["timeout_seconds"]
         current_client = client
 
     return settings, current_client
+
+
+def _apply_ollama_runtime_settings(state=None, model_override: str | None = None):
+    return _apply_model_runtime_settings(
+        state,
+        model_override=model_override,
+        provider_override=MODEL_PROVIDER_OLLAMA,
+    )
 
 
 SYSTEM_PROMPT = """
@@ -842,26 +1254,50 @@ def _is_timeout_error(exc: Exception) -> bool:
 
 
 def _format_chat_error(exc: Exception) -> str:
-    error_text = f"No pude consultar Ollama en este ciclo: {exc}"
-    host_text = OLLAMA_HOST or "local"
-    fallback_text = (
-        f" Fallbacks configurados: {', '.join(OLLAMA_FALLBACK_MODELS)}."
-        if OLLAMA_FALLBACK_MODELS
-        else ""
+    provider_label = "OpenRouter" if MODEL_PROVIDER == MODEL_PROVIDER_OPENROUTER else "Ollama"
+    host_value = OPENROUTER_HOST if MODEL_PROVIDER == MODEL_PROVIDER_OPENROUTER else OLLAMA_HOST
+    timeout_value = (
+        OPENROUTER_TIMEOUT_SECONDS
+        if MODEL_PROVIDER == MODEL_PROVIDER_OPENROUTER
+        else OLLAMA_TIMEOUT_SECONDS
     )
+    fallback_models = (
+        OPENROUTER_FALLBACK_MODELS
+        if MODEL_PROVIDER == MODEL_PROVIDER_OPENROUTER
+        else OLLAMA_FALLBACK_MODELS
+    )
+    error_text = f"No pude consultar {provider_label} en este ciclo: {exc}"
+    host_text = host_value or "local"
+    fallback_text = f" Fallbacks configurados: {', '.join(fallback_models)}." if fallback_models else ""
     cloud_hint = ""
-    if _host_uses_ollama_cloud(OLLAMA_HOST) and not os.getenv(OLLAMA_API_KEY_ENV_VAR, "").strip():
+    if MODEL_PROVIDER == MODEL_PROVIDER_OPENROUTER:
+        _api_key, key_source = _openrouter_api_key(OPENROUTER_API_KEY_ENV_VAR)
+        if not _api_key:
+            cloud_hint = f"\nDefine `{key_source}` para usar OpenRouter."
+    elif _host_uses_ollama_cloud(OLLAMA_HOST) and not os.getenv(OLLAMA_API_KEY_ENV_VAR, "").strip():
         cloud_hint = (
             f"\nPara Ollama Cloud directo, define `{OLLAMA_API_KEY_ENV_VAR}` "
             "o cambia el host a local y usa `ollama signin`."
         )
     if not _is_timeout_error(exc):
-        return f"{error_text}\nHost Ollama: {host_text}.{fallback_text}{cloud_hint}"
+        return f"{error_text}\nHost {provider_label}: {host_text}.{fallback_text}{cloud_hint}"
+
+    if MODEL_PROVIDER == MODEL_PROVIDER_OPENROUTER:
+        return (
+            f"{error_text}\n\n"
+            "Diagnostico: OpenRouter no respondio dentro del tiempo configurado "
+            f"({timeout_value}s) usando el modelo {MODEL} en {host_text}."
+            f"{fallback_text}\n"
+            "Para resolverlo, verifica la conexion, la API key, el host de OpenRouter "
+            "y aumenta el timeout desde la app, Telegram (`/timeout`) o con "
+            "`YARBIS_OPENROUTER_TIMEOUT_SECONDS`."
+            f"{cloud_hint}"
+        )
 
     return (
         f"{error_text}\n\n"
         "Diagnostico: Ollama no respondio dentro del tiempo configurado "
-        f"({OLLAMA_TIMEOUT_SECONDS}s) usando el modelo {MODEL} en {host_text}."
+        f"({timeout_value}s) usando el modelo {MODEL} en {host_text}."
         f"{fallback_text}\n"
         "Para resolverlo, verifica que Ollama este activo, calienta el modelo con "
         f"`ollama run {MODEL}`, aumenta el timeout desde la app, Telegram "
@@ -1000,7 +1436,8 @@ def _chat_with_model_candidates(
         raise RuntimeError("Todos los modelos configurados fallaron: " + " | ".join(errors))
     if last_exc is not None:
         raise last_exc
-    raise RuntimeError("No hay modelos Ollama configurados.")
+    provider_label = "OpenRouter" if MODEL_PROVIDER == MODEL_PROVIDER_OPENROUTER else "Ollama"
+    raise RuntimeError(f"No hay modelos {provider_label} configurados.")
 
 
 def _handle_stop_requested(state, used_tools: bool = False, action_tools_used: bool = False) -> dict:
@@ -1448,11 +1885,11 @@ def run_one_cycle(max_steps=None, model_override: str | None = None):
     if max_steps is None:
         max_steps = state["autonomy"]["max_steps_per_cycle"]
 
-    ollama_settings, ollama_client = _apply_ollama_runtime_settings(
+    model_settings, model_client = _apply_model_runtime_settings(
         state,
         model_override=model_override,
     )
-    model_candidates = ollama_settings["models"]
+    model_candidates = model_settings["models"]
     operation_id = _current_runtime_operation_id(state)
 
     print(f"\n=== CICLO {state['cycle_count']} ===")
@@ -1470,7 +1907,7 @@ def run_one_cycle(max_steps=None, model_override: str | None = None):
 
         try:
             response = _chat_with_model_candidates(
-                ollama_client,
+                model_client,
                 operation_id=operation_id,
                 model_candidates=model_candidates,
                 messages=build_messages(state),
@@ -1498,18 +1935,23 @@ def run_one_cycle(max_steps=None, model_override: str | None = None):
             used_tools = True
             print("Decidi usar herramientas.")
 
+            assistant_tool_calls = []
+            for index, tool_call in enumerate(assistant_message.tool_calls, start=1):
+                tool_call_id = str(getattr(tool_call, "id", "")).strip()
+                if not tool_call_id:
+                    tool_call_id = f"call_{state['cycle_count']}_{step}_{index}"
+                assistant_tool_calls.append({
+                    "id": tool_call_id,
+                    "function": {
+                        "name": tool_call.function.name,
+                        "arguments": tool_call.function.arguments,
+                    },
+                })
+
             assistant_tool_message = {
                 "role": "assistant",
                 "content": assistant_content,
-                "tool_calls": [
-                    {
-                        "function": {
-                            "name": tool_call.function.name,
-                            "arguments": tool_call.function.arguments,
-                        }
-                    }
-                    for tool_call in assistant_message.tool_calls
-                ],
+                "tool_calls": assistant_tool_calls,
             }
             state_transaction(
                 "record_assistant_tool_calls",
@@ -1517,7 +1959,7 @@ def run_one_cycle(max_steps=None, model_override: str | None = None):
             )
             state = load_state()
 
-            for tool_call in assistant_message.tool_calls:
+            for index, tool_call in enumerate(assistant_message.tool_calls, start=1):
                 state = load_state()
                 if _stop_requested_for_operation(state, operation_id=operation_id):
                     return _handle_stop_requested(
@@ -1528,6 +1970,9 @@ def run_one_cycle(max_steps=None, model_override: str | None = None):
 
                 tool_name = tool_call.function.name
                 raw_tool_args = tool_call.function.arguments
+                tool_call_id = str(getattr(tool_call, "id", "")).strip()
+                if not tool_call_id:
+                    tool_call_id = f"call_{state['cycle_count']}_{step}_{index}"
                 tool_args, tool_args_error = _normalize_tool_arguments(raw_tool_args)
 
                 print(f"\n> Ejecutando tool: {tool_name}")
@@ -1558,6 +2003,7 @@ def run_one_cycle(max_steps=None, model_override: str | None = None):
                     current_state["messages"].append({
                         "role": "tool",
                         "tool_name": tool_name,
+                        "tool_call_id": tool_call_id,
                         "content": str(tool_output),
                     })
                     current_state["last_result"] = str(tool_output)

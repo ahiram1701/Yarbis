@@ -9,10 +9,18 @@ from urllib.parse import urlparse
 
 import activity
 from memory import (
+    DEFAULT_MODEL_PROVIDER,
     DEFAULT_OLLAMA_API_KEY_ENV_VAR,
     DEFAULT_OLLAMA_HOST,
     DEFAULT_OLLAMA_MODEL,
     DEFAULT_OLLAMA_TIMEOUT_SECONDS,
+    DEFAULT_OPENROUTER_API_KEY_ENV_VAR,
+    DEFAULT_OPENROUTER_HOST,
+    DEFAULT_OPENROUTER_MODEL,
+    DEFAULT_OPENROUTER_TIMEOUT_SECONDS,
+    MODEL_PROVIDER_OLLAMA,
+    MODEL_PROVIDER_OPENROUTER,
+    VALID_MODEL_PROVIDERS,
     load_state,
 )
 
@@ -398,9 +406,7 @@ def health_status(force_service: bool = False) -> dict:
     if not isinstance(thinking, dict):
         thinking = {}
 
-    ollama = state.get("ollama", {}) if isinstance(state, dict) else {}
-    if not isinstance(ollama, dict):
-        ollama = {}
+    provider, active_model, ollama, openrouter = _model_provider_settings(state)
 
     service_status = _safe_service_status(force=force_service)
     telegram_enabled = bool(notifications.get("enabled", True) and "telegram" in channels)
@@ -440,6 +446,39 @@ def health_status(force_service: bool = False) -> dict:
             ),
             "timeout_seconds": ollama.get("timeout_seconds", DEFAULT_OLLAMA_TIMEOUT_SECONDS),
         },
+        "openrouter": {
+            "model": str(openrouter.get("model", DEFAULT_OPENROUTER_MODEL)).strip(),
+            "fallback_models": openrouter.get("fallback_models", []),
+            "host": str(openrouter.get("host", DEFAULT_OPENROUTER_HOST)).strip() or DEFAULT_OPENROUTER_HOST,
+            "api_key_env_var": (
+                str(openrouter.get("api_key_env_var", DEFAULT_OPENROUTER_API_KEY_ENV_VAR)).strip()
+                or DEFAULT_OPENROUTER_API_KEY_ENV_VAR
+            ),
+            "timeout_seconds": openrouter.get("timeout_seconds", DEFAULT_OPENROUTER_TIMEOUT_SECONDS),
+        },
+        "model_provider": {
+            "default": provider,
+            "label": _provider_label(provider),
+            "model": str(active_model.get("model", "")).strip()
+            or (DEFAULT_OLLAMA_MODEL if provider == MODEL_PROVIDER_OLLAMA else ""),
+            "fallback_models": active_model.get("fallback_models", []),
+            "host": str(active_model.get(
+                "host",
+                DEFAULT_OPENROUTER_HOST if provider == MODEL_PROVIDER_OPENROUTER else DEFAULT_OLLAMA_HOST,
+            )).strip(),
+            "api_key_env_var": str(active_model.get(
+                "api_key_env_var",
+                DEFAULT_OPENROUTER_API_KEY_ENV_VAR
+                if provider == MODEL_PROVIDER_OPENROUTER
+                else DEFAULT_OLLAMA_API_KEY_ENV_VAR,
+            )).strip(),
+            "timeout_seconds": active_model.get(
+                "timeout_seconds",
+                DEFAULT_OPENROUTER_TIMEOUT_SECONDS
+                if provider == MODEL_PROVIDER_OPENROUTER
+                else DEFAULT_OLLAMA_TIMEOUT_SECONDS,
+            ),
+        },
         "events_file": str(activity.EVENTS_FILE),
         "state_error": state_error,
     }
@@ -452,6 +491,7 @@ def format_health_status(status: dict | None = None) -> str:
     proactive = status.get("proactive", {})
     operation = status.get("operation", {})
     ollama = status.get("ollama", {})
+    model_provider = status.get("model_provider", {})
 
     if service.get("running"):
         account_text = f", cuenta {service.get('account_name')}" if service.get("account_name") else ""
@@ -478,12 +518,21 @@ def format_health_status(status: dict | None = None) -> str:
         if operation.get("active")
         else "sin operacion activa"
     )
-    fallback_models = ollama.get("fallback_models") if isinstance(ollama.get("fallback_models"), list) else []
+    model_details = model_provider if isinstance(model_provider, dict) and model_provider else ollama
+    provider_label = model_details.get("label") or "Ollama"
+    fallback_models = (
+        model_details.get("fallback_models")
+        if isinstance(model_details.get("fallback_models"), list)
+        else []
+    )
     fallback_text = f" + {len(fallback_models)} fallback(s)" if fallback_models else ""
+    host = model_details.get("host", "")
+    host_text = _ollama_host_label(host) if provider_label == "Ollama" else (host or DEFAULT_OPENROUTER_HOST)
+    model_name = model_details.get("model") or ("sin modelo" if provider_label == "OpenRouter" else DEFAULT_OLLAMA_MODEL)
     model_text = (
-        f"Ollama {ollama.get('model')}{fallback_text} "
-        f"@ {_ollama_host_label(ollama.get('host', ''))} "
-        f"({ollama.get('timeout_seconds')}s)"
+        f"{provider_label} {model_name}{fallback_text} "
+        f"@ {host_text} "
+        f"({model_details.get('timeout_seconds')}s)"
     )
 
     return " | ".join((service_text, telegram_text, pulse_text, operation_text, model_text))
@@ -508,6 +557,35 @@ def _dependency_available(module_name: str) -> bool:
 
 def _ollama_host_label(host: str) -> str:
     return str(host).strip() or "local"
+
+
+def _provider_label(provider: str) -> str:
+    return "OpenRouter" if provider == MODEL_PROVIDER_OPENROUTER else "Ollama"
+
+
+def _model_provider_settings(state: dict) -> tuple[str, dict, dict, dict]:
+    model_provider = state.get("model_provider", {}) if isinstance(state, dict) else {}
+    if not isinstance(model_provider, dict):
+        model_provider = {}
+    provider = str(model_provider.get("default", DEFAULT_MODEL_PROVIDER)).strip().lower()
+    if provider not in VALID_MODEL_PROVIDERS:
+        provider = DEFAULT_MODEL_PROVIDER
+
+    ollama = model_provider.get("ollama", state.get("ollama", {}))
+    if not isinstance(ollama, dict):
+        ollama = {}
+    openrouter = model_provider.get("openrouter", {})
+    if not isinstance(openrouter, dict):
+        openrouter = {}
+    active = openrouter if provider == MODEL_PROVIDER_OPENROUTER else ollama
+    return provider, active, ollama, openrouter
+
+
+def _openrouter_api_key_present(api_key_env_var: str) -> tuple[bool, str]:
+    if os.getenv("YARBIS_OPENROUTER_API_KEY", "").strip():
+        return True, "YARBIS_OPENROUTER_API_KEY"
+    cleaned_env_var = str(api_key_env_var).strip() or DEFAULT_OPENROUTER_API_KEY_ENV_VAR
+    return bool(os.getenv(cleaned_env_var, "").strip()), cleaned_env_var
 
 
 def _host_uses_ollama_cloud(host: str) -> bool:
@@ -599,51 +677,74 @@ def readiness_status(force: bool = False) -> dict:
         ".\\.venv\\Scripts\\python.exe -m pip install -r requirements.txt" if missing_modules else "",
     ))
 
-    ollama = state.get("ollama", {}) if isinstance(state, dict) else {}
-    if not isinstance(ollama, dict):
-        ollama = {}
-    model = str(ollama.get("model", DEFAULT_OLLAMA_MODEL)).strip() or DEFAULT_OLLAMA_MODEL
-    host = str(ollama.get("host", DEFAULT_OLLAMA_HOST)).strip()
-    api_key_env_var = (
-        str(ollama.get("api_key_env_var", DEFAULT_OLLAMA_API_KEY_ENV_VAR)).strip()
-        or DEFAULT_OLLAMA_API_KEY_ENV_VAR
-    )
-    if _host_uses_ollama_cloud(host):
-        api_key_present = bool(os.getenv(api_key_env_var, "").strip())
-        items.append(_readiness_item(
-            "ollama",
-            "Ollama",
-            "ok" if api_key_present else "missing",
-            f"Cloud directo: {model} @ {host}",
-            f"Define `{api_key_env_var}` con tu API key de Ollama Cloud." if not api_key_present else "",
-        ))
-    elif host:
-        items.append(_readiness_item(
-            "ollama",
-            "Ollama",
-            "warning",
-            f"Host remoto configurado: {model} @ {host}. No verifico modelos remotos aqui.",
-            "",
-        ))
-    else:
-        model_names, ollama_error = _ollama_model_names()
-        if ollama_error:
+    provider, active_model, ollama, openrouter = _model_provider_settings(state)
+    if provider == MODEL_PROVIDER_OPENROUTER:
+        model = str(openrouter.get("model", DEFAULT_OPENROUTER_MODEL)).strip()
+        host = str(openrouter.get("host", DEFAULT_OPENROUTER_HOST)).strip() or DEFAULT_OPENROUTER_HOST
+        api_key_env_var = (
+            str(openrouter.get("api_key_env_var", DEFAULT_OPENROUTER_API_KEY_ENV_VAR)).strip()
+            or DEFAULT_OPENROUTER_API_KEY_ENV_VAR
+        )
+        api_key_present, key_source = _openrouter_api_key_present(api_key_env_var)
+        if not model:
             items.append(_readiness_item(
-                "ollama",
-                "Ollama",
+                "model_provider",
+                "Modelo",
                 "missing",
-                ollama_error,
-                "Instala/inicia Ollama y ejecuta `ollama list`, o configura host cloud.",
+                f"OpenRouter activo @ {host}, pero falta elegir modelo.",
+                "Configura /openrouter MODELO o usa Modelo y timeout.",
             ))
         else:
-            model_ok = model in model_names
             items.append(_readiness_item(
-                "ollama",
-                "Ollama",
-                "ok" if model_ok else "missing",
-                f"Modelo configurado: {model}" if model_ok else f"No encontre el modelo configurado: {model}",
-                f"Ejecuta `ollama pull {model}` o cambia el modelo en Yarbis." if not model_ok else "",
+                "model_provider",
+                "Modelo",
+                "ok" if api_key_present else "missing",
+                f"OpenRouter activo: {model} @ {host}",
+                f"Define `{key_source}` con tu API key de OpenRouter." if not api_key_present else "",
             ))
+    else:
+        model = str(ollama.get("model", DEFAULT_OLLAMA_MODEL)).strip() or DEFAULT_OLLAMA_MODEL
+        host = str(ollama.get("host", DEFAULT_OLLAMA_HOST)).strip()
+        api_key_env_var = (
+            str(ollama.get("api_key_env_var", DEFAULT_OLLAMA_API_KEY_ENV_VAR)).strip()
+            or DEFAULT_OLLAMA_API_KEY_ENV_VAR
+        )
+        if _host_uses_ollama_cloud(host):
+            api_key_present = bool(os.getenv(api_key_env_var, "").strip())
+            items.append(_readiness_item(
+                "model_provider",
+                "Modelo",
+                "ok" if api_key_present else "missing",
+                f"Ollama Cloud directo: {model} @ {host}",
+                f"Define `{api_key_env_var}` con tu API key de Ollama Cloud." if not api_key_present else "",
+            ))
+        elif host:
+            items.append(_readiness_item(
+                "model_provider",
+                "Modelo",
+                "warning",
+                f"Ollama remoto configurado: {model} @ {host}. No verifico modelos remotos aqui.",
+                "",
+            ))
+        else:
+            model_names, ollama_error = _ollama_model_names()
+            if ollama_error:
+                items.append(_readiness_item(
+                    "model_provider",
+                    "Modelo",
+                    "missing",
+                    ollama_error,
+                    "Instala/inicia Ollama y ejecuta `ollama list`, o configura host cloud.",
+                ))
+            else:
+                model_ok = model in model_names
+                items.append(_readiness_item(
+                    "model_provider",
+                    "Modelo",
+                    "ok" if model_ok else "missing",
+                    f"Ollama activo: {model}" if model_ok else f"No encontre el modelo configurado: {model}",
+                    f"Ejecuta `ollama pull {model}` o cambia el modelo en Yarbis." if not model_ok else "",
+                ))
 
     goal = str(state.get("goal", "")).strip() if isinstance(state, dict) else ""
     items.append(_readiness_item(

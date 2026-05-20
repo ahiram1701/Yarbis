@@ -206,6 +206,50 @@ class SessionTestCase(unittest.TestCase):
         self.assertEqual(state["ollama"]["host"], "https://ollama.com")
         self.assertEqual(state["ollama"]["api_key_env_var"], "OLLAMA_API_KEY")
         self.assertEqual(state["ollama"]["timeout_seconds"], 900)
+        self.assertEqual(state["model_provider"]["default"], "ollama")
+        self.assertEqual(state["model_provider"]["ollama"], state["ollama"])
+
+    def test_update_openrouter_settings_persists_default_provider(self):
+        state_path = TEST_RUNTIME_DIR / "session_openrouter_state.json"
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+
+        with patch.object(memory, "STATE_FILE", state_path):
+            memory.save_state(memory.default_state())
+            result = session.update_openrouter_settings(
+                "openai/gpt-demo",
+                1200,
+                host="https://openrouter.ai/api/v1/chat/completions",
+                fallback_models="anthropic/claude-demo",
+                api_key_env_var="OPENROUTER_API_KEY",
+            )
+            state = memory.load_state()
+
+        self.assertIn("Configuracion de OpenRouter actualizada", result)
+        self.assertEqual(state["model_provider"]["default"], "openrouter")
+        self.assertEqual(state["model_provider"]["openrouter"]["model"], "openai/gpt-demo")
+        self.assertEqual(
+            state["model_provider"]["openrouter"]["fallback_models"],
+            ["anthropic/claude-demo"],
+        )
+        self.assertEqual(
+            state["model_provider"]["openrouter"]["host"],
+            "https://openrouter.ai/api/v1",
+        )
+        self.assertEqual(state["ollama"]["model"], memory.DEFAULT_OLLAMA_MODEL)
+
+    def test_update_model_provider_persists_without_losing_provider_settings(self):
+        state_path = TEST_RUNTIME_DIR / "session_provider_state.json"
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+
+        with patch.object(memory, "STATE_FILE", state_path):
+            memory.save_state(memory.default_state())
+            session.update_openrouter_settings("openai/gpt-demo", 900)
+            result = session.update_model_provider("ollama")
+            state = memory.load_state()
+
+        self.assertIn("Ollama", result)
+        self.assertEqual(state["model_provider"]["default"], "ollama")
+        self.assertEqual(state["model_provider"]["openrouter"]["model"], "openai/gpt-demo")
 
     def test_agent_wrappers_load_agent_lazily(self):
         class FakeAgent:

@@ -243,6 +243,77 @@ class TelegramInboxTestCase(unittest.TestCase):
             ["qwen3.5:2b", "gpt-oss:120b-cloud"],
         )
 
+    def test_process_telegram_update_changes_default_provider(self):
+        state_path = TEST_RUNTIME_DIR / "telegram_provider_state.json"
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+
+        seeded_state = memory.normalize_state({
+            "notifications": {
+                "enabled": True,
+                "channels": ["telegram"],
+                "telegram": {
+                    "bot_token": "bot-123",
+                    "chat_id": "123",
+                },
+            },
+        })
+        update = {
+            "update_id": 28,
+            "message": {
+                "chat": {"id": 123, "type": "private"},
+                "text": "/proveedor openrouter",
+            },
+        }
+
+        with patch.object(memory, "STATE_FILE", state_path):
+            memory.save_state(seeded_state)
+            with patch.object(telegram_inbox, "send_telegram_message", return_value=True) as send_mock:
+                telegram_inbox.process_telegram_update(update)
+            state = memory.load_state()
+
+        self.assertEqual(state["model_provider"]["default"], "openrouter")
+        self.assertIn("Proveedor por defecto actualizado", send_mock.call_args.args[0])
+
+    def test_process_telegram_update_configures_openrouter_and_timeout(self):
+        state_path = TEST_RUNTIME_DIR / "telegram_openrouter_state.json"
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+
+        seeded_state = memory.normalize_state({
+            "notifications": {
+                "enabled": True,
+                "channels": ["telegram"],
+                "telegram": {
+                    "bot_token": "bot-123",
+                    "chat_id": "123",
+                },
+            },
+        })
+        openrouter_update = {
+            "update_id": 29,
+            "message": {
+                "chat": {"id": 123, "type": "private"},
+                "text": "/openrouter openai/gpt-demo 15m",
+            },
+        }
+        timeout_update = {
+            "update_id": 30,
+            "message": {
+                "chat": {"id": 123, "type": "private"},
+                "text": "/timeout 1200",
+            },
+        }
+
+        with patch.object(memory, "STATE_FILE", state_path):
+            memory.save_state(seeded_state)
+            with patch.object(telegram_inbox, "send_telegram_message", return_value=True):
+                telegram_inbox.process_telegram_update(openrouter_update)
+                telegram_inbox.process_telegram_update(timeout_update)
+            state = memory.load_state()
+
+        self.assertEqual(state["model_provider"]["default"], "openrouter")
+        self.assertEqual(state["model_provider"]["openrouter"]["model"], "openai/gpt-demo")
+        self.assertEqual(state["model_provider"]["openrouter"]["timeout_seconds"], 1200)
+
     def test_activity_text_keeps_full_telegram_message(self):
         long_text = "mensaje largo " * 80
 

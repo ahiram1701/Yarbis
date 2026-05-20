@@ -438,6 +438,50 @@ class MemoryTestCase(unittest.TestCase):
         self.assertEqual(custom["ollama"]["api_key_env_var"], "OLLAMA_API_KEY")
         self.assertEqual(custom["ollama"]["timeout_seconds"], 900)
 
+    def test_normalize_state_migrates_legacy_ollama_to_model_provider(self):
+        normalized = memory.normalize_state({
+            "ollama": {
+                "model": "llama3.2:3b",
+                "fallback_models": ["qwen3.5:0.8b"],
+                "host": "https://ollama.com/api",
+                "timeout_seconds": 900,
+            },
+        })
+
+        self.assertEqual(normalized["model_provider"]["default"], "ollama")
+        self.assertEqual(normalized["model_provider"]["ollama"]["model"], "llama3.2:3b")
+        self.assertEqual(normalized["model_provider"]["ollama"]["host"], "https://ollama.com")
+        self.assertEqual(normalized["ollama"], normalized["model_provider"]["ollama"])
+
+    def test_normalize_state_sanitizes_openrouter_settings(self):
+        normalized = memory.normalize_state({
+            "model_provider": {
+                "default": "openrouter",
+                "openrouter": {
+                    "model": "openai/gpt-demo",
+                    "fallback_models": "anthropic/claude-demo, openai/gpt-demo",
+                    "host": "https://openrouter.ai/api/v1/chat/completions",
+                    "api_key_env_var": "OPENROUTER_API_KEY",
+                    "timeout_seconds": 1200,
+                },
+            },
+        })
+
+        self.assertEqual(normalized["model_provider"]["default"], "openrouter")
+        self.assertEqual(normalized["model_provider"]["openrouter"]["model"], "openai/gpt-demo")
+        self.assertEqual(
+            normalized["model_provider"]["openrouter"]["fallback_models"],
+            ["anthropic/claude-demo"],
+        )
+        self.assertEqual(
+            normalized["model_provider"]["openrouter"]["host"],
+            "https://openrouter.ai/api/v1",
+        )
+        self.assertEqual(
+            normalized["model_provider"]["openrouter"]["api_key_env_var"],
+            "OPENROUTER_API_KEY",
+        )
+
     def test_normalize_state_sanitizes_runtime_thinking_state(self):
         normalized = memory.normalize_state({
             "runtime": {

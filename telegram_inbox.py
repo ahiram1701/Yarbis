@@ -9,7 +9,15 @@ from pathlib import Path
 from typing import Any, Callable
 
 import activity
-from memory import DEFAULT_OLLAMA_CLOUD_HOST, load_state, state_transaction
+from memory import (
+    DEFAULT_OLLAMA_CLOUD_HOST,
+    DEFAULT_OPENROUTER_API_KEY_ENV_VAR,
+    DEFAULT_OPENROUTER_HOST,
+    MODEL_PROVIDER_OLLAMA,
+    MODEL_PROVIDER_OPENROUTER,
+    load_state,
+    state_transaction,
+)
 from secrets_redaction import redact_secrets
 from intent_text import (
     normalize_intent_text as _normalize_intent_text,
@@ -30,7 +38,9 @@ from power import (
 )
 from session import (
     SessionOperationBusy,
+    get_default_model_provider,
     get_ollama_settings,
+    get_openrouter_settings,
     get_status_text,
     has_pending_user_question,
     handle_note_text_request,
@@ -39,8 +49,10 @@ from session import (
     run_auto_with_output,
     run_cycle_with_output,
     submit_user_reply,
+    update_model_provider,
     update_goal,
     update_ollama_settings,
+    update_openrouter_settings,
 )
 
 _POLL_IDLE_SECONDS = 3
@@ -53,6 +65,7 @@ TELEGRAM_OPERATION_LABELS = {
     "Ciclo",
     "Detener",
     "Modelo",
+    "Proveedor",
     "Modo autonomo",
     "Pulso proactivo",
     "Respuesta",
@@ -364,13 +377,15 @@ def _help_text() -> str:
         "/run - ejecutar un ciclo\n"
         "/auto - ejecutar el modo autonomo con los ciclos por defecto\n"
         "/auto N - ejecutar N ciclos\n"
+        "/proveedor ollama|openrouter - elegir proveedor por defecto\n"
         "/modelo NOMBRE - cambiar el modelo de Ollama\n"
-        "/timeout SEGUNDOS - cambiar el timeout de Ollama\n"
+        "/timeout SEGUNDOS - cambiar el timeout del proveedor activo\n"
         "/ollama NOMBRE SEGUNDOS - cambiar modelo y timeout juntos\n"
         "/ollama host URL - cambiar host Ollama; vacio/local usa el daemon local\n"
         "/ollama cloud MODELO - usar Ollama Cloud directo con OLLAMA_API_KEY\n"
         "/ollama local MODELO - volver al daemon local\n"
         "/ollama fallback MODELO1, MODELO2 - modelos de respaldo\n"
+        "/openrouter MODELO - configurar OpenRouter y usarlo por defecto\n"
         "/notas - listar notas\n"
         "/nota crear Titulo | contenido | categoria - guardar una nota\n"
         "/nota ID - ver una nota\n"
@@ -516,6 +531,39 @@ def _ollama_settings_reply(prefix: str = "Configuracion actual de Ollama.") -> s
     )
 
 
+def _openrouter_settings_reply(prefix: str = "Configuracion actual de OpenRouter.") -> str:
+    settings = get_openrouter_settings()
+    fallback_models = settings.get("fallback_models", [])
+    fallback_text = ", ".join(fallback_models) if fallback_models else "-"
+    return (
+        f"{prefix}\n"
+        f"Modelo: {settings.get('model', '') or '-'}\n"
+        f"Fallbacks: {fallback_text}\n"
+        f"Host: {settings.get('host') or DEFAULT_OPENROUTER_HOST}\n"
+        f"API key env: {settings.get('api_key_env_var') or DEFAULT_OPENROUTER_API_KEY_ENV_VAR}\n"
+        f"Timeout: {settings.get('timeout_seconds', '')} segundos"
+    )
+
+
+def _provider_settings_reply() -> str:
+    provider = get_default_model_provider()
+    provider_text = "OpenRouter" if provider == MODEL_PROVIDER_OPENROUTER else "Ollama"
+    return (
+        f"Proveedor por defecto: {provider_text}.\n\n"
+        f"{_ollama_settings_reply()}\n\n"
+        f"{_openrouter_settings_reply()}"
+    )
+
+
+def _dispatch_provider_command(argument_text: str) -> str:
+    cleaned_provider = _normalize_intent_text(argument_text)
+    if not cleaned_provider:
+        return _provider_settings_reply() + "\n\nUso: /proveedor ollama o /proveedor openrouter"
+    if cleaned_provider not in {MODEL_PROVIDER_OLLAMA, MODEL_PROVIDER_OPENROUTER}:
+        return "Proveedor invalido. Usa /proveedor ollama o /proveedor openrouter."
+    return update_model_provider(cleaned_provider)
+
+
 def _dispatch_model_command(argument_text: str) -> str:
     settings = get_ollama_settings()
     cleaned_argument = str(argument_text).strip()
@@ -538,6 +586,20 @@ def _dispatch_timeout_command(argument_text: str) -> str:
     timeout_seconds, error = _parse_timeout_seconds_arg(argument_text)
     if error:
         return error
+
+    provider = get_default_model_provider()
+    if provider == MODEL_PROVIDER_OPENROUTER:
+        settings = get_openrouter_settings()
+        model = str(settings.get("model", "")).strip()
+        if not model:
+            return "Configura primero el modelo con /openrouter MODELO."
+        return update_openrouter_settings(
+            model,
+            timeout_seconds,
+            host=settings.get("host", DEFAULT_OPENROUTER_HOST),
+            fallback_models=settings.get("fallback_models", []),
+            api_key_env_var=settings.get("api_key_env_var", DEFAULT_OPENROUTER_API_KEY_ENV_VAR),
+        )
 
     settings = get_ollama_settings()
     return update_ollama_settings(settings["model"], timeout_seconds)
@@ -624,6 +686,75 @@ def _dispatch_ollama_command(argument_text: str) -> str:
         timeout_seconds = parsed_timeout
 
     return update_ollama_settings(model, timeout_seconds)
+
+
+def _dispatch_openrouter_command(argument_text: str) -> str:
+    cleaned_argument = str(argument_text).strip()
+    if not cleaned_argument:
+        return (
+            _openrouter_settings_reply()
+            + "\n\nUso: /openrouter openai/gpt-4o-mini, /openrouter host https://openrouter.ai/api/v1 "
+            "o /openrouter fallback modelo1, modelo2"
+        )
+
+    normalized_argument = _normalize_intent_text(cleaned_argument)
+    settings = get_openrouter_settings()
+    if normalized_argument.startswith("host "):
+        host = _first_argument_tail(cleaned_argument) or DEFAULT_OPENROUTER_HOST
+        model = str(settings.get("model", "")).strip()
+        if not model:
+            return "Configura primero el modelo con /openrouter MODELO."
+        return update_openrouter_settings(
+            model,
+            settings["timeout_seconds"],
+            host=host,
+            fallback_models=settings.get("fallback_models", []),
+            api_key_env_var=settings.get("api_key_env_var", DEFAULT_OPENROUTER_API_KEY_ENV_VAR),
+        )
+    if normalized_argument.startswith("fallback ") or normalized_argument.startswith("fallbacks "):
+        model = str(settings.get("model", "")).strip()
+        if not model:
+            return "Configura primero el modelo con /openrouter MODELO."
+        return update_openrouter_settings(
+            model,
+            settings["timeout_seconds"],
+            fallback_models=_first_argument_tail(cleaned_argument),
+            host=settings.get("host", DEFAULT_OPENROUTER_HOST),
+            api_key_env_var=settings.get("api_key_env_var", DEFAULT_OPENROUTER_API_KEY_ENV_VAR),
+        )
+    if normalized_argument.startswith("api key env") or normalized_argument.startswith("api_key_env"):
+        api_key_env_var = cleaned_argument.split()[-1].strip() if len(cleaned_argument.split()) > 1 else ""
+        if not api_key_env_var:
+            return "Uso: /openrouter api_key_env OPENROUTER_API_KEY"
+        model = str(settings.get("model", "")).strip()
+        if not model:
+            return "Configura primero el modelo con /openrouter MODELO."
+        return update_openrouter_settings(
+            model,
+            settings["timeout_seconds"],
+            api_key_env_var=api_key_env_var,
+            host=settings.get("host", DEFAULT_OPENROUTER_HOST),
+            fallback_models=settings.get("fallback_models", []),
+        )
+    if normalized_argument.startswith("timeout "):
+        return _dispatch_timeout_command(cleaned_argument.split(maxsplit=1)[1])
+
+    parts = cleaned_argument.split()
+    model = parts[0]
+    timeout_seconds = settings["timeout_seconds"]
+    if len(parts) > 1:
+        parsed_timeout, error = _parse_timeout_seconds_arg(" ".join(parts[1:]))
+        if error:
+            return "Uso: /openrouter openai/gpt-4o-mini 900"
+        timeout_seconds = parsed_timeout
+
+    return update_openrouter_settings(
+        model,
+        timeout_seconds,
+        host=settings.get("host", DEFAULT_OPENROUTER_HOST),
+        fallback_models=settings.get("fallback_models", []),
+        api_key_env_var=settings.get("api_key_env_var", DEFAULT_OPENROUTER_API_KEY_ENV_VAR),
+    )
 
 
 def _natural_power_intent(text: str) -> str:
@@ -981,8 +1112,10 @@ def _job_label_for_message(text: str) -> str:
         return "Modo autonomo"
     if _is_stop_command(command):
         return "Detener"
-    if command in {"/modelo", "/model", "/ollama"}:
+    if command in {"/modelo", "/model", "/ollama", "/openrouter"}:
         return "Modelo"
+    if command in {"/proveedor", "/provider"}:
+        return "Proveedor"
     if command in {"/timeout", "/tiempo"}:
         return "Timeout"
     if command in {"/goal", "/objetivo"}:
@@ -1025,8 +1158,14 @@ def _dispatch_command(command_text: str, chat_id: str = "") -> str:
     if command in {"/timeout", "/tiempo"}:
         return _dispatch_timeout_command(argument_text)
 
+    if command in {"/proveedor", "/provider"}:
+        return _dispatch_provider_command(argument_text)
+
     if command == "/ollama":
         return _dispatch_ollama_command(argument_text)
+
+    if command == "/openrouter":
+        return _dispatch_openrouter_command(argument_text)
 
     note_reply = handle_note_text_request(cleaned_text)
     if note_reply is not None:
