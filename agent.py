@@ -1824,6 +1824,48 @@ def _looks_like_environment_claim(text: str) -> bool:
     return any(_has_normalized_phrase(normalized, term) for term in environment_terms)
 
 
+def _strip_unsolicited_environment_claims(text: str) -> str:
+    kept_lines = []
+    for line in str(text).splitlines():
+        if not _looks_like_environment_claim(line):
+            kept_lines.append(line)
+            continue
+
+        sentences = re.split(r"(?<=[.!?])\s+", line.strip())
+        kept_sentences = [
+            sentence.strip()
+            for sentence in sentences
+            if sentence.strip() and not _looks_like_environment_claim(sentence)
+        ]
+        if kept_sentences:
+            kept_lines.append(" ".join(kept_sentences))
+
+    rendered = "\n".join(kept_lines).strip()
+    rendered = re.sub(r"\n{3,}", "\n\n", rendered)
+    return rendered
+
+
+def _contextual_recovery_message(state) -> str:
+    open_tasks = [
+        task
+        for task in state.get("tasks", [])
+        if isinstance(task, dict) and task.get("status") in {"pending", "in_progress", "blocked"}
+    ]
+    if open_tasks:
+        task = open_tasks[0]
+        title = str(task.get("title", "")).strip() or "la siguiente tarea"
+        return f"Tengo una tarea abierta: {title}. Dime si quieres que continue con esa o ajusto el rumbo."
+
+    goal = str(state.get("goal", "")).strip()
+    if goal:
+        return (
+            f"Objetivo activo: {goal}. Puedo avanzar desde ahi; dime si quieres que ejecute "
+            "un ciclo, cree un plan o atienda una accion concreta."
+        )
+
+    return "Dime la accion concreta que quieres que ejecute y avanzo con el contexto disponible."
+
+
 def _looks_like_non_actionable_prompt(text: str) -> bool:
     return (
         _looks_like_choice_menu(text)
@@ -1899,10 +1941,15 @@ def _should_retry_rejected_final(
 
 def _safe_rejected_final_message(state, text: str) -> str:
     if _looks_like_environment_claim(text) and not _last_user_asked_about_environment(state):
-        return (
-            "No tengo una tarea concreta registrada. Dime que quieres que haga y "
-            "avanzare sin inventar datos del equipo."
-        )
+        sanitized = _strip_unsolicited_environment_claims(text)
+        if (
+            sanitized
+            and not _looks_like_environment_claim(sanitized)
+            and not _looks_like_non_actionable_prompt(sanitized)
+            and not _looks_like_unsolicited_self_intro_or_capabilities(sanitized)
+        ):
+            return sanitized
+        return _contextual_recovery_message(state)
 
     if _last_user_authorized_action(state) or _last_user_requested_action(state):
         return (

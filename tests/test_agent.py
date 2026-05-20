@@ -805,7 +805,7 @@ class AgentTestCase(unittest.TestCase):
             for message in state["messages"]
         ))
 
-    def test_run_one_cycle_sanitizes_unsolicited_intro_without_retrying_it(self):
+    def test_run_one_cycle_sanitizes_unsolicited_intro_without_repeating_fixed_hardware_message(self):
         state_path = TEST_RUNTIME_DIR / "agent_unsolicited_intro_retry_state.json"
         state_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -844,14 +844,16 @@ class AgentTestCase(unittest.TestCase):
 
         self.assertEqual(result["status"], "final")
         self.assertEqual(chat_mock.call_count, 1)
-        self.assertIn("sin inventar datos del equipo", result["content"])
+        self.assertIn("accion concreta", result["content"])
+        self.assertNotIn("No tengo una tarea concreta registrada", result["content"])
+        self.assertNotIn("sin inventar datos del equipo", result["content"])
         self.assertNotIn("Ryzen", printed_text)
         self.assertFalse(any(
             agent.NON_ACTIONABLE_RETRY_MESSAGE in message.get("content", "")
             for message in state["messages"]
         ))
 
-    def test_run_one_cycle_replaces_unsolicited_hardware_when_retry_is_unavailable(self):
+    def test_run_one_cycle_replaces_unsolicited_hardware_with_contextual_prompt(self):
         state_path = TEST_RUNTIME_DIR / "agent_unsolicited_hardware_fallback_state.json"
         state_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -882,7 +884,43 @@ class AgentTestCase(unittest.TestCase):
         self.assertEqual(result["status"], "final")
         self.assertNotIn("Ryzen", result["content"])
         self.assertNotIn("Ryzen", printed_text)
-        self.assertIn("sin inventar datos del equipo", state["last_result"])
+        self.assertIn("accion concreta", state["last_result"])
+        self.assertNotIn("No tengo una tarea concreta registrada", state["last_result"])
+        self.assertNotIn("sin inventar datos del equipo", state["last_result"])
+
+    def test_run_one_cycle_preserves_useful_text_when_stripping_unsolicited_hardware(self):
+        state_path = TEST_RUNTIME_DIR / "agent_hardware_strip_preserves_useful_text_state.json"
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+
+        seeded_state = memory.normalize_state({
+            "messages": [
+                {"role": "user", "content": "Haz un plan para mejorar Yarbis"},
+            ],
+        })
+        response = SimpleNamespace(
+            message=SimpleNamespace(
+                content=(
+                    "Tu Windows 11 con CPU AMD Ryzen esta listo. "
+                    "Propongo empezar revisando los puntos mas lentos del ciclo."
+                ),
+                tool_calls=[],
+            )
+        )
+
+        with patch.object(memory, "STATE_FILE", state_path):
+            memory.save_state(seeded_state)
+            with patch.object(agent.client, "chat", return_value=response):
+                with patch.object(agent, "_print_output") as print_mock:
+                    result = agent.run_one_cycle(max_steps=1)
+                    state = memory.load_state()
+
+        printed_text = "\n".join(call.args[0] for call in print_mock.call_args_list)
+
+        self.assertEqual(result["status"], "final")
+        self.assertIn("Propongo empezar", result["content"])
+        self.assertNotIn("Ryzen", result["content"])
+        self.assertNotIn("Windows 11", printed_text)
+        self.assertNotIn("No tengo una tarea concreta registrada", state["last_result"])
 
     def test_run_one_cycle_marks_pending_input_when_questions_appear_in_list(self):
         state_path = TEST_RUNTIME_DIR / "agent_embedded_questions_state.json"
