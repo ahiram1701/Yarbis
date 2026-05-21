@@ -74,6 +74,7 @@ DEFAULT_OPENROUTER_MODEL = ""
 DEFAULT_OPENROUTER_HOST = "https://openrouter.ai/api/v1"
 DEFAULT_OPENROUTER_API_KEY_ENV_VAR = "OPENROUTER_API_KEY"
 DEFAULT_OPENROUTER_TIMEOUT_SECONDS = DEFAULT_OLLAMA_TIMEOUT_SECONDS
+MAX_OLLAMA_API_KEY_CHARS = 512
 MAX_OPENROUTER_API_KEY_CHARS = 512
 MIN_OLLAMA_TIMEOUT_SECONDS = 1
 MAX_OLLAMA_TIMEOUT_SECONDS = 24 * 60 * 60
@@ -204,6 +205,7 @@ def default_state():
             "model": DEFAULT_OLLAMA_MODEL,
             "fallback_models": [],
             "host": DEFAULT_OLLAMA_HOST,
+            "api_key": "",
             "api_key_env_var": DEFAULT_OLLAMA_API_KEY_ENV_VAR,
             "timeout_seconds": DEFAULT_OLLAMA_TIMEOUT_SECONDS,
         },
@@ -213,6 +215,7 @@ def default_state():
                 "model": DEFAULT_OLLAMA_MODEL,
                 "fallback_models": [],
                 "host": DEFAULT_OLLAMA_HOST,
+                "api_key": "",
                 "api_key_env_var": DEFAULT_OLLAMA_API_KEY_ENV_VAR,
                 "timeout_seconds": DEFAULT_OLLAMA_TIMEOUT_SECONDS,
             },
@@ -703,6 +706,7 @@ def _normalize_ollama(ollama):
         host_char_limit=MAX_OLLAMA_HOST_CHARS,
         api_key_env_char_limit=MAX_OLLAMA_API_KEY_ENV_VAR_CHARS,
         fallback_limit=MAX_OLLAMA_FALLBACK_MODELS,
+        api_key_char_limit=MAX_OLLAMA_API_KEY_CHARS,
         strip_ollama_api=True,
     )
 

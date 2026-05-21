@@ -207,8 +207,18 @@ class MemoryTestCase(unittest.TestCase):
                     },
                 },
             },
+            "ollama": {
+                "model": "gpt-oss:120b",
+                "host": "https://ollama.com",
+                "api_key": "ollama-secret",
+            },
             "model_provider": {
                 "default": "openrouter",
+                "ollama": {
+                    "model": "gpt-oss:120b",
+                    "host": "https://ollama.com",
+                    "api_key": "ollama-secret",
+                },
                 "openrouter": {
                     "model": "openai/gpt-demo",
                     "api_key": "openrouter-secret",
@@ -244,6 +254,14 @@ class MemoryTestCase(unittest.TestCase):
         self.assertEqual(package["state"]["notifications"]["telegram"]["bot_token"], "[redacted]")
         self.assertEqual(
             package["state"]["notifications"]["telegram"]["pending_power_confirmation"]["token"],
+            "[redacted]",
+        )
+        self.assertEqual(
+            package["state"]["model_provider"]["ollama"]["api_key"],
+            "[redacted]",
+        )
+        self.assertEqual(
+            package["state"]["ollama"]["api_key"],
             "[redacted]",
         )
         self.assertEqual(
@@ -470,6 +488,7 @@ class MemoryTestCase(unittest.TestCase):
                 "model": "llama3.2:3b",
                 "fallback_models": "gpt-oss:120b-cloud, qwen3.5:0.8b",
                 "host": "https://ollama.com/api",
+                "api_key": "ollama-secret",
                 "api_key_env_var": "OLLAMA_API_KEY",
                 "timeout_seconds": 900,
             },
@@ -486,6 +505,7 @@ class MemoryTestCase(unittest.TestCase):
             ["gpt-oss:120b-cloud", "qwen3.5:0.8b"],
         )
         self.assertEqual(custom["ollama"]["host"], "https://ollama.com")
+        self.assertEqual(custom["ollama"]["api_key"], "ollama-secret")
         self.assertEqual(custom["ollama"]["api_key_env_var"], "OLLAMA_API_KEY")
         self.assertEqual(custom["ollama"]["timeout_seconds"], 900)
 
@@ -495,6 +515,7 @@ class MemoryTestCase(unittest.TestCase):
                 "model": "llama3.2:3b",
                 "fallback_models": ["qwen3.5:0.8b"],
                 "host": "https://ollama.com/api",
+                "api_key": "ollama-secret",
                 "timeout_seconds": 900,
             },
         })
@@ -502,6 +523,7 @@ class MemoryTestCase(unittest.TestCase):
         self.assertEqual(normalized["model_provider"]["default"], "ollama")
         self.assertEqual(normalized["model_provider"]["ollama"]["model"], "llama3.2:3b")
         self.assertEqual(normalized["model_provider"]["ollama"]["host"], "https://ollama.com")
+        self.assertEqual(normalized["model_provider"]["ollama"]["api_key"], "ollama-secret")
         self.assertEqual(normalized["ollama"], normalized["model_provider"]["ollama"])
 
     def test_normalize_state_sanitizes_openrouter_settings(self):

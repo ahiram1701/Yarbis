@@ -563,12 +563,14 @@ class OllamaSettingsDialog(ThemedDialog):
             else "Base compatible con OpenAI. Normalmente https://openrouter.ai/api/v1."
         )
         self.api_help_var.set(
-            "La API key directa se guarda localmente; env sigue siendo util para overrides."
-            if provider == MODEL_PROVIDER_OPENROUTER
-            else ""
+            (
+                "La API key directa se guarda localmente; env sigue siendo util para overrides."
+                if provider == MODEL_PROVIDER_OPENROUTER
+                else "Se usa con Ollama Cloud; para Ollama local puedes dejarla vacia."
+            )
         )
         self.api_key_entry.configure(
-            state="normal" if provider == MODEL_PROVIDER_OPENROUTER else "disabled"
+            state="normal"
         )
         self._loaded_provider = provider
 
@@ -661,6 +663,7 @@ class OllamaSettingsDialog(ThemedDialog):
             or os.getenv("YARBIS_OLLAMA_TIMEOUT_SECONDS")
             or os.getenv("YARBIS_OLLAMA_HOST")
             or os.getenv("YARBIS_OLLAMA_FALLBACK_MODELS")
+            or os.getenv("YARBIS_OLLAMA_API_KEY")
             or os.getenv("YARBIS_OLLAMA_API_KEY_ENV_VAR")
             or os.getenv("YARBIS_OPENROUTER_API_KEY")
             or os.getenv("YARBIS_OPENROUTER_HOST")

@@ -471,6 +471,7 @@ Modelo y ejecucion:
 $env:YARBIS_MODEL="qwen3.5:2b"
 $env:YARBIS_OLLAMA_FALLBACK_MODELS="gpt-oss:120b-cloud"
 $env:YARBIS_OLLAMA_HOST=""
+$env:YARBIS_OLLAMA_API_KEY="ollama_cloud_api_key"
 $env:YARBIS_OLLAMA_API_KEY_ENV_VAR="OLLAMA_API_KEY"
 $env:OLLAMA_API_KEY="ollama_cloud_api_key"
 $env:YARBIS_OLLAMA_TIMEOUT_SECONDS="900"
@@ -485,11 +486,11 @@ Si aparece `No pude consultar Ollama en este ciclo: timed out`, primero confirma
 Para usar cloud hay dos rutas:
 
 - Mantener host local vacio, ejecutar `ollama signin` y usar modelos con sufijo cloud, por ejemplo `gpt-oss:120b-cloud`. Esta es la forma mas comoda para mezclar modelo local primario y fallback cloud desde el mismo daemon.
-- Configurar `YARBIS_OLLAMA_HOST="https://ollama.com"` o poner ese host en la app, definir `OLLAMA_API_KEY`, y usar el nombre cloud directo, por ejemplo `gpt-oss:120b`.
+- Configurar `YARBIS_OLLAMA_HOST="https://ollama.com"` o poner ese host en la app, pegar la API key directa en Yarbis o definir `YARBIS_OLLAMA_API_KEY`/`OLLAMA_API_KEY`, y usar el nombre cloud directo, por ejemplo `gpt-oss:120b`.
 
 Para usar OpenRouter, selecciona `openrouter` en `Modelo y timeout`, define un modelo en formato de proveedor/ruta y pega tu API key en `API key directa`. Tambien puedes usar `YARBIS_OPENROUTER_API_KEY` o la variable indicada en `api_key_env_var` (por defecto `OPENROUTER_API_KEY`). El readiness valida API key y modelo, y no ejecuta `ollama list` cuando OpenRouter es el proveedor activo.
 
-Para uso diario, prefiere el boton `Modelo y timeout` de la app o los comandos de Telegram `/proveedor`, `/modelo`, `/timeout`, `/ollama` y `/openrouter`. Las variables `YARBIS_MODEL_PROVIDER`, `YARBIS_MODEL`, `YARBIS_OLLAMA_FALLBACK_MODELS`, `YARBIS_OLLAMA_HOST`, `YARBIS_OLLAMA_API_KEY_ENV_VAR`, `YARBIS_OLLAMA_TIMEOUT_SECONDS`, `YARBIS_OPENROUTER_HOST`, `YARBIS_OPENROUTER_API_KEY` y `YARBIS_OPENROUTER_TIMEOUT_SECONDS` quedan como override avanzado y, si estan definidas, pueden tener prioridad sobre lo guardado en la interfaz o Telegram.
+Para uso diario, prefiere el boton `Modelo y timeout` de la app o los comandos de Telegram `/proveedor`, `/modelo`, `/timeout`, `/ollama` y `/openrouter`. Las variables `YARBIS_MODEL_PROVIDER`, `YARBIS_MODEL`, `YARBIS_OLLAMA_FALLBACK_MODELS`, `YARBIS_OLLAMA_HOST`, `YARBIS_OLLAMA_API_KEY`, `YARBIS_OLLAMA_API_KEY_ENV_VAR`, `YARBIS_OLLAMA_TIMEOUT_SECONDS`, `YARBIS_OPENROUTER_HOST`, `YARBIS_OPENROUTER_API_KEY` y `YARBIS_OPENROUTER_TIMEOUT_SECONDS` quedan como override avanzado y, si estan definidas, pueden tener prioridad sobre lo guardado en la interfaz o Telegram.
 
 Servicio proactivo, como override avanzado de la configuracion guardada:
 

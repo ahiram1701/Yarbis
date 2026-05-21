@@ -157,6 +157,22 @@ class AgentTestCase(unittest.TestCase):
             headers={"Authorization": "Bearer test-key"},
         )
 
+    def test_builds_cloud_ollama_client_with_stored_direct_api_key(self):
+        with patch.dict(agent.os.environ, {}, clear=True):
+            with patch.object(agent, "Client", return_value=object()) as client_cls:
+                agent._build_ollama_client(
+                    "https://ollama.com/api",
+                    30,
+                    "OLLAMA_API_KEY",
+                    api_key="stored-ollama-key",
+                )
+
+        client_cls.assert_called_once_with(
+            timeout=30,
+            host="https://ollama.com",
+            headers={"Authorization": "Bearer stored-ollama-key"},
+        )
+
     def test_run_one_cycle_tries_fallback_model_after_primary_failure(self):
         state_path = TEST_RUNTIME_DIR / "agent_ollama_fallback_state.json"
         state_path.parent.mkdir(parents=True, exist_ok=True)

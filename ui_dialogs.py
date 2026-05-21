@@ -1,6 +1,7 @@
 import os
 import tkinter as tk
 from tkinter import messagebox, simpledialog, ttk
+from urllib.parse import urlparse
 
 from memory import (
     DEFAULT_OLLAMA_API_KEY_ENV_VAR,
@@ -17,6 +18,11 @@ from memory import (
 )
 from session import delete_note_text, save_note_text
 from ui_theme import THEMES, style_listbox_widget, style_scrollbar_widget, style_text_widget
+
+
+def _host_uses_ollama_cloud(host: str) -> bool:
+    hostname = urlparse(str(host).strip()).hostname or ""
+    return hostname.lower().endswith("ollama.com")
 
 
 class ThemedDialog(simpledialog.Dialog):
@@ -284,8 +290,8 @@ class FirstRunDialog(ThemedDialog):
             self.api_key_entry.configure(state="normal")
             self.api_help_var.set("OpenRouter puede usar la API key directa guardada localmente.")
         else:
-            self.api_key_entry.configure(state="disabled")
-            self.api_help_var.set("Ollama local no requiere API key directa.")
+            self.api_key_entry.configure(state="normal")
+            self.api_help_var.set("Se usa con Ollama Cloud; en local puedes dejarla vacia.")
         self._loaded_provider = provider
 
     def _provider_changed(self, _event=None):
@@ -458,6 +464,15 @@ class FirstRunDialog(ThemedDialog):
                 messagebox.showwarning(
                     "Yarbis",
                     f"Pega una API key directa o define {api_key_env_var} para usar OpenRouter.",
+                    parent=self,
+                )
+                return False
+        elif _host_uses_ollama_cloud(settings["host"]):
+            api_key_env_var = settings["api_key_env_var"] or DEFAULT_OLLAMA_API_KEY_ENV_VAR
+            if not settings["api_key"] and not os.getenv(api_key_env_var, "").strip():
+                messagebox.showwarning(
+                    "Yarbis",
+                    f"Pega una API key directa o define {api_key_env_var} para usar Ollama Cloud.",
                     parent=self,
                 )
                 return False

@@ -441,6 +441,7 @@ class ServiceManagerTestCase(unittest.TestCase):
             "ollama": {
                 "model": "gpt-oss:120b",
                 "host": "https://ollama.com",
+                "api_key": "stored-ollama-key",
                 "api_key_env_var": "OLLAMA_API_KEY",
                 "timeout_seconds": 900,
             },
@@ -457,7 +458,7 @@ class ServiceManagerTestCase(unittest.TestCase):
                     return_value=status(installed=False, running=False),
                 ):
                     with patch.object(service_manager.shutil, "which", return_value="dotnet"):
-                        with patch.dict(service_manager.os.environ, {"OLLAMA_API_KEY": "test-key"}, clear=False):
+                        with patch.dict(service_manager.os.environ, {}, clear=True):
                             result = service_manager.readiness_status(force=True)
                             rendered = service_manager.format_readiness_status(result, compact=False)
 

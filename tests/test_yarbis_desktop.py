@@ -30,6 +30,41 @@ class _DesktopStub:
 
 
 class YarbisDesktopTestCase(unittest.TestCase):
+    def test_first_run_setup_can_store_direct_ollama_api_key(self):
+        state_path = TEST_RUNTIME_DIR / "desktop_first_run_ollama_key_state.json"
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+
+        settings = {
+            "goal": "Usar Yarbis con Ollama Cloud",
+            "name": "",
+            "role": "",
+            "provider": memory.MODEL_PROVIDER_OLLAMA,
+            "model": "gpt-oss:120b",
+            "fallback_models": "qwen3.5:2b",
+            "timeout_seconds": "1200",
+            "host": "https://ollama.com",
+            "api_key": "ollama-secret",
+            "api_key_env_var": "OLLAMA_API_KEY",
+            "run_first_cycle": False,
+            "open_notifications": False,
+            "install_service": False,
+        }
+
+        with patch.object(memory, "STATE_FILE", state_path):
+            memory.save_state(memory.default_state())
+            with patch.object(yarbis_desktop, "readiness_status", return_value={}):
+                app = _DesktopStub()
+                yarbis_desktop.YarbisDesktop._apply_first_run_setup(app, settings)
+            state = memory.load_state()
+
+        self.assertEqual(state["model_provider"]["default"], memory.MODEL_PROVIDER_OLLAMA)
+        self.assertEqual(state["ollama"]["model"], "gpt-oss:120b")
+        self.assertEqual(state["ollama"]["fallback_models"], ["qwen3.5:2b"])
+        self.assertEqual(state["ollama"]["host"], "https://ollama.com")
+        self.assertEqual(state["ollama"]["api_key"], "ollama-secret")
+        self.assertEqual(state["model_provider"]["ollama"]["api_key"], "ollama-secret")
+        self.assertTrue(any("API key: guardada" in body for _title, body in app.activities))
+
     def test_first_run_setup_can_select_openrouter_and_store_direct_api_key(self):
         state_path = TEST_RUNTIME_DIR / "desktop_first_run_openrouter_state.json"
         state_path.parent.mkdir(parents=True, exist_ok=True)

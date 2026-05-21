@@ -68,6 +68,11 @@ class MemoryTransferTestCase(unittest.TestCase):
                     },
                 },
             },
+            "ollama": {
+                "model": "gpt-oss:120b",
+                "host": "https://ollama.com",
+                "api_key": f"ollama-{label}",
+            },
             "model_provider": {
                 "default": "openrouter",
                 "openrouter": {
@@ -101,6 +106,14 @@ class MemoryTransferTestCase(unittest.TestCase):
             memory_transfer.REDACTED_VALUE,
         )
         self.assertEqual(
+            package["state"]["ollama"]["api_key"],
+            memory_transfer.REDACTED_VALUE,
+        )
+        self.assertEqual(
+            package["state"]["model_provider"]["ollama"]["api_key"],
+            memory_transfer.REDACTED_VALUE,
+        )
+        self.assertEqual(
             package["state"]["model_provider"]["openrouter"]["api_key"],
             memory_transfer.REDACTED_VALUE,
         )
@@ -119,6 +132,8 @@ class MemoryTransferTestCase(unittest.TestCase):
         self.assertEqual(package["redacted_paths"], [])
         self.assertEqual(package["state"]["notifications"]["ntfy"]["token"], "ntfy-Secreto")
         self.assertEqual(package["state"]["notifications"]["telegram"]["bot_token"], "123456:Secreto")
+        self.assertEqual(package["state"]["ollama"]["api_key"], "ollama-Secreto")
+        self.assertEqual(package["state"]["model_provider"]["ollama"]["api_key"], "ollama-Secreto")
         self.assertEqual(package["state"]["model_provider"]["openrouter"]["api_key"], "openrouter-Secreto")
 
     def test_replace_import_preserves_destination_secrets_for_redacted_backup(self):
@@ -133,6 +148,8 @@ class MemoryTransferTestCase(unittest.TestCase):
                 destination["notifications"]["ntfy"]["token"] = "ntfy-destino"
                 destination["notifications"]["telegram"]["bot_token"] = "123456:destino"
                 destination["notifications"]["telegram"]["pending_power_confirmation"]["token"] = "pending-destino"
+                destination["ollama"]["api_key"] = "ollama-destino"
+                destination["model_provider"]["ollama"]["api_key"] = "ollama-destino"
                 memory.save_state(destination)
 
                 result = memory_transfer.import_backup(backup["path"], mode="replace")
@@ -148,6 +165,8 @@ class MemoryTransferTestCase(unittest.TestCase):
             state["notifications"]["telegram"]["pending_power_confirmation"]["token"],
             "pending-destino",
         )
+        self.assertEqual(state["ollama"]["api_key"], "ollama-destino")
+        self.assertEqual(state["model_provider"]["ollama"]["api_key"], "ollama-destino")
         self.assertTrue(any(item["id"] == result["safety_backup"]["id"] for item in saved_backups))
 
     def test_merge_import_combines_memories_and_preserves_local_configuration(self):

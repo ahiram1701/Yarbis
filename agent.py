@@ -188,6 +188,7 @@ OLLAMA_API_KEY_ENV_VAR = (
     os.getenv("YARBIS_OLLAMA_API_KEY_ENV_VAR", DEFAULT_OLLAMA_API_KEY_ENV_VAR).strip()
     or DEFAULT_OLLAMA_API_KEY_ENV_VAR
 )
+OLLAMA_API_KEY = ""
 OPENROUTER_FALLBACK_MODELS = []
 OPENROUTER_HOST = os.getenv("YARBIS_OPENROUTER_HOST", DEFAULT_OPENROUTER_HOST).strip() or DEFAULT_OPENROUTER_HOST
 OPENROUTER_API_KEY = ""
@@ -257,24 +258,44 @@ def _host_uses_ollama_cloud(host: str) -> bool:
     return hostname.lower().endswith("ollama.com")
 
 
-def _ollama_client_signature(host: str, timeout_seconds: int, api_key_env_var: str) -> tuple:
+def _ollama_api_key(host: str, api_key_env_var: str, configured_api_key: str = "") -> tuple[str, str]:
     cleaned_host = _normalize_host(host)
     cleaned_env_var = str(api_key_env_var).strip() or DEFAULT_OLLAMA_API_KEY_ENV_VAR
-    api_key = os.getenv(cleaned_env_var, "").strip() if _host_uses_ollama_cloud(cleaned_host) else ""
-    return cleaned_host, int(timeout_seconds), cleaned_env_var, api_key
+    if not _host_uses_ollama_cloud(cleaned_host):
+        return "", cleaned_env_var
+    direct_key = os.getenv("YARBIS_OLLAMA_API_KEY", "").strip()
+    if direct_key:
+        return direct_key, "YARBIS_OLLAMA_API_KEY"
+    saved_key = str(configured_api_key).strip()
+    if saved_key:
+        return saved_key, "API key guardada en Yarbis"
+    return os.getenv(cleaned_env_var, "").strip(), cleaned_env_var
 
 
-def _build_ollama_client(host: str, timeout_seconds: int, api_key_env_var: str):
-    cleaned_host, _timeout_seconds, cleaned_env_var, api_key = _ollama_client_signature(
+def _ollama_client_signature(
+    host: str,
+    timeout_seconds: int,
+    api_key_env_var: str,
+    api_key: str = "",
+) -> tuple:
+    cleaned_host = _normalize_host(host)
+    cleaned_env_var = str(api_key_env_var).strip() or DEFAULT_OLLAMA_API_KEY_ENV_VAR
+    resolved_api_key, key_source = _ollama_api_key(cleaned_host, cleaned_env_var, api_key)
+    return cleaned_host, int(timeout_seconds), cleaned_env_var, key_source, resolved_api_key
+
+
+def _build_ollama_client(host: str, timeout_seconds: int, api_key_env_var: str, api_key: str = ""):
+    cleaned_host, _timeout_seconds, cleaned_env_var, key_source, resolved_api_key = _ollama_client_signature(
         host,
         timeout_seconds,
         api_key_env_var,
+        api_key,
     )
     kwargs = {"timeout": timeout_seconds}
     if cleaned_host:
         kwargs["host"] = cleaned_host
-    if api_key:
-        kwargs["headers"] = {"Authorization": f"Bearer {api_key}"}
+    if resolved_api_key:
+        kwargs["headers"] = {"Authorization": f"Bearer {resolved_api_key}"}
     return Client(**kwargs)
 
 
@@ -588,6 +609,7 @@ client = _build_ollama_client(
     OLLAMA_HOST,
     OLLAMA_TIMEOUT_SECONDS,
     OLLAMA_API_KEY_ENV_VAR,
+    OLLAMA_API_KEY,
 )
 _client_signature = (
     MODEL_PROVIDER_OLLAMA,
@@ -595,6 +617,7 @@ _client_signature = (
         OLLAMA_HOST,
         OLLAMA_TIMEOUT_SECONDS,
         OLLAMA_API_KEY_ENV_VAR,
+        OLLAMA_API_KEY,
     ),
 )
 _client_timeout_seconds = OLLAMA_TIMEOUT_SECONDS
@@ -867,6 +890,7 @@ def _runtime_client_signature(settings: dict) -> tuple:
             settings.get("host", DEFAULT_OLLAMA_HOST),
             settings.get("timeout_seconds", DEFAULT_OLLAMA_TIMEOUT_SECONDS),
             settings.get("api_key_env_var", DEFAULT_OLLAMA_API_KEY_ENV_VAR),
+            settings.get("api_key", ""),
         ),
     )
 
@@ -883,6 +907,7 @@ def _build_model_client(settings: dict):
         settings.get("host", DEFAULT_OLLAMA_HOST),
         settings.get("timeout_seconds", DEFAULT_OLLAMA_TIMEOUT_SECONDS),
         settings.get("api_key_env_var", DEFAULT_OLLAMA_API_KEY_ENV_VAR),
+        settings.get("api_key", ""),
     )
 
 
@@ -900,7 +925,11 @@ def cancel_active_ollama_request() -> bool:
                 if MODEL_PROVIDER == MODEL_PROVIDER_OPENROUTER
                 else OLLAMA_TIMEOUT_SECONDS
             ),
-            "api_key": OPENROUTER_API_KEY,
+            "api_key": (
+                OPENROUTER_API_KEY
+                if MODEL_PROVIDER == MODEL_PROVIDER_OPENROUTER
+                else OLLAMA_API_KEY
+            ),
             "api_key_env_var": (
                 OPENROUTER_API_KEY_ENV_VAR
                 if MODEL_PROVIDER == MODEL_PROVIDER_OPENROUTER
@@ -1112,7 +1141,7 @@ def _apply_model_runtime_settings(
     provider_override: str | None = None,
 ):
     global MODEL, MODEL_PROVIDER
-    global OLLAMA_FALLBACK_MODELS, OLLAMA_HOST, OLLAMA_API_KEY_ENV_VAR, OLLAMA_TIMEOUT_SECONDS
+    global OLLAMA_FALLBACK_MODELS, OLLAMA_HOST, OLLAMA_API_KEY, OLLAMA_API_KEY_ENV_VAR, OLLAMA_TIMEOUT_SECONDS
     global OPENROUTER_FALLBACK_MODELS, OPENROUTER_HOST, OPENROUTER_API_KEY
     global OPENROUTER_API_KEY_ENV_VAR, OPENROUTER_TIMEOUT_SECONDS
     global client, _client_signature, _client_timeout_seconds
@@ -1134,6 +1163,7 @@ def _apply_model_runtime_settings(
     else:
         OLLAMA_FALLBACK_MODELS = settings["fallback_models"]
         OLLAMA_HOST = settings["host"]
+        OLLAMA_API_KEY = settings.get("api_key", "")
         OLLAMA_API_KEY_ENV_VAR = settings["api_key_env_var"]
         OLLAMA_TIMEOUT_SECONDS = settings["timeout_seconds"]
 
@@ -1411,11 +1441,13 @@ def _format_chat_error(exc: Exception) -> str:
                 "agrega fallbacks de OpenRouter o vuelve temporalmente a Ollama."
                 f"{fallback_hint}{cloud_hint}"
             )
-    elif _host_uses_ollama_cloud(OLLAMA_HOST) and not os.getenv(OLLAMA_API_KEY_ENV_VAR, "").strip():
-        cloud_hint = (
-            f"\nPara Ollama Cloud directo, define `{OLLAMA_API_KEY_ENV_VAR}` "
-            "o cambia el host a local y usa `ollama signin`."
-        )
+    elif _host_uses_ollama_cloud(OLLAMA_HOST):
+        _api_key, key_source = _ollama_api_key(OLLAMA_HOST, OLLAMA_API_KEY_ENV_VAR, OLLAMA_API_KEY)
+        if not _api_key:
+            cloud_hint = (
+                f"\nPara Ollama Cloud directo, pega una API key en la app, define `{key_source}` "
+                "o cambia el host a local y usa `ollama signin`."
+            )
     if not _is_timeout_error(exc):
         return f"{error_text}\nHost {provider_label}: {host_text}.{fallback_text}{cloud_hint}"
 

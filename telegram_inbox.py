@@ -526,6 +526,7 @@ def _ollama_settings_reply(prefix: str = "Configuracion actual de Ollama.") -> s
         f"Modelo: {settings.get('model', '')}\n"
         f"Fallbacks: {fallback_text}\n"
         f"Host: {settings.get('host') or 'local'}\n"
+        f"API key: {'guardada' if settings.get('api_key') else 'no configurada'}\n"
         f"API key env: {settings.get('api_key_env_var', 'OLLAMA_API_KEY')}\n"
         f"Timeout: {settings.get('timeout_seconds', '')} segundos"
     )

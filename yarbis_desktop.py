@@ -1331,6 +1331,7 @@ class YarbisDesktop(tk.Tk):
                     settings["timeout_seconds"],
                     host=settings.get("host", ""),
                     fallback_models=settings.get("fallback_models", ""),
+                    api_key=settings.get("api_key", ""),
                     api_key_env_var=settings.get("api_key_env_var", ""),
                 ))
             if settings.get("name") or settings.get("role"):
@@ -1539,7 +1540,6 @@ class YarbisDesktop(tk.Tk):
             if provider == MODEL_PROVIDER_OPENROUTER:
                 result = update_openrouter_settings(**dialog.result)
             else:
-                dialog.result.pop("api_key", None)
                 result = update_ollama_settings(**dialog.result)
             provider_result = update_model_provider(provider)
             result = f"{provider_result}\n{result}"

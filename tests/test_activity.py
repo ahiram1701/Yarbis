@@ -145,13 +145,14 @@ class ActivityTestCase(unittest.TestCase):
                 "ntfy": {"token": secret},
             },
             "model_provider": {
+                "ollama": {"api_key": "ollama-secret-value"},
                 "openrouter": {"api_key": "openrouter-secret-value"},
             },
         }
         events_path.write_text(
             events_path.read_text(encoding="utf-8").replace(
                 "Respuesta ntfy-secret-value",
-                "Respuesta ntfy-secret-value openrouter-secret-value",
+                "Respuesta ntfy-secret-value openrouter-secret-value ollama-secret-value",
             ),
             encoding="utf-8",
         )
@@ -163,6 +164,7 @@ class ActivityTestCase(unittest.TestCase):
         self.assertEqual(load_mock.call_count, 1)
         self.assertNotIn(secret, rendered)
         self.assertNotIn("openrouter-secret-value", rendered)
+        self.assertNotIn("ollama-secret-value", rendered)
         self.assertIn("[redacted]", rendered)
 
     def test_emit_event_trims_large_events_file(self):

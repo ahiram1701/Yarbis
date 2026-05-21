@@ -193,6 +193,7 @@ class SessionTestCase(unittest.TestCase):
                 900,
                 host="https://ollama.com/api",
                 fallback_models="gpt-oss:120b-cloud, qwen3.5:0.8b",
+                api_key="ollama-secret",
                 api_key_env_var="OLLAMA_API_KEY",
             )
             state = memory.load_state()
@@ -204,10 +205,12 @@ class SessionTestCase(unittest.TestCase):
             ["gpt-oss:120b-cloud", "qwen3.5:0.8b"],
         )
         self.assertEqual(state["ollama"]["host"], "https://ollama.com")
+        self.assertEqual(state["ollama"]["api_key"], "ollama-secret")
         self.assertEqual(state["ollama"]["api_key_env_var"], "OLLAMA_API_KEY")
         self.assertEqual(state["ollama"]["timeout_seconds"], 900)
         self.assertEqual(state["model_provider"]["default"], "ollama")
         self.assertEqual(state["model_provider"]["ollama"], state["ollama"])
+        self.assertIn("API key: guardada", result)
 
     def test_update_openrouter_settings_persists_default_provider(self):
         state_path = TEST_RUNTIME_DIR / "session_openrouter_state.json"

@@ -440,6 +440,7 @@ def health_status(force_service: bool = False) -> dict:
             "model": str(ollama.get("model", DEFAULT_OLLAMA_MODEL)).strip() or DEFAULT_OLLAMA_MODEL,
             "fallback_models": ollama.get("fallback_models", []),
             "host": str(ollama.get("host", DEFAULT_OLLAMA_HOST)).strip(),
+            "api_key_configured": bool(str(ollama.get("api_key", "")).strip()),
             "api_key_env_var": (
                 str(ollama.get("api_key_env_var", DEFAULT_OLLAMA_API_KEY_ENV_VAR)).strip()
                 or DEFAULT_OLLAMA_API_KEY_ENV_VAR
@@ -591,6 +592,15 @@ def _openrouter_api_key_present(api_key_env_var: str, api_key: str = "") -> tupl
     return bool(os.getenv(cleaned_env_var, "").strip()), cleaned_env_var
 
 
+def _ollama_api_key_present(api_key_env_var: str, api_key: str = "") -> tuple[bool, str]:
+    if os.getenv("YARBIS_OLLAMA_API_KEY", "").strip():
+        return True, "YARBIS_OLLAMA_API_KEY"
+    if str(api_key).strip():
+        return True, "API key guardada en Yarbis"
+    cleaned_env_var = str(api_key_env_var).strip() or DEFAULT_OLLAMA_API_KEY_ENV_VAR
+    return bool(os.getenv(cleaned_env_var, "").strip()), cleaned_env_var
+
+
 def _host_uses_ollama_cloud(host: str) -> bool:
     hostname = urlparse(str(host).strip()).hostname or ""
     return hostname.lower().endswith("ollama.com")
@@ -716,13 +726,16 @@ def readiness_status(force: bool = False) -> dict:
             or DEFAULT_OLLAMA_API_KEY_ENV_VAR
         )
         if _host_uses_ollama_cloud(host):
-            api_key_present = bool(os.getenv(api_key_env_var, "").strip())
+            api_key_present, key_source = _ollama_api_key_present(
+                api_key_env_var,
+                ollama.get("api_key", ""),
+            )
             items.append(_readiness_item(
                 "model_provider",
                 "Modelo",
                 "ok" if api_key_present else "missing",
                 f"Ollama Cloud directo: {model} @ {host}",
-                f"Define `{api_key_env_var}` con tu API key de Ollama Cloud." if not api_key_present else "",
+                f"Define `{key_source}` o pega una API key directa en Yarbis." if not api_key_present else "",
             ))
         elif host:
             items.append(_readiness_item(
