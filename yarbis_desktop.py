@@ -1,4 +1,5 @@
 import ctypes
+import json
 import sys
 import queue
 import subprocess
@@ -29,6 +30,7 @@ from pc_context_runtime import (
 )
 from session import (
     add_task_text,
+    clear_abandoned_runtime_operation,
     clear_activity_for_first_run_if_needed,
     coding_apply_proposal_text,
     coding_discard_proposal_text,
@@ -39,7 +41,6 @@ from session import (
     get_local_context_settings,
     get_model_provider_settings,
     get_notification_settings,
-    get_ollama_settings,
     get_service_proactive_settings,
     get_status_text,
     get_ui_theme,
@@ -51,12 +52,9 @@ from session import (
     memory_protection_status_text,
     open_assisted_social_post_text,
     request_stop_current_operation,
-    run_auto_with_output,
-    run_cycle_with_output,
     run_startup_self_analysis,
     save_note_text,
     send_test_notification,
-    submit_user_reply,
     social_accounts_overview_text,
     start_social_oauth_text,
     update_local_context_settings,
@@ -177,7 +175,50 @@ _STATE_SYNC_INTERVAL_MS = 1000
 _HEAVY_STATE_SYNC_INTERVAL_MS = 5000
 _CONTEXT_HELPER_SYNC_MS = 10000
 _WORKSPACE_ROOT = Path(__file__).resolve().parent
+_RUNTIME_DIR = _WORKSPACE_ROOT / ".yarbis_runtime"
 _UPDATE_SCRIPT = _WORKSPACE_ROOT / "scripts" / "update.ps1"
+_DESKTOP_SESSION_OPERATION_SCRIPT = r"""
+import json
+import sys
+
+from session import run_auto_with_output, run_cycle_with_output, submit_user_reply
+
+request_path = sys.argv[1]
+response_path = sys.argv[2]
+
+with open(request_path, "r", encoding="utf-8") as file:
+    request_payload = json.load(file)
+
+operation = str(request_payload.get("operation", "")).strip()
+payload = request_payload.get("payload", {})
+if not isinstance(payload, dict):
+    payload = {}
+
+try:
+    if operation == "run_cycle":
+        result = run_cycle_with_output()
+    elif operation == "run_auto":
+        result = run_auto_with_output(cycles=payload.get("cycles"))
+    elif operation == "submit_user_reply":
+        result = submit_user_reply(str(payload.get("reply_text", "")))
+    else:
+        raise ValueError(f"Operacion de escritorio desconocida: {operation}")
+except Exception as exc:
+    response_payload = {
+        "ok": False,
+        "error": str(exc),
+        "error_type": type(exc).__name__,
+    }
+    exit_code = 1
+else:
+    response_payload = {"ok": True, "result": str(result)}
+    exit_code = 0
+
+with open(response_path, "w", encoding="utf-8") as file:
+    json.dump(response_payload, file, ensure_ascii=False)
+
+sys.exit(exit_code)
+"""
 
 
 def _powershell_single_quote(value: str | Path) -> str:
@@ -221,6 +262,75 @@ def _launch_update_process(needs_admin: bool) -> None:
         stderr=subprocess.DEVNULL,
         creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
     )
+
+
+def _python_console_path() -> Path:
+    candidate = _WORKSPACE_ROOT / ".venv" / "Scripts" / "python.exe"
+    if candidate.exists():
+        return candidate
+
+    executable = Path(sys.executable)
+    if executable.name.lower() == "pythonw.exe":
+        python = executable.with_name("python.exe")
+        if python.exists():
+            return python
+    return executable
+
+
+def _session_operation_subprocess(operation: str, **payload) -> str:
+    _RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
+    token = f"{time.time_ns()}-{threading.get_ident()}"
+    request_path = _RUNTIME_DIR / f"desktop-operation-{token}.request.json"
+    response_path = _RUNTIME_DIR / f"desktop-operation-{token}.response.json"
+    request_payload = {
+        "operation": str(operation).strip(),
+        "payload": payload,
+    }
+
+    try:
+        with open(request_path, "w", encoding="utf-8") as file:
+            json.dump(request_payload, file, ensure_ascii=False)
+
+        completed = subprocess.run(
+            [
+                str(_python_console_path()),
+                "-c",
+                _DESKTOP_SESSION_OPERATION_SCRIPT,
+                str(request_path),
+                str(response_path),
+            ],
+            cwd=str(_WORKSPACE_ROOT),
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+
+        response_payload = {}
+        if response_path.exists():
+            with open(response_path, "r", encoding="utf-8") as file:
+                response_payload = json.load(file)
+
+        if completed.returncode == 0 and response_payload.get("ok"):
+            return str(response_payload.get("result", ""))
+
+        error_text = str(response_payload.get("error", "")).strip()
+        if not error_text:
+            error_text = "\n".join(
+                part.strip()
+                for part in (completed.stdout, completed.stderr)
+                if str(part).strip()
+            )
+        raise RuntimeError(error_text or f"Operacion {operation} termino con exit={completed.returncode}.")
+    finally:
+        for path in (request_path, response_path):
+            try:
+                path.unlink()
+            except FileNotFoundError:
+                pass
+            except OSError:
+                pass
 
 
 class YarbisDesktop(tk.Tk):
@@ -269,6 +379,7 @@ class YarbisDesktop(tk.Tk):
 
         self._build_ui()
         self._apply_theme(self.current_theme_name)
+        self._clear_abandoned_runtime_operation()
         self.refresh_state_view()
         self.after(250, self._maybe_show_first_run)
         self.after(150, self._poll_worker_queue)
@@ -1015,6 +1126,8 @@ class YarbisDesktop(tk.Tk):
         return thinking_active, thinking_label, started_at
 
     def _sync_runtime_thinking(self, state: dict | None = None) -> bool:
+        if self._clear_abandoned_runtime_operation():
+            state = load_state()
         state = state or load_state()
         thinking_active, thinking_label, started_at = self._runtime_thinking_from_state(state)
         if thinking_active:
@@ -1028,6 +1141,12 @@ class YarbisDesktop(tk.Tk):
         if "runtime" in self._busy_sources:
             self._set_busy(False, source="runtime")
         return False
+
+    def _clear_abandoned_runtime_operation(self) -> bool:
+        try:
+            return bool(clear_abandoned_runtime_operation())
+        except Exception:
+            return False
 
     def _show_thinking_blocked_message(self, label: str):
         messagebox.showinfo(
@@ -1236,7 +1355,7 @@ class YarbisDesktop(tk.Tk):
             return
 
         if settings.get("run_first_cycle"):
-            self._start_background_job("Primer ciclo", run_cycle_with_output)
+            self._start_background_job("Primer ciclo", _session_operation_subprocess, "run_cycle")
 
     def _sync_state_view(self):
         self.refresh_state_view(force_heavy=False)
@@ -1360,7 +1479,7 @@ class YarbisDesktop(tk.Tk):
     def _run_cycle(self):
         if self._show_pending_user_question():
             return
-        self._start_background_job("Ciclo", run_cycle_with_output)
+        self._start_background_job("Ciclo", _session_operation_subprocess, "run_cycle")
 
     def _run_auto(self):
         if self._show_pending_user_question():
@@ -1376,7 +1495,7 @@ class YarbisDesktop(tk.Tk):
         )
         if cycles is None:
             return
-        self._start_background_job("Modo autonomo", run_auto_with_output, cycles)
+        self._start_background_job("Modo autonomo", _session_operation_subprocess, "run_auto", cycles=cycles)
 
     def _stop_current_operation(self):
         result = request_stop_current_operation(source="desktop")
@@ -1973,7 +2092,12 @@ class YarbisDesktop(tk.Tk):
                 return
 
         self.reply_text.delete("1.0", "end")
-        self._start_background_job("Respuesta", submit_user_reply, reply_text)
+        self._start_background_job(
+            "Respuesta",
+            _session_operation_subprocess,
+            "submit_user_reply",
+            reply_text=reply_text,
+        )
 
     def _clear_activity(self):
         activity.clear_activity_history()

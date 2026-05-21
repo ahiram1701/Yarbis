@@ -28,6 +28,9 @@ DEFAULT_MEMORY_PROTECTION_CONFIG_FILE = WORKSPACE_ROOT / ".yarbis_runtime" / "me
 MEMORY_PROTECTION_CONFIG_FILE = DEFAULT_MEMORY_PROTECTION_CONFIG_FILE
 STATE_LOCK = threading.RLock()
 _STATE_TRANSACTION_LOCAL = threading.local()
+_MEMORY_PROTECTION_MAINTENANCE_LOCK = threading.Lock()
+_MEMORY_PROTECTION_MAINTENANCE_THREAD = None
+MEMORY_PROTECTION_MAINTENANCE_ASYNC = True
 _STATE_LOCK_POLL_SECONDS = 0.05
 _STATE_LOCK_TIMEOUT_SECONDS = 10.0
 DEFAULT_GOAL = ""
@@ -2016,33 +2019,22 @@ def _apply_memory_protection_after_save_unlocked(normalized: dict) -> dict:
 
     backup_result = None
     last_error = ""
+    maintenance_job = None
     try:
+        local_backups_dir = _memory_backups_dir()
         backup_result = memory_backup.write_backup_package(
             protected_state,
-            backups_dir=_memory_backups_dir(),
+            backups_dir=local_backups_dir,
             normalizer=None,
             include_secrets=False,
             reason=memory_backup.AUTO_BACKUP_REASON,
         )
-        mirror_dir = settings.get("mirror_dir", "")
-        if mirror_dir:
-            try:
-                memory_backup.mirror_backup(backup_result["path"], mirror_dir)
-            except memory_backup.MemoryBackupError as exc:
-                last_error = str(exc)
-
-        retention = settings.get("retention", {})
-        memory_backup.prune_auto_backups(
-            backups_dir=_memory_backups_dir(),
-            max_auto_backups=retention.get("max_auto_backups", DEFAULT_MEMORY_PROTECTION_MAX_AUTO_BACKUPS),
-            keep_daily_days=retention.get("keep_daily_days", DEFAULT_MEMORY_PROTECTION_KEEP_DAILY_DAYS),
-        )
-        if mirror_dir:
-            memory_backup.prune_auto_backups(
-                backups_dir=Path(mirror_dir).expanduser(),
-                max_auto_backups=retention.get("max_auto_backups", DEFAULT_MEMORY_PROTECTION_MAX_AUTO_BACKUPS),
-                keep_daily_days=retention.get("keep_daily_days", DEFAULT_MEMORY_PROTECTION_KEEP_DAILY_DAYS),
-            )
+        maintenance_job = {
+            "backup_path": backup_result["path"],
+            "local_backups_dir": local_backups_dir,
+            "mirror_dir": settings.get("mirror_dir", ""),
+            "retention": dict(settings.get("retention", {})),
+        }
     except memory_backup.MemoryBackupError as exc:
         last_error = str(exc)
 
@@ -2056,7 +2048,104 @@ def _apply_memory_protection_after_save_unlocked(normalized: dict) -> dict:
         )
         _write_memory_protection_runtime_config(protected_state["memory_protection"])
 
+    if maintenance_job:
+        _schedule_memory_protection_maintenance(**maintenance_job)
+
     return protected_state
+
+
+def _record_memory_protection_maintenance_error(error_text: str) -> None:
+    rendered_error = str(error_text).strip()[:MAX_MEMORY_PROTECTION_ERROR_CHARS]
+    if not rendered_error:
+        return
+
+    try:
+        def mutate(state):
+            memory_protection = state.setdefault("memory_protection", {})
+            memory_protection["last_error"] = rendered_error
+
+        state_transaction("memory_protection_maintenance_error", mutate, create_backup=False)
+    except Exception:
+        pass
+
+
+def _run_memory_protection_maintenance(
+    *,
+    backup_path: str | Path,
+    local_backups_dir: str | Path,
+    mirror_dir: str = "",
+    retention: dict | None = None,
+) -> None:
+    settings = retention if isinstance(retention, dict) else {}
+    max_auto_backups = settings.get("max_auto_backups", DEFAULT_MEMORY_PROTECTION_MAX_AUTO_BACKUPS)
+    keep_daily_days = settings.get("keep_daily_days", DEFAULT_MEMORY_PROTECTION_KEEP_DAILY_DAYS)
+    rendered_mirror_dir = str(mirror_dir).strip()
+
+    try:
+        if rendered_mirror_dir:
+            memory_backup.mirror_backup(backup_path, rendered_mirror_dir)
+
+        memory_backup.prune_auto_backups(
+            backups_dir=local_backups_dir,
+            max_auto_backups=max_auto_backups,
+            keep_daily_days=keep_daily_days,
+        )
+        if rendered_mirror_dir:
+            memory_backup.prune_auto_backups(
+                backups_dir=Path(rendered_mirror_dir).expanduser(),
+                max_auto_backups=max_auto_backups,
+                keep_daily_days=keep_daily_days,
+            )
+    except memory_backup.MemoryBackupError as exc:
+        _record_memory_protection_maintenance_error(str(exc))
+    except Exception as exc:
+        _record_memory_protection_maintenance_error(str(exc))
+
+
+def _schedule_memory_protection_maintenance(
+    *,
+    backup_path: str | Path,
+    local_backups_dir: str | Path,
+    mirror_dir: str = "",
+    retention: dict | None = None,
+) -> None:
+    global _MEMORY_PROTECTION_MAINTENANCE_THREAD
+
+    job = {
+        "backup_path": str(backup_path),
+        "local_backups_dir": str(local_backups_dir),
+        "mirror_dir": str(mirror_dir).strip(),
+        "retention": dict(retention or {}),
+    }
+
+    if not MEMORY_PROTECTION_MAINTENANCE_ASYNC:
+        _run_memory_protection_maintenance(**job)
+        return
+
+    if not _MEMORY_PROTECTION_MAINTENANCE_LOCK.acquire(blocking=False):
+        return
+
+    def worker():
+        try:
+            _run_memory_protection_maintenance(**job)
+        finally:
+            _MEMORY_PROTECTION_MAINTENANCE_LOCK.release()
+
+    thread = threading.Thread(
+        target=worker,
+        name="yarbis-memory-protection-maintenance",
+        daemon=True,
+    )
+    _MEMORY_PROTECTION_MAINTENANCE_THREAD = thread
+    thread.start()
+
+
+def wait_for_memory_protection_maintenance(timeout_seconds: float = 5.0) -> bool:
+    thread = _MEMORY_PROTECTION_MAINTENANCE_THREAD
+    if thread is None:
+        return True
+    thread.join(timeout=max(0.0, float(timeout_seconds)))
+    return not thread.is_alive()
 
 
 def _save_state_unlocked(state, create_backup: bool = True):

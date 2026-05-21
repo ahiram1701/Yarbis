@@ -1,5 +1,6 @@
 import json
 import shutil
+import threading
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -19,11 +20,13 @@ class MemoryTestCase(unittest.TestCase):
 
     def test_load_state_returns_defaults_for_invalid_json(self):
         state_path = TEST_RUNTIME_DIR / "memory_invalid_state.json"
+        lock_path = TEST_RUNTIME_DIR / "memory_invalid_state.lock"
         state_path.parent.mkdir(parents=True, exist_ok=True)
         state_path.write_text("{", encoding="utf-8")
 
         with patch.object(memory, "STATE_FILE", state_path):
-            state = memory.load_state()
+            with patch.object(memory, "STATE_LOCK_FILE", lock_path):
+                state = memory.load_state()
 
         self.assertEqual(state["goal"], memory.DEFAULT_GOAL)
         self.assertEqual(state["messages"], [])
@@ -72,6 +75,7 @@ class MemoryTestCase(unittest.TestCase):
 
     def test_save_state_keeps_messages_complete(self):
         state_path = TEST_RUNTIME_DIR / "memory_complete_messages_state.json"
+        lock_path = TEST_RUNTIME_DIR / "memory_complete_messages_state.lock"
         long_message = "x" * (memory.MAX_MESSAGE_CHARS + 10)
         oversized_state = {
             "goal": "demo",
@@ -84,7 +88,8 @@ class MemoryTestCase(unittest.TestCase):
         }
 
         with patch.object(memory, "STATE_FILE", state_path):
-            memory.save_state(oversized_state)
+            with patch.object(memory, "STATE_LOCK_FILE", lock_path):
+                memory.save_state(oversized_state)
             stored_state = json.loads(state_path.read_text(encoding="utf-8"))
 
         self.assertEqual(len(stored_state["messages"]), memory.MAX_MESSAGES + 5)
@@ -93,13 +98,15 @@ class MemoryTestCase(unittest.TestCase):
 
     def test_save_state_keeps_last_result_complete(self):
         state_path = TEST_RUNTIME_DIR / "memory_last_result_state.json"
+        lock_path = TEST_RUNTIME_DIR / "memory_last_result_state.lock"
         long_result = "respuesta larga " * 500
 
         with patch.object(memory, "STATE_FILE", state_path):
-            memory.save_state({
-                "goal": "demo",
-                "last_result": long_result,
-            })
+            with patch.object(memory, "STATE_LOCK_FILE", lock_path):
+                memory.save_state({
+                    "goal": "demo",
+                    "last_result": long_result,
+                })
             stored_state = json.loads(state_path.read_text(encoding="utf-8"))
 
         self.assertEqual(stored_state["last_result"], long_result)
@@ -218,7 +225,8 @@ class MemoryTestCase(unittest.TestCase):
 
         with patch.object(memory, "STATE_FILE", state_path):
             with patch.object(memory, "STATE_LOCK_FILE", lock_path):
-                memory.save_state(seeded_state)
+                with patch.object(memory, "MEMORY_PROTECTION_MAINTENANCE_ASYNC", False):
+                    memory.save_state(seeded_state)
 
         stored = json.loads(state_path.read_text(encoding="utf-8"))
         local_backups = list((base / ".yarbis_memory_backups").glob("*.json"))
@@ -242,6 +250,36 @@ class MemoryTestCase(unittest.TestCase):
             package["state"]["model_provider"]["openrouter"]["api_key"],
             "[redacted]",
         )
+
+    def test_auto_backup_mirror_does_not_hold_state_lock(self):
+        base, state_path, lock_path = self._memory_protection_paths("async-mirror-lock")
+        mirror_dir = base / "mirror"
+        mirror_started = threading.Event()
+        release_mirror = threading.Event()
+
+        seeded_state = memory.normalize_state({
+            "goal": "memoria sin bloqueo",
+            "memory_protection": {
+                "mirror_dir": str(mirror_dir),
+            },
+        })
+
+        def slow_mirror(backup_path, mirror_dir):
+            mirror_started.set()
+            release_mirror.wait(timeout=2)
+            return str(Path(mirror_dir) / Path(backup_path).name)
+
+        with patch.object(memory, "STATE_FILE", state_path):
+            with patch.object(memory, "STATE_LOCK_FILE", lock_path):
+                self.assertTrue(memory.wait_for_memory_protection_maintenance(timeout_seconds=2))
+                with patch.object(memory.memory_backup, "mirror_backup", side_effect=slow_mirror):
+                    memory.save_state(seeded_state)
+                    self.assertTrue(mirror_started.wait(timeout=2))
+                    state = memory.load_state()
+                    release_mirror.set()
+                    self.assertTrue(memory.wait_for_memory_protection_maintenance(timeout_seconds=2))
+
+        self.assertEqual(state["goal"], "memoria sin bloqueo")
 
     def test_load_state_restores_corrupt_state_from_local_backup(self):
         base, state_path, lock_path = self._memory_protection_paths("restore-local")
@@ -271,7 +309,8 @@ class MemoryTestCase(unittest.TestCase):
 
         with patch.object(memory, "STATE_FILE", state_path):
             with patch.object(memory, "STATE_LOCK_FILE", lock_path):
-                memory.save_state(seeded_state)
+                with patch.object(memory, "MEMORY_PROTECTION_MAINTENANCE_ASYNC", False):
+                    memory.save_state(seeded_state)
                 shutil.rmtree(base / ".yarbis_memory_backups")
                 state_path.unlink()
                 restored = memory.load_state()
@@ -316,20 +355,10 @@ class MemoryTestCase(unittest.TestCase):
 
         with patch.object(memory, "STATE_FILE", state_path):
             with patch.object(memory, "STATE_LOCK_FILE", lock_path):
-                with patch.object(memory_transfer, "BACKUPS_DIR", backups_dir):
-                    memory.save_state(memory.normalize_state({
-                        "goal": "version 0",
-                        "memory_protection": {
-                            "retention": {
-                                "max_auto_backups": 2,
-                                "keep_daily_days": 0,
-                            },
-                        },
-                    }))
-                    manual_backup = memory_transfer.create_backup()
-                    for index in range(1, 6):
+                with patch.object(memory, "MEMORY_PROTECTION_MAINTENANCE_ASYNC", False):
+                    with patch.object(memory_transfer, "BACKUPS_DIR", backups_dir):
                         memory.save_state(memory.normalize_state({
-                            "goal": f"version {index}",
+                            "goal": "version 0",
                             "memory_protection": {
                                 "retention": {
                                     "max_auto_backups": 2,
@@ -337,6 +366,17 @@ class MemoryTestCase(unittest.TestCase):
                                 },
                             },
                         }))
+                        manual_backup = memory_transfer.create_backup()
+                        for index in range(1, 6):
+                            memory.save_state(memory.normalize_state({
+                                "goal": f"version {index}",
+                                "memory_protection": {
+                                    "retention": {
+                                        "max_auto_backups": 2,
+                                        "keep_daily_days": 0,
+                                    },
+                                },
+                            }))
 
         packages = [
             json.loads(path.read_text(encoding="utf-8"))
