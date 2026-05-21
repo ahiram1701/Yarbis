@@ -173,6 +173,35 @@ class AgentTestCase(unittest.TestCase):
             headers={"Authorization": "Bearer stored-ollama-key"},
         )
 
+    def test_ollama_client_normalizes_json_string_tool_arguments(self):
+        class FakeRawResponse:
+            def json(self):
+                return {
+                    "message": {
+                        "role": "assistant",
+                        "content": "",
+                        "tool_calls": [
+                            {
+                                "function": {
+                                    "name": "read_text_file",
+                                    "arguments": "{\"path\":\"crawler_scheduler.py\"}",
+                                },
+                            }
+                        ],
+                    }
+                }
+
+        ollama_client = agent.Client(timeout=30)
+        with patch.object(ollama_client, "_request_raw", return_value=FakeRawResponse()):
+            response = ollama_client.chat(
+                model="gemma4:31b-cloud",
+                messages=[{"role": "user", "content": "lee el archivo"}],
+            )
+
+        tool_call = response.message.tool_calls[0]
+        self.assertEqual(tool_call.function.name, "read_text_file")
+        self.assertEqual(tool_call.function.arguments, {"path": "crawler_scheduler.py"})
+
     def test_run_one_cycle_tries_fallback_model_after_primary_failure(self):
         state_path = TEST_RUNTIME_DIR / "agent_ollama_fallback_state.json"
         state_path.parent.mkdir(parents=True, exist_ok=True)

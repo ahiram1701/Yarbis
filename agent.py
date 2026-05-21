@@ -11,7 +11,7 @@ from types import SimpleNamespace
 from urllib import error as urllib_error, request
 from urllib.parse import urlparse
 
-from ollama import Client
+from ollama import Client as OllamaClient
 
 from intent_text import (
     looks_like_affirmative_action_reply as _looks_like_affirmative_action_reply,
@@ -92,6 +92,56 @@ from tools import (
     web_search,
     write_text_file,
 )
+
+
+def _json_object_from_ollama_tool_arguments(raw_arguments: str) -> dict:
+    cleaned = raw_arguments.strip()
+    if not cleaned:
+        return {}
+
+    try:
+        parsed = json.loads(cleaned)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Ollama devolvio argumentos de tool como JSON invalido: {exc}") from exc
+    if not isinstance(parsed, Mapping):
+        raise ValueError("Ollama devolvio argumentos de tool que no son un objeto JSON.")
+    return dict(parsed)
+
+
+def _normalize_ollama_response_tool_arguments(data) -> None:
+    if not isinstance(data, dict):
+        return
+
+    message = data.get("message")
+    if not isinstance(message, dict):
+        return
+
+    tool_calls = message.get("tool_calls")
+    if not isinstance(tool_calls, list):
+        return
+
+    for raw_tool_call in tool_calls:
+        if not isinstance(raw_tool_call, dict):
+            continue
+        function = raw_tool_call.get("function")
+        if not isinstance(function, dict):
+            continue
+        raw_arguments = function.get("arguments")
+        if isinstance(raw_arguments, str):
+            function["arguments"] = _json_object_from_ollama_tool_arguments(raw_arguments)
+
+
+class YarbisOllamaClient(OllamaClient):
+    def _request(self, cls, *args, stream: bool = False, **kwargs):
+        if stream:
+            return super()._request(cls, *args, stream=stream, **kwargs)
+
+        data = self._request_raw(*args, **kwargs).json()
+        _normalize_ollama_response_tool_arguments(data)
+        return cls(**data)
+
+
+Client = YarbisOllamaClient
 
 DEFAULT_MODEL = DEFAULT_OLLAMA_MODEL
 DEFAULT_EMPTY_RESPONSE_RETRIES = 1
