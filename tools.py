@@ -222,6 +222,62 @@ def _bounded_text(text: str, limit: int) -> str:
     return rendered[:head_chars].rstrip() + marker + rendered[-tail_chars:].lstrip()
 
 
+def _subprocess_creationflags() -> int:
+    if os.name != "nt":
+        return 0
+    return getattr(subprocess, "CREATE_NO_WINDOW", 0)
+
+
+def _terminate_process_tree(process: subprocess.Popen) -> None:
+    if process.poll() is not None:
+        return
+
+    if os.name == "nt":
+        try:
+            taskkill = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32" / "taskkill.exe"
+            subprocess.run(
+                [str(taskkill), "/PID", str(process.pid), "/T", "/F"],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=10,
+                creationflags=_subprocess_creationflags(),
+            )
+            return
+        except Exception:
+            pass
+
+    try:
+        process.kill()
+    except OSError:
+        pass
+
+
+def _run_command_process(args, cwd: Path, shell: bool, timeout_seconds: int) -> tuple[int | None, str, str, bool]:
+    process = subprocess.Popen(
+        args,
+        cwd=str(cwd),
+        shell=shell,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        creationflags=_subprocess_creationflags(),
+    )
+    try:
+        stdout, stderr = process.communicate(timeout=timeout_seconds)
+        return process.returncode, stdout, stderr, False
+    except subprocess.TimeoutExpired:
+        _terminate_process_tree(process)
+        try:
+            stdout, stderr = process.communicate(timeout=5)
+        except Exception:
+            stdout, stderr = "", ""
+        return None, stdout, stderr, True
+
+
 def _bounded_diff_lines(diff_lines: list[str]) -> list[str]:
     if len(diff_lines) <= MAX_DIFF_LINES:
         return diff_lines
@@ -1740,27 +1796,35 @@ def run_system_command(
             return "Debes indicar el comando del sistema a ejecutar."
 
     try:
-        completed = subprocess.run(
+        returncode, stdout, stderr, timed_out = _run_command_process(
             args,
-            cwd=str(working_dir),
+            cwd=working_dir,
             shell=use_shell,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=normalized_timeout,
-        )
-    except subprocess.TimeoutExpired:
-        return (
-            f"El comando excedio el timeout de {normalized_timeout} segundos.\n"
-            f"Comando: {cleaned_command}"
+            timeout_seconds=normalized_timeout,
         )
     except OSError as exc:
         return f"No pude ejecutar el comando del sistema: {exc}"
 
+    if timed_out:
+        combined_output = "\n".join(
+            part.strip()
+            for part in (stdout, stderr)
+            if str(part).strip()
+        )
+        output_text = (
+            "\nSalida parcial:\n" + _bounded_text(combined_output, MAX_COMMAND_OUTPUT_CHARS)
+            if combined_output
+            else ""
+        )
+        return (
+            f"El comando excedio el timeout de {normalized_timeout} segundos.\n"
+            f"Comando: {cleaned_command}"
+            f"{output_text}"
+        )
+
     combined_output = "\n".join(
         part.strip()
-        for part in (completed.stdout, completed.stderr)
+        for part in (stdout, stderr)
         if str(part).strip()
     )
     if not combined_output:
@@ -1768,8 +1832,8 @@ def run_system_command(
     combined_output = _bounded_text(combined_output, MAX_COMMAND_OUTPUT_CHARS)
     status_line = (
         "Comando del sistema completado."
-        if completed.returncode == 0
-        else f"Comando del sistema con fallos (exit={completed.returncode})."
+        if returncode == 0
+        else f"Comando del sistema con fallos (exit={returncode})."
     )
     return (
         f"{status_line}\n"

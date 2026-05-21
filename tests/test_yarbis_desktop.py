@@ -1,3 +1,4 @@
+import json
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -103,6 +104,70 @@ class YarbisDesktopTestCase(unittest.TestCase):
         self.assertEqual(state["model_provider"]["openrouter"]["api_key_env_var"], "OPENROUTER_API_KEY")
         self.assertTrue(app.refreshed)
         self.assertTrue(any("OpenRouter" in body for _title, body in app.activities))
+
+    def test_poll_runtime_events_queues_remote_started_from_service(self):
+        events_path = TEST_RUNTIME_DIR / "desktop_remote_events.jsonl"
+        events_path.parent.mkdir(parents=True, exist_ok=True)
+        events_path.write_text(
+            json.dumps(
+                {
+                    "type": "remote_job_started",
+                    "label": "Respuesta",
+                    "status_text": "Estoy pensando: Respuesta...",
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+        app = object.__new__(yarbis_desktop.YarbisDesktop)
+        app._result_queue = yarbis_desktop.queue.Queue()
+        app._runtime_events_position = 0
+        app._local_telegram_polling = False
+
+        with patch.object(yarbis_desktop.activity, "EVENTS_FILE", events_path):
+            yarbis_desktop.YarbisDesktop._poll_runtime_events(app)
+
+        self.assertEqual(app._runtime_events_position, events_path.stat().st_size)
+        self.assertEqual(
+            app._result_queue.get_nowait(),
+            ("remote_start", "Respuesta", "Estoy pensando: Respuesta..."),
+        )
+
+    def test_poll_runtime_events_queues_proactive_pulse_started_from_service(self):
+        events_path = TEST_RUNTIME_DIR / "desktop_proactive_events.jsonl"
+        events_path.parent.mkdir(parents=True, exist_ok=True)
+        events_path.write_text(
+            json.dumps(
+                {
+                    "type": "operation_started",
+                    "label": "Pulso proactivo",
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+        app = object.__new__(yarbis_desktop.YarbisDesktop)
+        app._result_queue = yarbis_desktop.queue.Queue()
+        app._runtime_events_position = 0
+        app._local_telegram_polling = False
+
+        with patch.object(yarbis_desktop.activity, "EVENTS_FILE", events_path):
+            yarbis_desktop.YarbisDesktop._poll_runtime_events(app)
+
+        self.assertEqual(
+            app._result_queue.get_nowait(),
+            ("runtime_start", "Pulso proactivo", "Estoy pensando: Pulso proactivo..."),
+        )
+
+    def test_desktop_session_operations_keep_notifications_enabled(self):
+        script = yarbis_desktop._DESKTOP_SESSION_OPERATION_SCRIPT
+
+        self.assertIn("run_cycle_with_output()", script)
+        self.assertIn("run_auto_with_output(cycles=payload.get(\"cycles\"))", script)
+        self.assertIn("submit_user_reply(str(payload.get(\"reply_text\", \"\")))", script)
+        self.assertNotIn("emit_notifications=False", script)
 
 
 if __name__ == "__main__":

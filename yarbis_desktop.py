@@ -172,11 +172,14 @@ def _show_already_running_message():
 
 
 _STATE_SYNC_INTERVAL_MS = 1000
+_EVENT_SYNC_INTERVAL_MS = 500
 _HEAVY_STATE_SYNC_INTERVAL_MS = 5000
 _CONTEXT_HELPER_SYNC_MS = 10000
+_SERVICE_RUNTIME_EVENT_LABELS = {"pulso proactivo"}
 _WORKSPACE_ROOT = Path(__file__).resolve().parent
 _RUNTIME_DIR = _WORKSPACE_ROOT / ".yarbis_runtime"
 _UPDATE_SCRIPT = _WORKSPACE_ROOT / "scripts" / "update.ps1"
+_DESKTOP_OPERATION_TIMEOUT_SECONDS = 30 * 60
 _DESKTOP_SESSION_OPERATION_SCRIPT = r"""
 import json
 import sys
@@ -277,6 +280,32 @@ def _python_console_path() -> Path:
     return executable
 
 
+def _terminate_process_tree(process: subprocess.Popen) -> None:
+    if process.poll() is not None:
+        return
+
+    if sys.platform.startswith("win"):
+        try:
+            subprocess.run(
+                ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+                cwd=str(_WORKSPACE_ROOT),
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=10,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+            return
+        except Exception:
+            pass
+
+    try:
+        process.kill()
+    except OSError:
+        pass
+
+
 def _session_operation_subprocess(operation: str, **payload) -> str:
     _RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
     token = f"{time.time_ns()}-{threading.get_ident()}"
@@ -291,7 +320,7 @@ def _session_operation_subprocess(operation: str, **payload) -> str:
         with open(request_path, "w", encoding="utf-8") as file:
             json.dump(request_payload, file, ensure_ascii=False)
 
-        completed = subprocess.run(
+        process = subprocess.Popen(
             [
                 str(_python_console_path()),
                 "-c",
@@ -300,29 +329,42 @@ def _session_operation_subprocess(operation: str, **payload) -> str:
                 str(response_path),
             ],
             cwd=str(_WORKSPACE_ROOT),
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
             encoding="utf-8",
             errors="replace",
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
+        try:
+            stdout, stderr = process.communicate(timeout=_DESKTOP_OPERATION_TIMEOUT_SECONDS)
+        except subprocess.TimeoutExpired as exc:
+            try:
+                request_stop_current_operation(source="desktop-timeout")
+            except Exception:
+                pass
+            _terminate_process_tree(process)
+            stdout, stderr = process.communicate()
+            raise RuntimeError(
+                "La operacion de escritorio excedio el tiempo limite y fue detenida."
+            ) from exc
 
         response_payload = {}
         if response_path.exists():
             with open(response_path, "r", encoding="utf-8") as file:
                 response_payload = json.load(file)
 
-        if completed.returncode == 0 and response_payload.get("ok"):
+        if process.returncode == 0 and response_payload.get("ok"):
             return str(response_payload.get("result", ""))
 
         error_text = str(response_payload.get("error", "")).strip()
         if not error_text:
             error_text = "\n".join(
                 part.strip()
-                for part in (completed.stdout, completed.stderr)
+                for part in (stdout, stderr)
                 if str(part).strip()
             )
-        raise RuntimeError(error_text or f"Operacion {operation} termino con exit={completed.returncode}.")
+        raise RuntimeError(error_text or f"Operacion {operation} termino con exit={process.returncode}.")
     finally:
         for path in (request_path, response_path):
             try:
@@ -369,6 +411,7 @@ class YarbisDesktop(tk.Tk):
         self._last_summary_text = ""
         self._last_activity_text = ""
         self._last_activity_signature = None
+        self._runtime_events_position = self._initial_runtime_events_position()
         self._last_heavy_state_refresh_at = 0.0
         self._cached_health_status = None
         self._cached_readiness_status = None
@@ -384,6 +427,7 @@ class YarbisDesktop(tk.Tk):
         self.after(250, self._maybe_show_first_run)
         self.after(150, self._poll_worker_queue)
         self.after(750, self._ensure_context_helper)
+        self.after(_EVENT_SYNC_INTERVAL_MS, self._sync_runtime_events)
         self.after(_STATE_SYNC_INTERVAL_MS, self._sync_state_view)
 
     def _build_ui(self):
@@ -1138,8 +1182,9 @@ class YarbisDesktop(tk.Tk):
             return True
 
         self.thinking_var.set("No.")
-        if "runtime" in self._busy_sources:
-            self._set_busy(False, source="runtime")
+        for source in ("runtime", "runtime_event"):
+            if source in self._busy_sources:
+                self._set_busy(False, source=source)
         return False
 
     def _clear_abandoned_runtime_operation(self) -> bool:
@@ -1362,6 +1407,70 @@ class YarbisDesktop(tk.Tk):
         self.refresh_state_view(force_heavy=False)
         self.after(_STATE_SYNC_INTERVAL_MS, self._sync_state_view)
 
+    @staticmethod
+    def _initial_runtime_events_position() -> int:
+        try:
+            return activity.EVENTS_FILE.stat().st_size
+        except OSError:
+            return 0
+
+    def _sync_runtime_events(self):
+        if self._closing:
+            return
+
+        self._poll_runtime_events()
+        self.after(_EVENT_SYNC_INTERVAL_MS, self._sync_runtime_events)
+
+    def _poll_runtime_events(self):
+        if self._local_telegram_polling:
+            self._runtime_events_position = self._initial_runtime_events_position()
+            return
+
+        event_path = activity.EVENTS_FILE
+        try:
+            event_size = event_path.stat().st_size
+        except OSError:
+            self._runtime_events_position = 0
+            return
+
+        if event_size < self._runtime_events_position:
+            self._runtime_events_position = 0
+        if event_size == self._runtime_events_position:
+            return
+
+        try:
+            with open(event_path, "r", encoding="utf-8") as events_file:
+                events_file.seek(self._runtime_events_position)
+                lines = events_file.readlines()
+                self._runtime_events_position = events_file.tell()
+        except OSError:
+            return
+
+        for line in lines:
+            try:
+                event = json.loads(line)
+            except (TypeError, json.JSONDecodeError):
+                continue
+            if not isinstance(event, dict):
+                continue
+            event_type = str(event.get("type", "")).strip().lower()
+            if event_type in {"remote_job_started", "remote_job_finished", "remote_job_failed"}:
+                self._handle_telegram_event(event)
+                continue
+
+            label = str(event.get("label", "")).strip() or "Operacion"
+            if label.lower() not in _SERVICE_RUNTIME_EVENT_LABELS:
+                continue
+
+            if event_type == "operation_started":
+                status_text = str(event.get("status_text", "")).strip() or self._thinking_status_text(label)
+                self._result_queue.put(("runtime_start", label, status_text))
+            elif event_type == "operation_finished":
+                self._result_queue.put(("runtime_success", label, ""))
+            elif event_type == "operation_failed":
+                error_text = str(event.get("error", "")).strip() or "Error desconocido."
+                self._result_queue.put(("runtime_error", label, error_text))
+
     def _ensure_telegram_polling_matches_service(self, service_running: bool | None = None):
         if service_running is None:
             service_running = get_service_status()["running"]
@@ -1457,6 +1566,17 @@ class YarbisDesktop(tk.Tk):
                 elif kind == "remote_start":
                     self._set_busy(True, str(payload), source="remote")
                     self._append_activity(f"{label} iniciado", str(payload))
+                    self.refresh_state_view(force_heavy=False)
+                elif kind == "runtime_start":
+                    self._set_busy(True, str(payload), source="runtime_event")
+                    self._append_activity(f"{label} iniciado", str(payload))
+                elif kind == "runtime_success":
+                    self._set_busy(False, source="runtime_event")
+                    self.refresh_state_view(force_heavy=False)
+                elif kind == "runtime_error":
+                    self._set_busy(False, source="runtime_event")
+                    self._append_activity(f"{label} (error)", str(payload))
+                    self.refresh_state_view(force_heavy=False)
                 elif kind == "remote_success":
                     self._set_busy(False, source="remote")
                     self._append_activity(label, str(payload))
@@ -1464,6 +1584,7 @@ class YarbisDesktop(tk.Tk):
                 elif kind == "remote_error":
                     self._set_busy(False, source="remote")
                     self._append_activity(f"{label} (error)", str(payload))
+                    self.refresh_state_view()
                     self.status_var.set("La accion termino con error.")
                 elif kind == "event":
                     self._append_activity(label, str(payload))

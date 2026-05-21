@@ -329,19 +329,28 @@ class ToolsTestCase(unittest.TestCase):
         self.assertIn("Build .NET OK.", result)
 
     def test_run_system_command_executes_in_requested_directory(self):
-        fake_result = subprocess.CompletedProcess(
-            args=["echo", "hola"],
-            returncode=0,
-            stdout="hola\n",
-            stderr="",
-        )
-
-        with patch.object(tools.subprocess, "run", return_value=fake_result) as run_mock:
+        with patch.object(
+            tools,
+            "_run_command_process",
+            return_value=(0, "hola\n", "", False),
+        ) as run_mock:
             result = tools.run_system_command("echo hola", cwd=str(self.external_dir), timeout_seconds=5)
 
         self.assertIn("Comando del sistema completado", result)
         self.assertIn("hola", result)
-        self.assertEqual(run_mock.call_args.kwargs["cwd"], str(self.external_dir.resolve()))
+        self.assertEqual(run_mock.call_args.kwargs["cwd"], self.external_dir.resolve())
+        self.assertTrue(run_mock.call_args.kwargs["shell"])
+
+    def test_run_system_command_reports_timeout_after_tree_cleanup(self):
+        with patch.object(
+            tools,
+            "_run_command_process",
+            return_value=(None, "salida parcial", "", True),
+        ) as run_mock:
+            result = tools.run_system_command("python tarea_larga.py", timeout_seconds=5)
+
+        self.assertIn("excedio el timeout de 5 segundos", result)
+        self.assertIn("salida parcial", result)
         self.assertTrue(run_mock.call_args.kwargs["shell"])
 
     def test_browser_automation_wrapper_passes_workspace(self):
