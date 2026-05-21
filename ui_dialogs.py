@@ -1,7 +1,20 @@
+import os
 import tkinter as tk
 from tkinter import messagebox, simpledialog, ttk
 
-from memory import DEFAULT_OLLAMA_HOST, DEFAULT_OLLAMA_MODEL, DEFAULT_OLLAMA_TIMEOUT_SECONDS, load_state
+from memory import (
+    DEFAULT_OLLAMA_API_KEY_ENV_VAR,
+    DEFAULT_OLLAMA_HOST,
+    DEFAULT_OLLAMA_MODEL,
+    DEFAULT_OLLAMA_TIMEOUT_SECONDS,
+    DEFAULT_OPENROUTER_API_KEY_ENV_VAR,
+    DEFAULT_OPENROUTER_HOST,
+    DEFAULT_OPENROUTER_MODEL,
+    DEFAULT_OPENROUTER_TIMEOUT_SECONDS,
+    MODEL_PROVIDER_OLLAMA,
+    MODEL_PROVIDER_OPENROUTER,
+    load_state,
+)
 from session import delete_note_text, save_note_text
 from ui_theme import THEMES, style_listbox_widget, style_scrollbar_widget, style_text_widget
 
@@ -186,7 +199,103 @@ class FirstRunDialog(ThemedDialog):
 
     def __init__(self, parent, initial_state: dict):
         self.initial_state = initial_state
+        self._loaded_provider = ""
         super().__init__(parent, "Primer uso de Yarbis")
+
+    def _initial_provider_settings(self, provider: str) -> dict:
+        if provider == MODEL_PROVIDER_OPENROUTER:
+            defaults = {
+                "model": DEFAULT_OPENROUTER_MODEL,
+                "fallback_models": [],
+                "host": DEFAULT_OPENROUTER_HOST,
+                "api_key": "",
+                "api_key_env_var": DEFAULT_OPENROUTER_API_KEY_ENV_VAR,
+                "timeout_seconds": DEFAULT_OPENROUTER_TIMEOUT_SECONDS,
+            }
+        else:
+            defaults = {
+                "model": DEFAULT_OLLAMA_MODEL,
+                "fallback_models": [],
+                "host": DEFAULT_OLLAMA_HOST,
+                "api_key": "",
+                "api_key_env_var": DEFAULT_OLLAMA_API_KEY_ENV_VAR,
+                "timeout_seconds": DEFAULT_OLLAMA_TIMEOUT_SECONDS,
+            }
+
+        model_provider = self.initial_state.get("model_provider", {})
+        if not isinstance(model_provider, dict):
+            model_provider = {}
+        if provider in model_provider and isinstance(model_provider.get(provider), dict):
+            source = model_provider[provider]
+        elif provider == MODEL_PROVIDER_OLLAMA and isinstance(self.initial_state.get("ollama"), dict):
+            source = self.initial_state["ollama"]
+        else:
+            source = {}
+
+        settings = dict(defaults)
+        settings.update(source)
+        return settings
+
+    def _fallback_text(self, fallback_models) -> str:
+        if isinstance(fallback_models, list):
+            return ", ".join(str(item).strip() for item in fallback_models if str(item).strip())
+        return str(fallback_models).strip()
+
+    def _current_provider_form_settings(self) -> dict:
+        return {
+            "model": self.model_entry.get().strip(),
+            "fallback_models": self.fallback_entry.get().strip(),
+            "host": self.host_entry.get().strip(),
+            "api_key": self.api_key_entry.get().strip(),
+            "api_key_env_var": self.api_key_env_entry.get().strip(),
+            "timeout_seconds": self.timeout_entry.get().strip(),
+        }
+
+    def _load_provider_fields(self, provider: str):
+        settings = self._provider_settings[provider]
+        model_default = DEFAULT_OPENROUTER_MODEL if provider == MODEL_PROVIDER_OPENROUTER else DEFAULT_OLLAMA_MODEL
+        host_default = DEFAULT_OPENROUTER_HOST if provider == MODEL_PROVIDER_OPENROUTER else DEFAULT_OLLAMA_HOST
+        api_default = (
+            DEFAULT_OPENROUTER_API_KEY_ENV_VAR
+            if provider == MODEL_PROVIDER_OPENROUTER
+            else DEFAULT_OLLAMA_API_KEY_ENV_VAR
+        )
+        timeout_default = (
+            DEFAULT_OPENROUTER_TIMEOUT_SECONDS
+            if provider == MODEL_PROVIDER_OPENROUTER
+            else DEFAULT_OLLAMA_TIMEOUT_SECONDS
+        )
+
+        self.model_label_var.set("Modelo OpenRouter" if provider == MODEL_PROVIDER_OPENROUTER else "Modelo Ollama")
+        self.model_entry.delete(0, "end")
+        self.model_entry.insert(0, str(settings.get("model", model_default)).strip())
+        self.fallback_entry.delete(0, "end")
+        self.fallback_entry.insert(0, self._fallback_text(settings.get("fallback_models", [])))
+        self.timeout_entry.delete(0, "end")
+        self.timeout_entry.insert(0, str(settings.get("timeout_seconds", timeout_default)).strip())
+        self.host_entry.delete(0, "end")
+        self.host_entry.insert(0, str(settings.get("host", host_default)).strip())
+        self.api_key_env_entry.delete(0, "end")
+        self.api_key_env_entry.insert(0, str(settings.get("api_key_env_var", api_default)).strip() or api_default)
+        self.api_key_entry.configure(state="normal")
+        self.api_key_entry.delete(0, "end")
+        self.api_key_entry.insert(0, str(settings.get("api_key", "")).strip())
+        if provider == MODEL_PROVIDER_OPENROUTER:
+            self.api_key_entry.configure(state="normal")
+            self.api_help_var.set("OpenRouter puede usar la API key directa guardada localmente.")
+        else:
+            self.api_key_entry.configure(state="disabled")
+            self.api_help_var.set("Ollama local no requiere API key directa.")
+        self._loaded_provider = provider
+
+    def _provider_changed(self, _event=None):
+        if self._loaded_provider:
+            self._provider_settings[self._loaded_provider] = self._current_provider_form_settings()
+        provider = self.provider_var.get().strip().lower()
+        if provider not in {MODEL_PROVIDER_OLLAMA, MODEL_PROVIDER_OPENROUTER}:
+            provider = MODEL_PROVIDER_OLLAMA
+            self.provider_var.set(provider)
+        self._load_provider_fields(provider)
 
     def body(self, master):
         self._prepare_body(master)
@@ -196,9 +305,19 @@ class FirstRunDialog(ThemedDialog):
         profile = self.initial_state.get("profile", {})
         if not isinstance(profile, dict):
             profile = {}
-        ollama = self.initial_state.get("ollama", {})
-        if not isinstance(ollama, dict):
-            ollama = {}
+        model_provider = self.initial_state.get("model_provider", {})
+        if not isinstance(model_provider, dict):
+            model_provider = {}
+        initial_provider = str(model_provider.get("default", MODEL_PROVIDER_OLLAMA)).strip().lower()
+        if initial_provider not in {MODEL_PROVIDER_OLLAMA, MODEL_PROVIDER_OPENROUTER}:
+            initial_provider = MODEL_PROVIDER_OLLAMA
+        self._provider_settings = {
+            MODEL_PROVIDER_OLLAMA: self._initial_provider_settings(MODEL_PROVIDER_OLLAMA),
+            MODEL_PROVIDER_OPENROUTER: self._initial_provider_settings(MODEL_PROVIDER_OPENROUTER),
+        }
+        self.provider_var = tk.StringVar(value=initial_provider)
+        self.model_label_var = tk.StringVar()
+        self.api_help_var = tk.StringVar()
 
         ttk.Label(
             master,
@@ -235,24 +354,51 @@ class FirstRunDialog(ThemedDialog):
         self.role_entry.grid(row=3, column=0, sticky="ew", padx=8, pady=(0, 8))
         self.role_entry.insert(0, profile.get("role", ""))
 
-        model_frame = ttk.LabelFrame(master, text="Modelo Ollama")
+        model_frame = ttk.LabelFrame(master, text="Modelo")
         model_frame.grid(row=5, column=0, sticky="ew", padx=6, pady=(10, 0))
         model_frame.columnconfigure(0, weight=1)
+        model_frame.columnconfigure(1, weight=0)
 
-        ttk.Label(model_frame, text="Modelo Ollama").grid(row=0, column=0, sticky="w", padx=8, pady=(8, 2))
+        ttk.Label(model_frame, text="Proveedor por defecto").grid(row=0, column=0, sticky="w", padx=8, pady=(8, 2))
+        self.provider_combo = ttk.Combobox(
+            model_frame,
+            textvariable=self.provider_var,
+            values=(MODEL_PROVIDER_OLLAMA, MODEL_PROVIDER_OPENROUTER),
+            state="readonly",
+            width=18,
+        )
+        self.provider_combo.grid(row=1, column=0, sticky="ew", padx=8)
+        self.provider_combo.bind("<<ComboboxSelected>>", self._provider_changed)
+
+        ttk.Label(model_frame, textvariable=self.model_label_var).grid(row=2, column=0, sticky="w", padx=8, pady=(8, 2))
         self.model_entry = ttk.Entry(model_frame, width=42)
-        self.model_entry.grid(row=1, column=0, sticky="ew", padx=8)
-        self.model_entry.insert(0, str(ollama.get("model", DEFAULT_OLLAMA_MODEL)).strip() or DEFAULT_OLLAMA_MODEL)
+        self.model_entry.grid(row=3, column=0, sticky="ew", padx=8)
 
-        ttk.Label(model_frame, text="Timeout en segundos").grid(row=0, column=1, sticky="w", padx=8, pady=(8, 2))
+        ttk.Label(model_frame, text="Timeout en segundos").grid(row=2, column=1, sticky="w", padx=8, pady=(8, 2))
         self.timeout_entry = ttk.Entry(model_frame, width=12)
-        self.timeout_entry.grid(row=1, column=1, sticky="w", padx=8, pady=(0, 8))
-        self.timeout_entry.insert(0, str(ollama.get("timeout_seconds", DEFAULT_OLLAMA_TIMEOUT_SECONDS)))
+        self.timeout_entry.grid(row=3, column=1, sticky="w", padx=8)
 
-        ttk.Label(model_frame, text="Host opcional").grid(row=2, column=0, sticky="w", padx=8, pady=(4, 2))
+        ttk.Label(model_frame, text="Fallbacks opcionales").grid(row=4, column=0, sticky="w", padx=8, pady=(8, 2))
+        self.fallback_entry = ttk.Entry(model_frame, width=42)
+        self.fallback_entry.grid(row=5, column=0, columnspan=2, sticky="ew", padx=8)
+
+        ttk.Label(model_frame, text="Host").grid(row=6, column=0, sticky="w", padx=8, pady=(8, 2))
         self.host_entry = ttk.Entry(model_frame, width=42)
-        self.host_entry.grid(row=3, column=0, columnspan=2, sticky="ew", padx=8, pady=(0, 8))
-        self.host_entry.insert(0, str(ollama.get("host", DEFAULT_OLLAMA_HOST)).strip())
+        self.host_entry.grid(row=7, column=0, columnspan=2, sticky="ew", padx=8)
+
+        ttk.Label(model_frame, text="API key env").grid(row=8, column=0, sticky="w", padx=8, pady=(8, 2))
+        self.api_key_env_entry = ttk.Entry(model_frame, width=42)
+        self.api_key_env_entry.grid(row=9, column=0, sticky="ew", padx=8, pady=(0, 8))
+
+        ttk.Label(model_frame, text="API key directa").grid(row=8, column=1, sticky="w", padx=8, pady=(8, 2))
+        self.api_key_entry = ttk.Entry(model_frame, width=24, show="*")
+        self.api_key_entry.grid(row=9, column=1, sticky="ew", padx=8, pady=(0, 8))
+        ttk.Label(
+            model_frame,
+            textvariable=self.api_help_var,
+            foreground=self.theme_palette["muted"],
+            wraplength=420,
+        ).grid(row=10, column=0, columnspan=2, sticky="w", padx=8, pady=(0, 8))
 
         options = ttk.LabelFrame(master, text="Al guardar")
         options.grid(row=6, column=0, sticky="ew", padx=6, pady=(10, 6))
@@ -275,6 +421,7 @@ class FirstRunDialog(ThemedDialog):
             variable=self.install_service_var,
         ).grid(row=2, column=0, sticky="w", padx=8, pady=(2, 8))
 
+        self._load_provider_fields(initial_provider)
         return self.goal_text
 
     def _apply_template(self, _event=None):
@@ -288,24 +435,49 @@ class FirstRunDialog(ThemedDialog):
         if not self.goal_text.get("1.0", "end-1c").strip():
             messagebox.showwarning("Yarbis", "Define un objetivo para empezar.", parent=self)
             return False
-        if not self.model_entry.get().strip():
-            messagebox.showwarning("Yarbis", "El modelo Ollama no puede quedar vacio.", parent=self)
+
+        provider = self.provider_var.get().strip().lower()
+        if provider not in {MODEL_PROVIDER_OLLAMA, MODEL_PROVIDER_OPENROUTER}:
+            messagebox.showwarning("Yarbis", "Proveedor invalido.", parent=self)
+            return False
+        self._provider_settings[provider] = self._current_provider_form_settings()
+        settings = self._provider_settings[provider]
+
+        if not settings["model"]:
+            label = "OpenRouter" if provider == MODEL_PROVIDER_OPENROUTER else "Ollama"
+            messagebox.showwarning("Yarbis", f"El modelo {label} no puede quedar vacio.", parent=self)
             return False
         try:
-            int(self.timeout_entry.get().strip())
+            int(settings["timeout_seconds"])
         except ValueError:
             messagebox.showwarning("Yarbis", "El timeout debe ser un numero de segundos.", parent=self)
             return False
+        if provider == MODEL_PROVIDER_OPENROUTER:
+            api_key_env_var = settings["api_key_env_var"] or DEFAULT_OPENROUTER_API_KEY_ENV_VAR
+            if not settings["api_key"] and not os.getenv(api_key_env_var, "").strip():
+                messagebox.showwarning(
+                    "Yarbis",
+                    f"Pega una API key directa o define {api_key_env_var} para usar OpenRouter.",
+                    parent=self,
+                )
+                return False
         return True
 
     def apply(self):
+        provider = self.provider_var.get().strip().lower()
+        self._provider_settings[provider] = self._current_provider_form_settings()
+        settings = self._provider_settings[provider]
         self.result = {
             "goal": self.goal_text.get("1.0", "end-1c").strip(),
             "name": self.name_entry.get().strip(),
             "role": self.role_entry.get().strip(),
-            "model": self.model_entry.get().strip(),
-            "timeout_seconds": self.timeout_entry.get().strip(),
-            "host": self.host_entry.get().strip(),
+            "provider": provider,
+            "model": settings["model"],
+            "fallback_models": settings["fallback_models"],
+            "timeout_seconds": settings["timeout_seconds"],
+            "host": settings["host"],
+            "api_key": settings["api_key"],
+            "api_key_env_var": settings["api_key_env_var"],
             "run_first_cycle": self.run_first_cycle_var.get(),
             "open_notifications": self.open_notifications_var.get(),
             "install_service": self.install_service_var.get(),

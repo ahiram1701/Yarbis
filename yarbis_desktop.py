@@ -1196,11 +1196,24 @@ class YarbisDesktop(tk.Tk):
         activity_lines = []
         try:
             activity_lines.append(update_goal(settings["goal"]))
-            activity_lines.append(update_ollama_settings(
-                settings["model"],
-                settings["timeout_seconds"],
-                host=settings.get("host", ""),
-            ))
+            provider = str(settings.get("provider", MODEL_PROVIDER_OLLAMA)).strip().lower()
+            if provider == MODEL_PROVIDER_OPENROUTER:
+                activity_lines.append(update_openrouter_settings(
+                    settings["model"],
+                    settings["timeout_seconds"],
+                    host=settings.get("host", ""),
+                    fallback_models=settings.get("fallback_models", ""),
+                    api_key=settings.get("api_key", ""),
+                    api_key_env_var=settings.get("api_key_env_var", ""),
+                ))
+            else:
+                activity_lines.append(update_ollama_settings(
+                    settings["model"],
+                    settings["timeout_seconds"],
+                    host=settings.get("host", ""),
+                    fallback_models=settings.get("fallback_models", ""),
+                    api_key_env_var=settings.get("api_key_env_var", ""),
+                ))
             if settings.get("name") or settings.get("role"):
                 activity_lines.append(update_profile_text(
                     name=settings.get("name", ""),
