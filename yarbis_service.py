@@ -50,6 +50,7 @@ from telegram_inbox import (
     start_telegram_polling,
     stop_telegram_polling,
 )
+from yarbis_mobile import ensure_mobile_ui_servers, start_mobile_ui_from_state, stop_mobile_ui_servers
 
 ENV_SERVICE_PROACTIVE = "YARBIS_SERVICE_PROACTIVE"
 ENV_SERVICE_PROACTIVE_INTERVAL_SECONDS = "YARBIS_SERVICE_PROACTIVE_INTERVAL_SECONDS"
@@ -587,6 +588,9 @@ def run_service_loop(should_stop=None):
 
     try:
         _log(run_startup_self_analysis(force=False, background=True))
+        mobile_start = start_mobile_ui_from_state()
+        if mobile_start:
+            _log(mobile_start)
         start_telegram_polling(event_callback=lambda message: _log(_render_event(message)))
         settings = get_service_proactive_settings()
         next_proactive_at = time.monotonic() + settings["start_delay_seconds"]
@@ -621,6 +625,9 @@ def run_service_loop(should_stop=None):
                 break
 
             settings = get_service_proactive_settings()
+            mobile_status = ensure_mobile_ui_servers()
+            if mobile_status:
+                _log(mobile_status)
             now = time.monotonic()
             try:
                 process_deferred_telegram_replies(limit=1)
@@ -656,6 +663,7 @@ def run_service_loop(should_stop=None):
         _log(traceback.format_exc())
         raise
     finally:
+        stop_mobile_ui_servers()
         stop_telegram_polling()
         _clear_runtime_files()
         _log("Servicio de Yarbis detenido.")

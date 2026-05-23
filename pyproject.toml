@@ -71,5 +71,6 @@ py-modules = [
   "ui_settings_dialogs",
   "ui_theme",
   "yarbis_desktop",
+  "yarbis_mobile",
   "yarbis_service",
 ]

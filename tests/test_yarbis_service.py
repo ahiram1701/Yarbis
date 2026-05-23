@@ -10,6 +10,54 @@ TEST_RUNTIME_DIR = Path.cwd() / "tests_runtime"
 
 
 class YarbisServiceTestCase(unittest.TestCase):
+    def test_run_service_loop_starts_checks_and_stops_mobile_ui(self):
+        stop_calls = {"count": 0}
+
+        def should_stop():
+            stop_calls["count"] += 1
+            return stop_calls["count"] > 1
+
+        with patch.object(yarbis_service, "_write_pid"):
+            with patch.object(yarbis_service, "_discard_startup_stop_file", return_value=0.0):
+                with patch.object(yarbis_service, "clear_abandoned_runtime_operation", return_value=False):
+                    with patch.object(yarbis_service, "_log"):
+                        with patch.object(yarbis_service, "run_startup_self_analysis", return_value="ok"):
+                            with patch.object(yarbis_service, "start_telegram_polling"):
+                                with patch.object(yarbis_service, "stop_telegram_polling"):
+                                    with patch.object(
+                                        yarbis_service,
+                                        "get_service_proactive_settings",
+                                        return_value={
+                                            "enabled": False,
+                                            "interval_seconds": 60,
+                                            "cycles": 1,
+                                            "start_delay_seconds": 0,
+                                            "model": "",
+                                        },
+                                    ):
+                                        with patch.object(yarbis_service, "_recover_unanswered_user_message", return_value=""):
+                                            with patch.object(yarbis_service, "process_deferred_telegram_replies"):
+                                                with patch.object(yarbis_service.time, "sleep"):
+                                                    with patch.object(
+                                                        yarbis_service,
+                                                        "start_mobile_ui_from_state",
+                                                        return_value="UI movil activa.",
+                                                    ) as start_mock:
+                                                        with patch.object(
+                                                            yarbis_service,
+                                                            "ensure_mobile_ui_servers",
+                                                            return_value="",
+                                                        ) as ensure_mock:
+                                                            with patch.object(
+                                                                yarbis_service,
+                                                                "stop_mobile_ui_servers",
+                                                            ) as stop_mock:
+                                                                yarbis_service.run_service_loop(should_stop=should_stop)
+
+        start_mock.assert_called_once()
+        ensure_mock.assert_called_once()
+        stop_mock.assert_called_once()
+
     def test_startup_stop_file_helpers_ignore_stale_file_until_updated(self):
         stop_file = Mock()
         stop_file.exists.return_value = True

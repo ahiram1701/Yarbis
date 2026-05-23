@@ -607,6 +607,29 @@ class MemoryTestCase(unittest.TestCase):
         self.assertEqual(proactive["start_delay_seconds"], 0)
         self.assertEqual(proactive["model"], "qwen3.5:0.8b")
 
+    def test_normalize_state_sanitizes_service_mobile_ui_settings(self):
+        normalized = memory.normalize_state({
+            "service": {
+                "mobile_ui": {
+                    "enabled": "true",
+                    "port": 999999,
+                    "pin_hash": "h" * 300,
+                    "pin_salt": "s" * 300,
+                    "session_secret": "x" * 300,
+                    "last_bind_error": "error" * 200,
+                }
+            }
+        })
+
+        mobile_ui = normalized["service"]["mobile_ui"]
+
+        self.assertTrue(mobile_ui["enabled"])
+        self.assertEqual(mobile_ui["port"], memory.DEFAULT_MOBILE_UI_PORT)
+        self.assertEqual(len(mobile_ui["pin_hash"]), memory.MAX_MOBILE_UI_HASH_CHARS)
+        self.assertEqual(len(mobile_ui["pin_salt"]), memory.MAX_MOBILE_UI_SALT_CHARS)
+        self.assertEqual(len(mobile_ui["session_secret"]), memory.MAX_MOBILE_UI_SESSION_SECRET_CHARS)
+        self.assertEqual(len(mobile_ui["last_bind_error"]), memory.MAX_MOBILE_UI_BIND_ERROR_CHARS)
+
     def test_normalize_state_migrates_legacy_cycle_defaults_to_unlimited(self):
         normalized = memory.normalize_state({
             "autonomy": {

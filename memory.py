@@ -64,6 +64,7 @@ LEGACY_DEFAULT_SERVICE_PROACTIVE_CYCLES = 1
 DEFAULT_SERVICE_PROACTIVE_CYCLES = None
 DEFAULT_SERVICE_PROACTIVE_START_DELAY_SECONDS = 60
 DEFAULT_SERVICE_PROACTIVE_MODEL = ""
+DEFAULT_MOBILE_UI_PORT = 8787
 MODEL_PROVIDER_OLLAMA = "ollama"
 MODEL_PROVIDER_OPENROUTER = "openrouter"
 DEFAULT_MODEL_PROVIDER = MODEL_PROVIDER_OLLAMA
@@ -83,6 +84,10 @@ MIN_OLLAMA_TIMEOUT_SECONDS = 1
 MAX_OLLAMA_TIMEOUT_SECONDS = 24 * 60 * 60
 MAX_OLLAMA_MODEL_CHARS = 120
 MAX_SERVICE_PROACTIVE_MODEL_CHARS = MAX_OLLAMA_MODEL_CHARS
+MAX_MOBILE_UI_HASH_CHARS = 256
+MAX_MOBILE_UI_SALT_CHARS = 128
+MAX_MOBILE_UI_SESSION_SECRET_CHARS = 128
+MAX_MOBILE_UI_BIND_ERROR_CHARS = 600
 MAX_OLLAMA_HOST_CHARS = 240
 MAX_OLLAMA_API_KEY_ENV_VAR_CHARS = 80
 MAX_OLLAMA_FALLBACK_MODELS = 8
@@ -287,6 +292,14 @@ def default_state():
                 "start_delay_seconds": DEFAULT_SERVICE_PROACTIVE_START_DELAY_SECONDS,
                 "model": DEFAULT_SERVICE_PROACTIVE_MODEL,
                 "last_pulse_at": "",
+            },
+            "mobile_ui": {
+                "enabled": False,
+                "port": DEFAULT_MOBILE_UI_PORT,
+                "pin_hash": "",
+                "pin_salt": "",
+                "session_secret": "",
+                "last_bind_error": "",
             },
         },
         "ui": {
@@ -929,6 +942,17 @@ def _normalize_service(service, *, migrate_legacy_cycles: bool = False):
     except (TypeError, ValueError):
         start_delay_seconds = proactive_defaults["start_delay_seconds"]
 
+    mobile_ui = service.get("mobile_ui", {})
+    if not isinstance(mobile_ui, dict):
+        mobile_ui = {}
+    mobile_defaults = defaults["mobile_ui"]
+    try:
+        mobile_port = int(mobile_ui.get("port", mobile_defaults["port"]))
+    except (TypeError, ValueError):
+        mobile_port = mobile_defaults["port"]
+    if not 1 <= mobile_port <= 65535:
+        mobile_port = mobile_defaults["port"]
+
     return {
         "proactive": {
             "enabled": _normalize_bool(
@@ -949,6 +973,29 @@ def _normalize_service(service, *, migrate_legacy_cycles: bool = False):
                 proactive.get("last_pulse_at", proactive_defaults.get("last_pulse_at", "")),
                 MAX_RUNTIME_TIMESTAMP_CHARS,
             ).strip(),
+        },
+        "mobile_ui": {
+            "enabled": _normalize_bool(
+                mobile_ui.get("enabled", mobile_defaults["enabled"]),
+                mobile_defaults["enabled"],
+            ),
+            "port": mobile_port,
+            "pin_hash": _coerce_text(
+                mobile_ui.get("pin_hash", mobile_defaults["pin_hash"]),
+                MAX_MOBILE_UI_HASH_CHARS,
+            ).strip()[:MAX_MOBILE_UI_HASH_CHARS],
+            "pin_salt": _coerce_text(
+                mobile_ui.get("pin_salt", mobile_defaults["pin_salt"]),
+                MAX_MOBILE_UI_SALT_CHARS,
+            ).strip()[:MAX_MOBILE_UI_SALT_CHARS],
+            "session_secret": _coerce_text(
+                mobile_ui.get("session_secret", mobile_defaults["session_secret"]),
+                MAX_MOBILE_UI_SESSION_SECRET_CHARS,
+            ).strip()[:MAX_MOBILE_UI_SESSION_SECRET_CHARS],
+            "last_bind_error": _coerce_text(
+                mobile_ui.get("last_bind_error", mobile_defaults["last_bind_error"]),
+                MAX_MOBILE_UI_BIND_ERROR_CHARS,
+            ).strip()[:MAX_MOBILE_UI_BIND_ERROR_CHARS],
         },
     }
 

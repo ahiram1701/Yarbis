@@ -398,6 +398,9 @@ def health_status(force_service: bool = False) -> dict:
     proactive = service.get("proactive", {})
     if not isinstance(proactive, dict):
         proactive = {}
+    mobile_ui = service.get("mobile_ui", {})
+    if not isinstance(mobile_ui, dict):
+        mobile_ui = {}
 
     runtime = state.get("runtime", {}) if isinstance(state, dict) else {}
     if not isinstance(runtime, dict):
@@ -427,6 +430,12 @@ def health_status(force_service: bool = False) -> dict:
             "cycles": proactive.get("cycles"),
             "model": str(proactive.get("model", "")).strip(),
             "last_pulse_at": str(proactive.get("last_pulse_at", "")).strip(),
+        },
+        "mobile_ui": {
+            "enabled": bool(mobile_ui.get("enabled")),
+            "configured": bool(str(mobile_ui.get("pin_hash", "")).strip()),
+            "port": mobile_ui.get("port"),
+            "last_bind_error": str(mobile_ui.get("last_bind_error", "")).strip(),
         },
         "operation": {
             "active": operation_active,
@@ -491,6 +500,7 @@ def format_health_status(status: dict | None = None) -> str:
     service = status.get("service", {})
     telegram = status.get("telegram", {})
     proactive = status.get("proactive", {})
+    mobile_ui = status.get("mobile_ui", {})
     operation = status.get("operation", {})
     ollama = status.get("ollama", {})
     model_provider = status.get("model_provider", {})
@@ -515,6 +525,17 @@ def format_health_status(status: dict | None = None) -> str:
     if proactive.get("last_pulse_at"):
         pulse_text += f", ultimo {proactive['last_pulse_at']}"
 
+    if mobile_ui.get("enabled"):
+        mobile_text = (
+            f"UI movil activa puerto {mobile_ui.get('port')}"
+            if mobile_ui.get("configured")
+            else "UI movil activa sin PIN"
+        )
+        if mobile_ui.get("last_bind_error"):
+            mobile_text += f" ({mobile_ui['last_bind_error']})"
+    else:
+        mobile_text = "UI movil desactivada"
+
     operation_text = (
         f"operacion activa: {operation.get('label')}"
         if operation.get("active")
@@ -537,7 +558,7 @@ def format_health_status(status: dict | None = None) -> str:
         f"({model_details.get('timeout_seconds')}s)"
     )
 
-    return " | ".join((service_text, telegram_text, pulse_text, operation_text, model_text))
+    return " | ".join((service_text, telegram_text, pulse_text, mobile_text, operation_text, model_text))
 
 
 def _readiness_item(key: str, label: str, status: str, detail: str = "", action: str = "") -> dict:

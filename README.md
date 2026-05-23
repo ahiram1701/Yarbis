@@ -216,6 +216,7 @@ La interfaz de escritorio permite:
 - configurar si el servicio se abre al iniciar Windows
 - configurar el pulso proactivo del servicio
 - configurar el contexto local persistente que alimenta el pulso proactivo
+- configurar la UI movil por Tailscale con PIN local
 - quitar el servicio de SCM
 - actualizar Yarbis desde GitHub con un actualizador externo seguro
 
@@ -256,6 +257,8 @@ El contexto local tiene su propia configuracion. En modo seguro, Yarbis registra
 Si el servicio se detiene mientras procesa una respuesta del usuario, esa respuesta queda en el historial. En el siguiente arranque o pulso, Yarbis detecta si el ultimo mensaje del usuario no tiene respuesta del asistente y ejecuta primero ese ciclo pendiente antes de agregar trabajo proactivo nuevo.
 
 Puedes ajustar el pulso desde la app con `Servicio` -> `Configurar pulso`. Los cambios se guardan en `state.json`; el servicio los lee en caliente para el intervalo y los ciclos. La espera inicial aplica al siguiente arranque del servicio. Tambien puedes ajustar las senales locales desde `Servicio` -> `Contexto local`; el observador se activa o detiene mientras la app de escritorio esta abierta.
+
+La UI movil se configura desde `Servicio` -> `UI movil`. Al activarla debes definir un PIN local y un puerto, por defecto `8787`. El servicio la publica en `127.0.0.1` y, si Tailscale esta disponible, en la IP Tailscale de la PC, por ejemplo `http://100.99.240.111:8787`. Safari en iPhone puede entrar a esa URL cuando el telefono esta en la misma tailnet. Las sesiones usan cookie `HttpOnly`, CSRF en acciones POST y el PIN queda guardado como hash PBKDF2 en `state.json`.
 
 El proveedor por defecto y su modelo tambien se pueden cambiar desde la app con `Modelo` -> `Modelo y timeout`. Ollama sigue siendo el default inicial; OpenRouter queda disponible con configuracion separada de modelo, host, fallbacks, API key env y timeout. Esos cambios se guardan en `state.json` y se aplican al siguiente ciclo, tanto en la app como en el servicio.
 
@@ -754,7 +757,7 @@ El servicio usa `.yarbis_runtime/` para PID y log. La marca `.yarbis_runtime/ser
 
 Yarbis escribe actividad humana en `.yarbis_runtime/activity.log` y eventos estructurados en `.yarbis_runtime/events.jsonl`. Los eventos incluyen `operation_id` cuando aplican a ciclos, respuestas, pulsos proactivos o jobs remotos de Telegram, y pasan por redaccion de secretos antes de guardarse.
 
-La funcion `health_status()` de `service_manager.py` reporta servicio, Telegram, pulso proactivo, operacion activa y proveedor/modelo activo. La UI muestra un resumen de ese health en el panel principal.
+La funcion `health_status()` de `service_manager.py` reporta servicio, Telegram, pulso proactivo, UI movil, operacion activa y proveedor/modelo activo. La UI muestra un resumen de ese health en el panel principal.
 
 ## Tests
 

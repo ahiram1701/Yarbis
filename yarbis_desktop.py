@@ -102,9 +102,11 @@ from ui_settings_dialogs import (
     NotificationsDialog,
     OllamaSettingsDialog,
     ServiceInstallDialog,
+    ServiceMobileUiDialog,
     ServicePulseDialog,
 )
 from ui_theme import THEMES, style_scrollbar_widget, style_text_widget
+from yarbis_mobile import get_mobile_ui_settings, public_mobile_ui_status, update_mobile_ui_settings
 
 _SINGLE_INSTANCE_MUTEX_NAME = "Local\\YarbisDesktopSingleInstance"
 _SINGLE_INSTANCE_MUTEX_HANDLE = None
@@ -762,6 +764,13 @@ class YarbisDesktop(tk.Tk):
         )
         self._pack_action_button(self.service_pulse_button)
 
+        self.mobile_ui_button = ttk.Button(
+            group,
+            text="UI movil",
+            command=self._edit_mobile_ui,
+        )
+        self._pack_action_button(self.mobile_ui_button)
+
         self.local_context_button = ttk.Button(
             group,
             text="Contexto local",
@@ -1278,8 +1287,14 @@ class YarbisDesktop(tk.Tk):
             f"Contexto local {local_context_status} "
             f"(modo={local_context_settings.get('mode', 'safe')}, {helper_text})."
         )
+        mobile_status = public_mobile_ui_status(state.get("service", {}).get("mobile_ui", {}))
+        if mobile_status["enabled"]:
+            mobile_url = mobile_status.get("tailscale_url") or mobile_status.get("local_url")
+            mobile_text = f"UI movil activa ({mobile_url})."
+        else:
+            mobile_text = "UI movil desactivada."
         if not service_status["installed"]:
-            self.service_var.set(f"No instalado en SCM. {pulse_text} {local_context_text}")
+            self.service_var.set(f"No instalado en SCM. {pulse_text} {local_context_text} {mobile_text}")
             self.service_button_text.set("Instalar e iniciar")
         elif service_status["running"]:
             account_text = (
@@ -1290,7 +1305,7 @@ class YarbisDesktop(tk.Tk):
             self.service_var.set(
                 f"Activo en SCM (PID {service_status['pid']}, "
                 f"arranque={service_status['start_type']}{account_text}). "
-                f"{pulse_text} {local_context_text}"
+                f"{pulse_text} {local_context_text} {mobile_text}"
             )
             self.service_button_text.set("Detener servicio")
         else:
@@ -1302,7 +1317,7 @@ class YarbisDesktop(tk.Tk):
             self.service_var.set(
                 f"Instalado en SCM, detenido "
                 f"(arranque={service_status['start_type']}{account_text}). "
-                f"{pulse_text} {local_context_text}"
+                f"{pulse_text} {local_context_text} {mobile_text}"
             )
             self.service_button_text.set("Iniciar servicio")
         autostart_enabled = bool(service_status["autostart_enabled"])
@@ -1835,6 +1850,35 @@ class YarbisDesktop(tk.Tk):
             return
 
         self._append_activity("Pulso proactivo", result)
+        self.refresh_state_view()
+
+    def _edit_mobile_ui(self):
+        settings = get_mobile_ui_settings()
+        dialog = ServiceMobileUiDialog(
+            self,
+            initial_settings=settings,
+            status=public_mobile_ui_status(settings),
+        )
+        if dialog.result is None:
+            return
+
+        try:
+            result = update_mobile_ui_settings(**dialog.result)
+        except ValueError as exc:
+            messagebox.showwarning("Yarbis", str(exc), parent=self)
+            return
+
+        status = public_mobile_ui_status()
+        url = status.get("tailscale_url") or status.get("local_url")
+        if url:
+            try:
+                self.clipboard_clear()
+                self.clipboard_append(url)
+                self.update()
+                result += f"\nURL copiada al portapapeles: {url}"
+            except tk.TclError:
+                pass
+        self._append_activity("UI movil", result)
         self.refresh_state_view()
 
     def _edit_local_context(self):
