@@ -14,6 +14,29 @@ TEST_RUNTIME_DIR = Path.cwd() / "tests_runtime"
 
 
 class AgentTestCase(unittest.TestCase):
+    def test_run_one_cycle_counter_increment_skips_auto_backup(self):
+        seeded_state = memory.default_state()
+        calls = []
+
+        def fake_state_transaction(label, mutator, create_backup=True):
+            calls.append((label, create_backup))
+            return mutator(seeded_state)
+
+        with patch.object(agent, "load_state", return_value=seeded_state):
+            with patch.object(agent, "_stop_requested_for_operation", return_value=False):
+                with patch.object(agent, "_is_waiting_for_user_input", return_value=False):
+                    with patch.object(
+                        agent,
+                        "_apply_model_runtime_settings",
+                        side_effect=RuntimeError("sentinel"),
+                    ):
+                        with patch.object(agent, "state_transaction", side_effect=fake_state_transaction):
+                            with self.assertRaisesRegex(RuntimeError, "sentinel"):
+                                agent.run_one_cycle(max_steps=1)
+
+        self.assertIn(("run_one_cycle_increment", False), calls)
+        self.assertEqual(seeded_state["cycle_count"], 1)
+
     def test_run_one_cycle_does_not_advance_while_waiting_for_user_input(self):
         state_path = TEST_RUNTIME_DIR / "agent_waiting_state.json"
         state_path.parent.mkdir(parents=True, exist_ok=True)

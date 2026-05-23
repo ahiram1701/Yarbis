@@ -23,6 +23,22 @@ def _free_port() -> int:
 class YarbisMobileTestCase(unittest.TestCase):
     def tearDown(self):
         yarbis_mobile.stop_mobile_ui_servers()
+        yarbis_mobile._MOBILE_VALUE_CACHE.clear()
+
+    def _service_status(self):
+        return {
+            "service_name": "Yarbis",
+            "display_name": "Yarbis",
+            "installed": True,
+            "running": True,
+            "state": "running",
+            "pid": 123,
+            "autostart_enabled": True,
+            "start_type": "auto_start",
+            "account_name": "LocalSystem",
+            "log_file": "",
+            "service_binary": "",
+        }
 
     def test_pin_hash_and_session_cookie_round_trip(self):
         pin_hash, pin_salt = yarbis_mobile.hash_mobile_pin("1234")
@@ -105,6 +121,113 @@ class YarbisMobileTestCase(unittest.TestCase):
             finally:
                 server.shutdown()
                 server.server_close()
+
+    def test_http_api_state_view_query_uses_partial_state(self):
+        state_path = TEST_RUNTIME_DIR / "mobile_http_view_state.json"
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+
+        with patch.object(memory, "STATE_FILE", state_path):
+            memory.save_state(memory.default_state())
+            yarbis_mobile.update_mobile_ui_settings(enabled=True, port=8787, pin="1357")
+            server = yarbis_mobile._MobileHTTPServer(("127.0.0.1", 0), yarbis_mobile.MobileRequestHandler)
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            port = int(server.server_address[1])
+            try:
+                conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+                conn.request(
+                    "POST",
+                    "/api/login",
+                    body=json.dumps({"pin": "1357"}),
+                    headers={"Content-Type": "application/json"},
+                )
+                response = conn.getresponse()
+                response.read()
+                cookie = response.getheader("Set-Cookie")
+
+                with patch.object(yarbis_mobile, "_public_state", return_value={"view": "context"}) as state_mock:
+                    conn.request("GET", "/api/state?view=context", headers={"Cookie": cookie})
+                    response = conn.getresponse()
+                    payload = json.loads(response.read().decode("utf-8"))
+
+                self.assertEqual(response.status, 200)
+                self.assertEqual(payload["state"], {"view": "context"})
+                state_mock.assert_called_once_with("context")
+            finally:
+                server.shutdown()
+                server.server_close()
+
+    def test_public_state_default_is_lightweight_and_loads_state_once(self):
+        seeded_state = memory.default_state()
+        seeded_state["messages"] = [
+            {"role": "assistant", "content": "x" * 4000}
+            for _ in range(100)
+        ]
+        seeded_state["last_result"] = "r" * (yarbis_mobile.MOBILE_LAST_RESULT_CHARS + 20)
+
+        with patch.object(yarbis_mobile, "load_state", return_value=memory.normalize_state(seeded_state)) as load_mock:
+            with patch.object(yarbis_mobile, "get_service_status", return_value=self._service_status()):
+                with patch.object(yarbis_mobile, "detect_tailscale_ipv4", return_value=""):
+                    payload = yarbis_mobile._public_state()
+
+        self.assertEqual(load_mock.call_count, 1)
+        self.assertIn("jobs", payload)
+        self.assertIn("health_text", payload)
+        self.assertNotIn("messages", payload)
+        self.assertNotIn("activity_text", payload)
+        self.assertNotIn("summary_text", payload)
+        self.assertNotIn("memory_protection_status", payload)
+        self.assertLess(len(payload["last_result"]), yarbis_mobile.MOBILE_LAST_RESULT_CHARS + 100)
+
+    def test_public_state_views_are_lazy(self):
+        seeded_state = memory.normalize_state({
+            "goal": "demo movil",
+            "profile": {"name": "Ana"},
+            "notes": [{"id": "note-1", "title": "Nota", "content": "Contenido"}],
+            "tasks": [{"id": "task-1", "title": "Tarea", "status": "pending"}],
+            "coding": {"workspace_path": r"C:\DEV\demo", "pending_proposal_ids": ["prop-1"]},
+        })
+
+        with patch.object(yarbis_mobile, "load_state", return_value=seeded_state):
+            with patch.object(yarbis_mobile, "get_service_status", return_value=self._service_status()):
+                with patch.object(yarbis_mobile, "detect_tailscale_ipv4", return_value=""):
+                    context_payload = yarbis_mobile._public_state("context")
+                    settings_payload = yarbis_mobile._public_state("settings")
+                    activity_payload = yarbis_mobile._public_state("activity")
+
+        self.assertEqual(context_payload["profile"]["name"], "Ana")
+        self.assertIn("prop-1", context_payload["coding"]["proposals_text"])
+        self.assertIn("model_provider", settings_payload)
+        self.assertIn("memory_protection_status", settings_payload)
+        self.assertIn("summary_text", activity_payload)
+        self.assertIn("activity_text", activity_payload)
+
+    def test_mobile_activity_history_uses_small_lazy_limits(self):
+        seeded_state = memory.default_state()
+        event = {
+            "timestamp": "2026-05-23T00:00:00+00:00",
+            "type": "remote_job_finished",
+            "label": "Respuesta",
+            "content": "ok",
+        }
+
+        with patch.object(yarbis_mobile.activity, "activity_history_signature", return_value=((1, 1), (2, 2))):
+            with patch.object(yarbis_mobile.activity, "read_activity_log", return_value="historial") as log_mock:
+                with patch.object(yarbis_mobile.activity, "read_recent_events", return_value=[event]) as events_mock:
+                    rendered = yarbis_mobile._mobile_activity_history(seeded_state)
+
+        log_mock.assert_called_once_with(max_bytes=yarbis_mobile.MOBILE_ACTIVITY_MAX_BYTES)
+        events_mock.assert_called_once_with(limit=yarbis_mobile.MOBILE_ACTIVITY_EVENT_LIMIT)
+        self.assertIn("historial", rendered)
+        self.assertIn("Respuesta remoto finalizado", rendered)
+
+    def test_mobile_html_uses_lazy_views_and_slow_auto_refresh(self):
+        html = yarbis_mobile._html_page()
+
+        self.assertIn("refreshInFlight", html)
+        self.assertIn("statePath(name)", html)
+        self.assertIn("currentTab === \"activity\"", html)
+        self.assertIn("}, 15000);", html)
 
     def test_ensure_mobile_ui_servers_starts_localhost_when_tailscale_missing(self):
         state_path = TEST_RUNTIME_DIR / "mobile_server_state.json"

@@ -14,8 +14,10 @@ from http import HTTPStatus
 from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from urllib.parse import parse_qs, urlparse
 
 import activity
+from secrets_redaction import build_secret_redactor
 from memory import (
     DEFAULT_MOBILE_UI_PORT,
     DEFAULT_OLLAMA_MODEL,
@@ -31,11 +33,8 @@ from memory import (
 )
 from service_manager import (
     format_health_status,
-    format_readiness_status,
     get_service_status,
-    health_status,
     install_service,
-    readiness_status,
     remove_service,
     set_autostart_enabled,
     start_service,
@@ -46,21 +45,15 @@ from session import (
     coding_apply_proposal_text,
     coding_discard_proposal_text,
     coding_get_proposal_text,
-    coding_list_proposals_text,
     coding_set_workspace_text,
     create_memory_backup_text,
     factory_reset_yarbis,
-    get_local_context_settings,
-    get_model_provider_settings,
     get_notification_settings,
-    get_service_proactive_settings,
     import_memory_backup_text,
     inspect_memory_backup_text,
-    memory_protection_status_text,
     request_stop_current_operation,
     save_note_text,
     send_test_notification,
-    social_accounts_overview_text,
     start_social_oauth_text,
     update_goal,
     update_local_context_settings,
@@ -76,8 +69,6 @@ from session import (
 from tools import (
     delete_note,
     get_note,
-    list_social_drafts,
-    list_tasks,
     open_assisted_social_post,
     set_plan,
     update_internet_settings,
@@ -92,11 +83,17 @@ PIN_HASH_ITERATIONS = 200_000
 MAX_REQUEST_BYTES = 512 * 1024
 MAX_JOBS = 50
 MOBILE_JOB_TIMEOUT_SECONDS = 30 * 60
+MOBILE_CACHE_TTL_SECONDS = 10.0
+MOBILE_ACTIVITY_EVENT_LIMIT = 40
+MOBILE_ACTIVITY_MAX_BYTES = 32 * 1024
+MOBILE_LAST_RESULT_CHARS = 6_000
 _MOBILE_LOCK = threading.RLock()
 _MOBILE_SERVERS: list[dict] = []
 _MOBILE_SERVER_KEY: tuple | None = None
 _JOBS: dict[str, dict] = {}
 _JOBS_LOCK = threading.RLock()
+_MOBILE_CACHE_LOCK = threading.RLock()
+_MOBILE_VALUE_CACHE: dict[str, dict] = {}
 
 _MOBILE_SESSION_OPERATION_SCRIPT = r"""
 import json
@@ -157,6 +154,44 @@ def _utc_now() -> str:
 
 def _bool_text(value: bool) -> str:
     return "activo" if value else "desactivado"
+
+
+def _truncate_text(value: object, max_chars: int = MOBILE_LAST_RESULT_CHARS) -> str:
+    text = str(value or "")
+    if len(text) <= max_chars:
+        return text
+    omitted = len(text) - max_chars
+    return f"{text[:max_chars].rstrip()}\n\n[recortado en movil: {omitted} caracteres mas]"
+
+
+def _cached_value(key: str, signature, ttl_seconds: float, builder):
+    now = time.monotonic()
+    with _MOBILE_CACHE_LOCK:
+        cached = _MOBILE_VALUE_CACHE.get(key)
+        if (
+            cached
+            and cached.get("signature") == signature
+            and now - float(cached.get("created_at", 0.0)) < ttl_seconds
+        ):
+            return cached.get("value")
+
+    value = builder()
+    with _MOBILE_CACHE_LOCK:
+        _MOBILE_VALUE_CACHE[key] = {
+            "created_at": now,
+            "signature": signature,
+            "value": value,
+        }
+    return value
+
+
+def _cached_tailscale_ipv4() -> str:
+    return str(_cached_value(
+        "tailscale_ipv4",
+        "tailscale-ipv4",
+        MOBILE_CACHE_TTL_SECONDS,
+        detect_tailscale_ipv4,
+    ) or "")
 
 
 def _b64_encode(raw: bytes) -> str:
@@ -371,7 +406,7 @@ def _active_mobile_urls() -> list[str]:
 def public_mobile_ui_status(settings: dict | None = None) -> dict:
     settings = settings or get_mobile_ui_settings()
     port = int(settings.get("port", DEFAULT_MOBILE_UI_PORT) or DEFAULT_MOBILE_UI_PORT)
-    tailscale_ip = detect_tailscale_ipv4()
+    tailscale_ip = _cached_tailscale_ipv4()
     return {
         "enabled": bool(settings.get("enabled")),
         "configured": bool(str(settings.get("pin_hash", "")).strip()),
@@ -610,58 +645,275 @@ def _public_social(state: dict) -> dict:
     }
 
 
-def _public_state() -> dict:
-    state = load_state()
-    model_provider = get_model_provider_settings()
+def _model_provider_from_state(state: dict) -> dict:
+    model_provider = state.get("model_provider", {}) if isinstance(state, dict) else {}
+    if not isinstance(model_provider, dict):
+        model_provider = {}
+    default_provider = str(model_provider.get("default", MODEL_PROVIDER_OLLAMA)).strip().lower()
+    if default_provider not in {MODEL_PROVIDER_OLLAMA, MODEL_PROVIDER_OPENROUTER}:
+        default_provider = MODEL_PROVIDER_OLLAMA
     ollama = model_provider.get(MODEL_PROVIDER_OLLAMA, state.get("ollama", {}))
+    if not isinstance(ollama, dict):
+        ollama = {}
     openrouter = model_provider.get(MODEL_PROVIDER_OPENROUTER, {})
+    if not isinstance(openrouter, dict):
+        openrouter = {}
+    return {
+        "default": default_provider,
+        MODEL_PROVIDER_OLLAMA: _public_model_settings(ollama, MODEL_PROVIDER_OLLAMA),
+        MODEL_PROVIDER_OPENROUTER: _public_model_settings(openrouter, MODEL_PROVIDER_OPENROUTER),
+    }
+
+
+def _mobile_health_status_from_state(state: dict, service_status: dict) -> dict:
+    notifications = state.get("notifications", {}) if isinstance(state, dict) else {}
+    if not isinstance(notifications, dict):
+        notifications = {}
+    channels = notifications.get("channels", [])
+    if not isinstance(channels, list):
+        channels = []
+    telegram = notifications.get("telegram", {})
+    if not isinstance(telegram, dict):
+        telegram = {}
+
     service = state.get("service", {})
-    service_status = get_service_status()
-    readiness = readiness_status()
-    health = health_status()
+    if not isinstance(service, dict):
+        service = {}
+    proactive = service.get("proactive", {})
+    if not isinstance(proactive, dict):
+        proactive = {}
     mobile_settings = service.get("mobile_ui", {})
+    if not isinstance(mobile_settings, dict):
+        mobile_settings = {}
+    runtime = state.get("runtime", {})
+    if not isinstance(runtime, dict):
+        runtime = {}
+    thinking = runtime.get("thinking", {})
+    if not isinstance(thinking, dict):
+        thinking = {}
+
+    model_provider = _model_provider_from_state(state)
+    provider = model_provider.get("default", MODEL_PROVIDER_OLLAMA)
+    active_model = dict(model_provider.get(provider, {}))
+    active_model["label"] = "OpenRouter" if provider == MODEL_PROVIDER_OPENROUTER else "Ollama"
+    operation_active = bool(thinking.get("active") and str(thinking.get("label", "")).strip())
+
+    return {
+        "service": service_status,
+        "telegram": {
+            "enabled": bool(notifications.get("enabled", True) and "telegram" in channels),
+            "configured": bool(str(telegram.get("bot_token", "")).strip()),
+            "linked": bool(str(telegram.get("chat_id", "")).strip()),
+        },
+        "proactive": {
+            "enabled": bool(proactive.get("enabled")),
+            "interval_seconds": proactive.get("interval_seconds"),
+            "cycles": proactive.get("cycles"),
+            "model": str(proactive.get("model", "")).strip(),
+            "last_pulse_at": str(proactive.get("last_pulse_at", "")).strip(),
+        },
+        "mobile_ui": {
+            "enabled": bool(mobile_settings.get("enabled")),
+            "configured": bool(str(mobile_settings.get("pin_hash", "")).strip()),
+            "port": mobile_settings.get("port"),
+            "last_bind_error": str(mobile_settings.get("last_bind_error", "")).strip(),
+        },
+        "operation": {
+            "active": operation_active,
+            "label": str(thinking.get("label", "")).strip() if operation_active else "",
+            "operation_id": str(thinking.get("operation_id", "")).strip() if operation_active else "",
+            "started_at": str(thinking.get("started_at", "")).strip() if operation_active else "",
+        },
+        "ollama": model_provider.get(MODEL_PROVIDER_OLLAMA, {}),
+        "openrouter": model_provider.get(MODEL_PROVIDER_OPENROUTER, {}),
+        "model_provider": active_model,
+        "events_file": str(activity.EVENTS_FILE),
+        "state_error": "",
+    }
+
+
+def _mobile_readiness_text_from_state(state: dict, service_status: dict) -> str:
+    if service_status.get("running"):
+        return "Servicio activo. UI movil lista."
+    goal = str(state.get("goal", "")).strip() if isinstance(state, dict) else ""
+    if not service_status.get("installed"):
+        return "Servicio no instalado. La UI puede usarse mientras Yarbis este abierto."
+    if not goal:
+        return "Servicio detenido y falta objetivo principal."
+    return f"Servicio detenido ({service_status.get('state', 'unknown')})."
+
+
+def _mobile_memory_protection_status(state: dict) -> str:
+    settings = state.get("memory_protection", {}) if isinstance(state, dict) else {}
+    if not isinstance(settings, dict):
+        settings = {}
+    retention = settings.get("retention", {})
+    if not isinstance(retention, dict):
+        retention = {}
+    lines = [
+        f"Proteccion: {'activa' if settings.get('enabled') else 'desactivada'}",
+        f"Backup por cambio: {'si' if settings.get('backup_on_every_change') else 'no'}",
+        f"Verificar al escribir: {'si' if settings.get('verify_after_write') else 'no'}",
+        f"Auto-restaurar: {'si' if settings.get('auto_restore') else 'no'}",
+        f"Max backups: {retention.get('max_auto_backups', '-')}",
+        f"Conservar diarios: {retention.get('keep_daily_days', '-')} dias",
+    ]
+    mirror_dir = str(settings.get("mirror_dir", "")).strip()
+    if mirror_dir:
+        lines.append(f"Espejo: {mirror_dir}")
+    if settings.get("last_backup_at"):
+        lines.append(f"Ultimo backup: {settings['last_backup_at']}")
+    if settings.get("last_error"):
+        lines.append(f"Ultimo aviso: {settings['last_error']}")
+    return "\n".join(lines)
+
+
+def _mobile_social_accounts_text(state: dict) -> str:
+    social = state.get("social", {}) if isinstance(state, dict) else {}
+    if not isinstance(social, dict):
+        social = {}
+    accounts = social.get("accounts", []) if isinstance(social.get("accounts", []), list) else []
+    drafts = social.get("drafts", []) if isinstance(social.get("drafts", []), list) else []
+    pending = (
+        social.get("pending_publications", [])
+        if isinstance(social.get("pending_publications", []), list)
+        else []
+    )
+    return (
+        f"Cuentas: {len(accounts)}\n"
+        f"Drafts: {len(drafts)}\n"
+        f"Pendientes de confirmacion: {len(pending)}"
+    )
+
+
+def _mobile_coding_proposals_text(state: dict) -> str:
+    coding = state.get("coding", {}) if isinstance(state, dict) else {}
+    if not isinstance(coding, dict):
+        coding = {}
+    pending_ids = coding.get("pending_proposal_ids", [])
+    if not isinstance(pending_ids, list):
+        pending_ids = []
+    cleaned_ids = [str(item).strip() for item in pending_ids if str(item).strip()]
+    if not cleaned_ids:
+        return "No hay propuestas de coding pendientes."
+    return "Propuestas pendientes:\n" + "\n".join(f"- {proposal_id}" for proposal_id in cleaned_ids[:20])
+
+
+def _mobile_activity_history(state: dict) -> str:
+    signature = activity.activity_history_signature()
+
+    def build() -> str:
+        redactor = build_secret_redactor(state)
+        human_log = activity.read_activity_log(max_bytes=MOBILE_ACTIVITY_MAX_BYTES)
+        rendered_events = []
+        for event in activity.read_recent_events(limit=MOBILE_ACTIVITY_EVENT_LIMIT):
+            rendered_events.append(activity.format_activity_entry(
+                activity._event_title(event),
+                activity._event_content(event),
+                timestamp=activity._parse_event_timestamp(event.get("timestamp", "")),
+                redactor=redactor,
+            ))
+        event_log = "".join(rendered_events)
+        if human_log and event_log:
+            return human_log + "Eventos recientes\n\n" + event_log
+        return human_log or event_log
+
+    return str(_cached_value(
+        "activity_history",
+        signature,
+        MOBILE_CACHE_TTL_SECONDS,
+        build,
+    ) or "")
+
+
+def _public_base_state(state: dict) -> dict:
+    service = state.get("service", {}) if isinstance(state, dict) else {}
+    if not isinstance(service, dict):
+        service = {}
+    mobile_settings = service.get("mobile_ui", {})
+    if not isinstance(mobile_settings, dict):
+        mobile_settings = {}
+    service_status = get_service_status()
+    health = _mobile_health_status_from_state(state, service_status)
     return {
         "now": _utc_now(),
         "goal": state.get("goal", ""),
         "cycle_count": state.get("cycle_count", 0),
-        "last_result": state.get("last_result", ""),
+        "last_result": _truncate_text(state.get("last_result", "")),
+        "awaiting_user_input": state.get("awaiting_user_input", {}),
+        "service": {
+            "status": service_status,
+            "mobile_ui": public_mobile_ui_status(mobile_settings),
+        },
+        "health_text": format_health_status(health),
+        "readiness_text": _mobile_readiness_text_from_state(state, service_status),
+        "jobs": _recent_jobs(),
+    }
+
+
+def _public_context_state(state: dict) -> dict:
+    coding = state.get("coding", {}) if isinstance(state.get("coding", {}), dict) else {}
+    return {
         "profile": state.get("profile", {}),
         "tasks": state.get("tasks", []),
         "notes": state.get("notes", []),
         "current_plan": state.get("current_plan", []),
-        "awaiting_user_input": state.get("awaiting_user_input", {}),
         "autonomy": state.get("autonomy", {}),
         "coding": {
-            **(state.get("coding", {}) if isinstance(state.get("coding", {}), dict) else {}),
-            "proposals_text": coding_list_proposals_text(status="pending", limit=20),
+            **coding,
+            "proposals_text": _mobile_coding_proposals_text(state),
         },
+    }
+
+
+def _public_settings_state(state: dict) -> dict:
+    service = state.get("service", {}) if isinstance(state.get("service", {}), dict) else {}
+    mobile_settings = service.get("mobile_ui", {}) if isinstance(service.get("mobile_ui", {}), dict) else {}
+    social = _public_social(state)
+    return {
         "internet": state.get("internet", {}),
         "memory_protection": state.get("memory_protection", {}),
-        "memory_protection_status": memory_protection_status_text(),
-        "model_provider": {
-            "default": model_provider.get("default", MODEL_PROVIDER_OLLAMA),
-            MODEL_PROVIDER_OLLAMA: _public_model_settings(ollama, MODEL_PROVIDER_OLLAMA),
-            MODEL_PROVIDER_OPENROUTER: _public_model_settings(openrouter, MODEL_PROVIDER_OPENROUTER),
-        },
+        "memory_protection_status": _mobile_memory_protection_status(state),
+        "model_provider": _model_provider_from_state(state),
         "service": {
-            "status": service_status,
-            "proactive": get_service_proactive_settings(),
+            "proactive": service.get("proactive", {}),
             "mobile_ui": public_mobile_ui_status(mobile_settings),
         },
-        "local_context": get_local_context_settings(),
-        "notifications": _public_notifications(get_notification_settings()),
-        "social": _public_social(state),
-        "social_accounts_text": social_accounts_overview_text(),
-        "social_drafts_text": list_social_drafts(status="all", limit=15),
-        "social_publications": _public_social(state)["pending_publications"],
-        "tasks_text": list_tasks(status="all", limit=30),
-        "summary_text": render_state_summary(state),
-        "activity_text": activity.read_activity_history(event_limit=80, activity_max_bytes=128 * 1024),
-        "health_text": format_health_status(health),
-        "readiness_text": format_readiness_status(readiness),
-        "readiness": readiness,
-        "jobs": _recent_jobs(),
+        "local_context": state.get("local_context", {}),
+        "notifications": _public_notifications(state.get("notifications", {})),
+        "social": social,
+        "social_accounts_text": _mobile_social_accounts_text(state),
+        "social_drafts_text": f"Drafts: {social.get('drafts_count', 0)}",
+        "social_publications": social["pending_publications"],
     }
+
+
+def _public_activity_state(state: dict) -> dict:
+    return {
+        "summary_text": render_state_summary(state),
+        "activity_text": _mobile_activity_history(state),
+    }
+
+
+def _public_state(view: str = "") -> dict:
+    normalized_view = str(view or "").strip().lower()
+    if normalized_view not in {"", "home", "run", "context", "settings", "activity"}:
+        raise ValueError("Vista movil invalida.")
+
+    state = load_state()
+    public = _public_base_state(state)
+    view_state = {}
+    if normalized_view == "context":
+        view_state = _public_context_state(state)
+    elif normalized_view == "settings":
+        view_state = _public_settings_state(state)
+    elif normalized_view == "activity":
+        view_state = _public_activity_state(state)
+    view_service = view_state.pop("service", None)
+    if isinstance(view_service, dict):
+        public.setdefault("service", {}).update(view_service)
+    public.update(view_state)
+    return public
 
 
 def _payload_text(payload: dict, key: str, default: str = "") -> str:
@@ -1164,6 +1416,8 @@ pre {
 let csrfToken = "";
 let appState = null;
 let currentTab = "home";
+let refreshInFlight = false;
+const loadedViews = { home: true, run: true };
 const $ = (id) => document.getElementById(id);
 
 function escapeHtml(value) {
@@ -1204,11 +1458,14 @@ async function action(name, payload = {}) {
   });
   if (data.job) {
     toast(`${data.job.label} iniciado`);
+    if (!appState) appState = {};
+    appState.jobs = [data.job, ...((appState.jobs || []).filter(job => job.id !== data.job.id))].slice(0, 10);
+    renderCurrent();
     pollJob(data.job.id);
   } else {
     toast(data.result || "Listo");
+    await loadView(currentTab, true);
   }
-  await refresh();
   return data;
 }
 
@@ -1217,48 +1474,108 @@ async function pollJob(id) {
     await new Promise((resolve) => setTimeout(resolve, 1200));
     const data = await api(`/api/jobs/${encodeURIComponent(id)}`);
     if (!data.job || data.job.status === "running") continue;
+    if (!appState) appState = {};
+    appState.jobs = [data.job, ...((appState.jobs || []).filter(job => job.id !== data.job.id))].slice(0, 10);
     toast(data.job.result || data.job.error || "Operacion terminada");
-    await refresh();
+    renderCurrent();
+    await refresh({ silent: true });
     break;
   }
 }
 
-async function refresh() {
+function mergeState(nextState) {
+  const previous = appState || {};
+  appState = {
+    ...previous,
+    ...nextState,
+    service: {
+      ...(previous.service || {}),
+      ...(nextState.service || {}),
+      status: {
+        ...((previous.service || {}).status || {}),
+        ...((nextState.service || {}).status || {})
+      },
+      mobile_ui: {
+        ...((previous.service || {}).mobile_ui || {}),
+        ...((nextState.service || {}).mobile_ui || {})
+      },
+      proactive: {
+        ...((previous.service || {}).proactive || {}),
+        ...((nextState.service || {}).proactive || {})
+      }
+    }
+  };
+}
+
+function statePath(view = "") {
+  return view ? `/api/state?view=${encodeURIComponent(view)}` : "/api/state";
+}
+
+async function refresh(options = {}) {
+  if (refreshInFlight) return;
+  refreshInFlight = true;
   try {
-    const data = await api("/api/state");
+    const data = await api(statePath(""));
     csrfToken = data.csrf || csrfToken;
-    appState = data.state;
+    mergeState(data.state || {});
     $("loginView").classList.add("hidden");
     $("appView").classList.remove("hidden");
     $("tabs").classList.remove("hidden");
-    render();
+    renderCurrent();
   } catch (error) {
-    $("appView").classList.add("hidden");
-    $("tabs").classList.add("hidden");
-    $("loginView").classList.remove("hidden");
-    $("loginMessage").textContent = error.message.includes("503") ? error.message : "";
+    if (!options.silent) {
+      $("appView").classList.add("hidden");
+      $("tabs").classList.add("hidden");
+      $("loginView").classList.remove("hidden");
+      $("loginMessage").textContent = error.message.includes("503") ? error.message : "";
+    }
+  } finally {
+    refreshInFlight = false;
   }
 }
 
-function render() {
+async function loadView(name, force = false) {
+  if (name === "home" || name === "run") {
+    if (force || !appState) await refresh();
+    renderCurrent();
+    return;
+  }
+  if (!force && loadedViews[name]) {
+    renderCurrent();
+    return;
+  }
+  try {
+    const data = await api(statePath(name));
+    csrfToken = data.csrf || csrfToken;
+    mergeState(data.state || {});
+    loadedViews[name] = true;
+    renderCurrent();
+  } catch (error) {
+    toast(error.message);
+  }
+}
+
+function renderCurrent() {
   if (!appState) return;
-  const mobile = appState.service.mobile_ui;
+  const mobile = (appState.service || {}).mobile_ui || {};
   $("urlLine").textContent = mobile.tailscale_url || mobile.local_url || "";
-  renderHome();
-  renderRun();
-  renderContext();
-  renderSettings();
-  renderActivity();
+  if (currentTab === "home") renderHome();
+  else if (currentTab === "run") renderRun();
+  else if (currentTab === "context") renderContext();
+  else if (currentTab === "settings") renderSettings();
+  else if (currentTab === "activity") renderActivity();
 }
 
 function renderHome() {
   const pending = appState.awaiting_user_input || {};
-  const thinking = appState.service.status.running ? appState.health_text : appState.readiness_text;
+  const service = appState.service || {};
+  const status = service.status || {};
+  const thinking = status.running ? appState.health_text : appState.readiness_text;
   $("home").innerHTML = `
     <section class="section">
       <div class="grid two">
         <div class="panel metric"><span class="muted">Ciclos</span><strong>${escapeHtml(appState.cycle_count)}</strong></div>
-        <div class="panel metric"><span class="muted">Servicio</span><strong>${appState.service.status.running ? "Activo" : "Detenido"}</strong></div>
+        <div class="panel metric"><span class="muted">Servicio</span><strong>${status.running ? "Activo" : "Detenido"}</strong></div>
       </div>
     </section>
     <section class="section">
@@ -1369,6 +1686,10 @@ function renderContext() {
 }
 
 function renderSettings() {
+  if (!appState.model_provider) {
+    $("settings").innerHTML = `<section class="section"><div class="panel">Cargando configuracion...</div></section>`;
+    return;
+  }
   const mp = appState.model_provider;
   const provider = mp.default || "ollama";
   const active = mp[provider] || mp.ollama;
@@ -1487,6 +1808,13 @@ function renderSettings() {
 }
 
 function renderActivity() {
+  if (!("activity_text" in appState) && !("summary_text" in appState)) {
+    $("activity").innerHTML = `
+      <section class="section">
+        <div class="actions"><button data-action="refresh">Cargar actividad</button></div>
+      </section>`;
+    return;
+  }
   $("activity").innerHTML = `
     <section class="section">
       <div class="actions">
@@ -1508,6 +1836,8 @@ function showTab(name) {
   currentTab = name;
   document.querySelectorAll(".view").forEach(node => node.classList.toggle("active", node.id === name));
   document.querySelectorAll(".tab").forEach(node => node.classList.toggle("active", node.dataset.tab === name));
+  renderCurrent();
+  loadView(name);
 }
 
 document.addEventListener("click", async (event) => {
@@ -1525,7 +1855,7 @@ document.addEventListener("click", async (event) => {
       csrfToken = "";
       await refresh();
     } else if (name === "refresh") {
-      await refresh();
+      await loadView(currentTab, true);
     } else if (name === "run-cycle") {
       await action("run_cycle");
     } else if (name === "run-auto") {
@@ -1640,10 +1970,18 @@ $("loginForm").addEventListener("submit", async (event) => {
   }
 });
 
+function isEditingField() {
+  const tag = (document.activeElement && document.activeElement.tagName || "").toUpperCase();
+  return tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT";
+}
+
 refresh();
 window.setInterval(() => {
-  if (!$("appView").classList.contains("hidden")) refresh();
-}, 5000);
+  if ($("appView").classList.contains("hidden")) return;
+  if (currentTab === "activity") return;
+  if (isEditingField()) return;
+  refresh({ silent: true });
+}, 15000);
 </script>
 </body>
 </html>"""
@@ -1722,27 +2060,31 @@ class MobileRequestHandler(BaseHTTPRequestHandler):
         return settings, session
 
     def do_GET(self):
-        if self.path == "/" or self.path.startswith("/?"):
+        parsed = urlparse(self.path)
+        if parsed.path == "/":
             self._send_html(HTTPStatus.OK, _html_page())
             return
-        if self.path == "/api/state":
+        if parsed.path == "/api/state":
             try:
                 _settings, session = self._require_session({})
+                view = parse_qs(parsed.query).get("view", [""])[0]
                 self._send_json(HTTPStatus.OK, {
                     "ok": True,
                     "authenticated": True,
                     "csrf": session["csrf"],
-                    "state": _public_state(),
+                    "state": _public_state(view),
                 })
             except PermissionError as exc:
                 self._send_json(HTTPStatus.UNAUTHORIZED, {"ok": False, "error": str(exc)})
+            except ValueError as exc:
+                self._send_json(HTTPStatus.BAD_REQUEST, {"ok": False, "error": str(exc)})
             except Exception as exc:
                 self._send_json(HTTPStatus.INTERNAL_SERVER_ERROR, {"ok": False, "error": str(exc)})
             return
-        if self.path.startswith("/api/jobs/"):
+        if parsed.path.startswith("/api/jobs/"):
             try:
                 _settings, session = self._require_session({})
-                job_id = self.path.rsplit("/", 1)[-1]
+                job_id = parsed.path.rsplit("/", 1)[-1]
                 job = _get_job(job_id)
                 if not job:
                     self._send_json(HTTPStatus.NOT_FOUND, {"ok": False, "error": "Trabajo no encontrado."})

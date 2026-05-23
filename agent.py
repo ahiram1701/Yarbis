@@ -2155,6 +2155,7 @@ def run_one_cycle(max_steps=None, model_override: str | None = None):
             "cycle_count",
             current_state["cycle_count"] + 1,
         ),
+        create_backup=False,
     )
     state = load_state()
 
