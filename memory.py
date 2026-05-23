@@ -54,11 +54,14 @@ MAX_PLAN_ITEM_CHARS = 220
 MAX_AWAITING_INPUT_QUESTION_CHARS = 280
 MAX_AWAITING_INPUT_REASON_CHARS = 240
 MAX_AWAITING_INPUT_FIELDS = 8
+STATE_SCHEMA_VERSION = 2
 DEFAULT_MAX_STEPS_PER_CYCLE = 5
-DEFAULT_AUTO_CYCLES = 5
+LEGACY_DEFAULT_AUTO_CYCLES = 5
+DEFAULT_AUTO_CYCLES = None
 DEFAULT_SERVICE_PROACTIVE_ENABLED = True
 DEFAULT_SERVICE_PROACTIVE_INTERVAL_SECONDS = 30 * 60
-DEFAULT_SERVICE_PROACTIVE_CYCLES = 1
+LEGACY_DEFAULT_SERVICE_PROACTIVE_CYCLES = 1
+DEFAULT_SERVICE_PROACTIVE_CYCLES = None
 DEFAULT_SERVICE_PROACTIVE_START_DELAY_SECONDS = 60
 DEFAULT_SERVICE_PROACTIVE_MODEL = ""
 MODEL_PROVIDER_OLLAMA = "ollama"
@@ -154,10 +157,58 @@ DEFAULT_MEMORY_PROTECTION_KEEP_DAILY_DAYS = 90
 MAX_MEMORY_PROTECTION_MIRROR_DIR_CHARS = 1_000
 MAX_MEMORY_PROTECTION_TIMESTAMP_CHARS = 80
 MAX_MEMORY_PROTECTION_ERROR_CHARS = 600
+UNLIMITED_CYCLE_TEXT_VALUES = {
+    "",
+    "none",
+    "null",
+    "unlimited",
+    "sin limite",
+    "sin límite",
+    "ilimitado",
+    "ilimitados",
+    "hasta terminar",
+}
+
+
+def normalize_cycle_count(
+    value,
+    default: int | None = None,
+    *,
+    legacy_default: int | None = None,
+    migrate_legacy: bool = False,
+) -> int | None:
+    if value is None:
+        return None
+
+    candidate = value
+    if isinstance(candidate, str):
+        cleaned = candidate.strip()
+        if cleaned.lower() in UNLIMITED_CYCLE_TEXT_VALUES:
+            return None
+        candidate = cleaned
+
+    try:
+        parsed = int(candidate)
+    except (TypeError, ValueError):
+        return default
+
+    if parsed <= 0:
+        return default
+    if migrate_legacy and legacy_default is not None and parsed == legacy_default:
+        return None
+    return parsed
+
+
+def format_cycle_count(value, *, unlimited_text: str = "hasta terminar") -> str:
+    cycles = normalize_cycle_count(value)
+    if cycles is None:
+        return unlimited_text
+    return f"{cycles} ciclo(s)"
 
 
 def default_state():
     return {
+        "state_schema_version": STATE_SCHEMA_VERSION,
         "goal": DEFAULT_GOAL,
         "messages": [],
         "last_result": "",
@@ -537,7 +588,7 @@ def _normalize_plan(plan):
     )
 
 
-def _normalize_autonomy(autonomy):
+def _normalize_autonomy(autonomy, *, migrate_legacy_cycles: bool = False):
     defaults = default_state()["autonomy"]
     if not isinstance(autonomy, dict):
         autonomy = {}
@@ -552,13 +603,12 @@ def _normalize_autonomy(autonomy):
     except (TypeError, ValueError):
         normalized["max_steps_per_cycle"] = defaults["max_steps_per_cycle"]
 
-    try:
-        normalized["auto_cycles_default"] = max(
-            1,
-            min(20, int(autonomy.get("auto_cycles_default", defaults["auto_cycles_default"]))),
-        )
-    except (TypeError, ValueError):
-        normalized["auto_cycles_default"] = defaults["auto_cycles_default"]
+    normalized["auto_cycles_default"] = normalize_cycle_count(
+        autonomy.get("auto_cycles_default", defaults["auto_cycles_default"]),
+        default=defaults["auto_cycles_default"],
+        legacy_default=LEGACY_DEFAULT_AUTO_CYCLES,
+        migrate_legacy=migrate_legacy_cycles,
+    )
 
     return normalized
 
@@ -834,7 +884,7 @@ def _normalize_memory_protection(memory_protection):
     }
 
 
-def _normalize_service(service):
+def _normalize_service(service, *, migrate_legacy_cycles: bool = False):
     defaults = default_state()["service"]
     if not isinstance(service, dict):
         service = {}
@@ -858,13 +908,12 @@ def _normalize_service(service):
     except (TypeError, ValueError):
         interval_seconds = proactive_defaults["interval_seconds"]
 
-    try:
-        cycles = max(
-            1,
-            min(5, int(proactive.get("cycles", proactive_defaults["cycles"]))),
-        )
-    except (TypeError, ValueError):
-        cycles = proactive_defaults["cycles"]
+    cycles = normalize_cycle_count(
+        proactive.get("cycles", proactive_defaults["cycles"]),
+        default=proactive_defaults["cycles"],
+        legacy_default=LEGACY_DEFAULT_SERVICE_PROACTIVE_CYCLES,
+        migrate_legacy=migrate_legacy_cycles,
+    )
 
     try:
         start_delay_seconds = max(
@@ -1538,6 +1587,13 @@ def normalize_state(state):
     if not isinstance(state, dict):
         return normalized
 
+    try:
+        source_schema_version = int(state.get("state_schema_version", 1))
+    except (TypeError, ValueError):
+        source_schema_version = 1
+    migrate_legacy_cycles = source_schema_version < STATE_SCHEMA_VERSION
+    normalized["state_schema_version"] = STATE_SCHEMA_VERSION
+
     goal = str(state.get("goal", normalized["goal"])).strip()
     if goal in LEGACY_DEFAULT_GOALS:
         goal = DEFAULT_GOAL
@@ -1554,12 +1610,18 @@ def normalize_state(state):
     normalized["awaiting_user_input"] = _normalize_awaiting_user_input(
         state.get("awaiting_user_input", {}),
     )
-    normalized["autonomy"] = _normalize_autonomy(state.get("autonomy", {}))
+    normalized["autonomy"] = _normalize_autonomy(
+        state.get("autonomy", {}),
+        migrate_legacy_cycles=migrate_legacy_cycles,
+    )
     normalized["coding"] = _normalize_coding(state.get("coding", {}))
     normalized["memory_protection"] = _normalize_memory_protection(state.get("memory_protection", {}))
     normalized["model_provider"] = _normalize_model_provider(state)
     normalized["ollama"] = dict(normalized["model_provider"][MODEL_PROVIDER_OLLAMA])
-    normalized["service"] = _normalize_service(state.get("service", {}))
+    normalized["service"] = _normalize_service(
+        state.get("service", {}),
+        migrate_legacy_cycles=migrate_legacy_cycles,
+    )
     normalized["ui"] = _normalize_ui(state.get("ui", {}))
     normalized["runtime"] = _normalize_runtime(state.get("runtime", {}))
     normalized["local_context"] = _normalize_local_context(state.get("local_context", {}))
@@ -1609,6 +1671,8 @@ def render_state_summary(
         if task["status"] in {"pending", "in_progress", "blocked"}
     ]
     done_tasks = [task for task in normalized["tasks"] if task["status"] == "done"]
+    auto_cycles_text = format_cycle_count(normalized["autonomy"]["auto_cycles_default"])
+    proactive_cycles_text = format_cycle_count(normalized["service"]["proactive"]["cycles"])
 
     lines = [
         f"Objetivo: {normalized['goal']}",
@@ -1621,7 +1685,7 @@ def render_state_summary(
         (
             "Autonomia: "
             f"{normalized['autonomy']['max_steps_per_cycle']} pasos/ciclo, "
-            f"{normalized['autonomy']['auto_cycles_default']} ciclos por defecto"
+            f"{auto_cycles_text} por defecto"
         ),
         (
             "Coding: "
@@ -1648,7 +1712,7 @@ def render_state_summary(
             "Pulso proactivo: "
             f"{'activo' if normalized['service']['proactive']['enabled'] else 'desactivado'}, "
             f"modelo={normalized['service']['proactive']['model'] or 'modelo principal'}, "
-            f"{normalized['service']['proactive']['cycles']} ciclo(s) cada "
+            f"{proactive_cycles_text} cada "
             f"{normalized['service']['proactive']['interval_seconds']}s, "
             f"espera inicial {normalized['service']['proactive']['start_delay_seconds']}s"
         ),

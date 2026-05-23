@@ -374,6 +374,27 @@ class SessionTestCase(unittest.TestCase):
         self.assertEqual(state["messages"][-1]["role"], "user")
         self.assertEqual(state["messages"][-1]["content"], "Trabajemos el nicho fitness")
 
+    def test_submit_user_reply_resumes_autonomy_without_default_cycle_cap(self):
+        state_path = TEST_RUNTIME_DIR / "session_reply_unlimited_state.json"
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+
+        seeded_state = memory.normalize_state({
+            "awaiting_user_input": {
+                "pending": True,
+                "question": "Que nicho quieres trabajar?",
+                "reason": "Falta contexto",
+            },
+        })
+
+        with patch.object(memory, "STATE_FILE", state_path):
+            memory.save_state(seeded_state)
+            with patch.object(session, "run_auto_with_output", return_value="Modo autonomo ejecutado.") as auto_mock:
+                result = session.submit_user_reply("Trabajemos el nicho fitness")
+
+        self.assertIn("Respuesta guardada", result)
+        self.assertEqual(auto_mock.call_count, 1)
+        self.assertIsNone(auto_mock.call_args.kwargs["cycles"])
+
     def test_submit_user_reply_expands_affirmative_pending_reply_for_autonomy(self):
         state_path = TEST_RUNTIME_DIR / "session_affirmative_reply_state.json"
         state_path.parent.mkdir(parents=True, exist_ok=True)
@@ -764,6 +785,23 @@ class SessionTestCase(unittest.TestCase):
         self.assertEqual(settings["cycles"], 2)
         self.assertEqual(settings["start_delay_seconds"], 30)
         self.assertEqual(settings["model"], "qwen3.5:0.8b")
+
+    def test_update_service_proactive_settings_accepts_unlimited_cycles(self):
+        state_path = TEST_RUNTIME_DIR / "session_service_pulse_unlimited_state.json"
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+
+        with patch.object(memory, "STATE_FILE", state_path):
+            memory.save_state(memory.default_state())
+            result = session.update_service_proactive_settings(
+                enabled=True,
+                interval_seconds=900,
+                cycles="",
+                start_delay_seconds=30,
+            )
+            settings = session.get_service_proactive_settings()
+
+        self.assertIn("hasta terminar", result)
+        self.assertIsNone(settings["cycles"])
 
     def test_update_service_proactive_settings_rejects_invalid_values(self):
         state_path = TEST_RUNTIME_DIR / "session_service_pulse_invalid_state.json"

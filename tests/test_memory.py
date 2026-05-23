@@ -603,9 +603,46 @@ class MemoryTestCase(unittest.TestCase):
 
         self.assertFalse(proactive["enabled"])
         self.assertEqual(proactive["interval_seconds"], 60)
-        self.assertEqual(proactive["cycles"], 5)
+        self.assertEqual(proactive["cycles"], 99)
         self.assertEqual(proactive["start_delay_seconds"], 0)
         self.assertEqual(proactive["model"], "qwen3.5:0.8b")
+
+    def test_normalize_state_migrates_legacy_cycle_defaults_to_unlimited(self):
+        normalized = memory.normalize_state({
+            "autonomy": {
+                "auto_cycles_default": memory.LEGACY_DEFAULT_AUTO_CYCLES,
+            },
+            "service": {
+                "proactive": {
+                    "cycles": memory.LEGACY_DEFAULT_SERVICE_PROACTIVE_CYCLES,
+                },
+            },
+        })
+
+        self.assertIsNone(normalized["autonomy"]["auto_cycles_default"])
+        self.assertIsNone(normalized["service"]["proactive"]["cycles"])
+
+    def test_normalize_state_preserves_explicit_cycle_counts_after_migration(self):
+        normalized = memory.normalize_state({
+            "state_schema_version": memory.STATE_SCHEMA_VERSION,
+            "autonomy": {
+                "auto_cycles_default": memory.LEGACY_DEFAULT_AUTO_CYCLES,
+            },
+            "service": {
+                "proactive": {
+                    "cycles": memory.LEGACY_DEFAULT_SERVICE_PROACTIVE_CYCLES,
+                },
+            },
+        })
+
+        self.assertEqual(
+            normalized["autonomy"]["auto_cycles_default"],
+            memory.LEGACY_DEFAULT_AUTO_CYCLES,
+        )
+        self.assertEqual(
+            normalized["service"]["proactive"]["cycles"],
+            memory.LEGACY_DEFAULT_SERVICE_PROACTIVE_CYCLES,
+        )
 
     def test_normalize_state_sanitizes_local_context_settings(self):
         normalized = memory.normalize_state({

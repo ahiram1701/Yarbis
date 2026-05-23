@@ -375,7 +375,7 @@ def _help_text() -> str:
         "/goal TEXTO - cambiar el objetivo\n"
         "/objetivo TEXTO - cambiar el objetivo\n"
         "/run - ejecutar un ciclo\n"
-        "/auto - ejecutar el modo autonomo con los ciclos por defecto\n"
+        "/auto - ejecutar el modo autonomo hasta terminar\n"
         "/auto N - ejecutar N ciclos\n"
         "/proveedor ollama|openrouter - elegir proveedor por defecto\n"
         "/modelo NOMBRE - cambiar el modelo de Ollama\n"

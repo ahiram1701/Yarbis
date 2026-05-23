@@ -32,6 +32,7 @@ from memory import (
     MODEL_PROVIDER_OPENROUTER,
     VALID_MODEL_PROVIDERS,
     load_state,
+    normalize_cycle_count,
     render_state_summary,
     state_transaction,
 )
@@ -2403,12 +2404,14 @@ def run_one_cycle(max_steps=None, model_override: str | None = None):
 def run_autonomous_session(cycles=None, model_override: str | None = None):
     state = load_state()
     if cycles is None:
-        cycles = state["autonomy"]["auto_cycles_default"]
+        cycle_limit = normalize_cycle_count(state["autonomy"]["auto_cycles_default"])
+    else:
+        cycle_limit = normalize_cycle_count(cycles, default=0)
 
     completed_cycles = 0
     saw_tasks = bool(state["tasks"])
 
-    for _ in range(cycles):
+    while cycle_limit is None or completed_cycles < cycle_limit:
         current_state = load_state()
         if _stop_requested_for_operation(current_state):
             print("\nYarbis: operacion detenida por solicitud del usuario.")

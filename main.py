@@ -253,7 +253,7 @@ def main():
                     continue
 
                 try:
-                    cycles_text = input("Cuantos ciclos? (vacio = por defecto): ").strip()
+                    cycles_text = input("Cuantos ciclos? (vacio = hasta terminar): ").strip()
                 except (EOFError, KeyboardInterrupt):
                     print("\nOperacion cancelada.")
                     continue

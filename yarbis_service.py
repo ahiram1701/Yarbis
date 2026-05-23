@@ -20,7 +20,9 @@ from memory import (
     DEFAULT_SERVICE_PROACTIVE_START_DELAY_SECONDS,
     MAX_OLLAMA_MODEL_CHARS,
     default_state,
+    format_cycle_count,
     load_state,
+    normalize_cycle_count,
     state_transaction,
 )
 from proactive_context import build_proactive_tick_message
@@ -166,6 +168,18 @@ def _env_int(name: str, default: int, minimum: int, maximum: int) -> int:
     return max(minimum, min(maximum, parsed))
 
 
+def _env_optional_positive_int(name: str, default: int | None) -> int | None:
+    raw_value = os.getenv(name)
+    default_value = normalize_cycle_count(default)
+    if raw_value is None:
+        return default_value
+
+    parsed = normalize_cycle_count(raw_value, default=0)
+    if parsed == 0:
+        return default_value
+    return parsed
+
+
 def _env_text(name: str, default: str, maximum_chars: int) -> str:
     raw_value = os.getenv(name)
     if raw_value is None:
@@ -195,11 +209,9 @@ def get_service_proactive_settings() -> dict:
             minimum=60,
             maximum=24 * 60 * 60,
         ),
-        "cycles": _env_int(
+        "cycles": _env_optional_positive_int(
             ENV_SERVICE_PROACTIVE_CYCLES,
             proactive.get("cycles", DEFAULT_SERVICE_PROACTIVE_CYCLES),
-            minimum=1,
-            maximum=5,
         ),
         "start_delay_seconds": _env_int(
             ENV_SERVICE_PROACTIVE_START_DELAY_SECONDS,
@@ -579,6 +591,7 @@ def run_service_loop(should_stop=None):
         settings = get_service_proactive_settings()
         next_proactive_at = time.monotonic() + settings["start_delay_seconds"]
         if settings["enabled"]:
+            cycles_text = format_cycle_count(settings["cycles"])
             model_text = (
                 f", modelo {settings['model']}"
                 if str(settings.get("model", "")).strip()
@@ -586,7 +599,7 @@ def run_service_loop(should_stop=None):
             )
             _log(
                 "Proactividad 24/7 activa: "
-                f"{settings['cycles']} ciclo(s) cada {settings['interval_seconds']}s "
+                f"{cycles_text} cada {settings['interval_seconds']}s "
                 f"tras {settings['start_delay_seconds']}s de espera inicial"
                 f"{model_text}."
             )
@@ -622,12 +635,13 @@ def run_service_loop(should_stop=None):
                 _log("Error recuperando respuesta pendiente:\n" + traceback.format_exc())
 
             if settings["enabled"] and now >= next_proactive_at:
+                cycles_text = format_cycle_count(settings["cycles"])
                 model_text = (
                     f", modelo {settings['model']}"
                     if str(settings.get("model", "")).strip()
                     else ", modelo principal"
                 )
-                _log(f"Pulso proactivo iniciado ({settings['cycles']} ciclo(s){model_text}).")
+                _log(f"Pulso proactivo iniciado ({cycles_text}{model_text}).")
                 try:
                     _log(run_proactive_pulse())
                 except Exception:

@@ -16,7 +16,9 @@ from memory import (
     DEFAULT_OLLAMA_TIMEOUT_SECONDS,
     MODEL_PROVIDER_OLLAMA,
     MODEL_PROVIDER_OPENROUTER,
+    format_cycle_count,
     load_state,
+    normalize_cycle_count,
     render_state_summary,
 )
 from pc_context import local_context_enabled
@@ -1264,8 +1266,9 @@ class YarbisDesktop(tk.Tk):
         pulse_status = "activo" if proactive_settings["enabled"] else "desactivado"
         pulse_model = str(proactive_settings.get("model", "")).strip()
         pulse_model_text = f", modelo {pulse_model}" if pulse_model else ", modelo principal"
+        pulse_cycles_text = format_cycle_count(proactive_settings.get("cycles"))
         pulse_text = (
-            f"Pulso {pulse_status}: {proactive_settings['cycles']} ciclo(s) cada "
+            f"Pulso {pulse_status}: {pulse_cycles_text} cada "
             f"{proactive_settings['interval_seconds']}s{pulse_model_text}."
         )
         local_context_settings = state.get("local_context", {})
@@ -1607,15 +1610,21 @@ class YarbisDesktop(tk.Tk):
         if self._show_pending_user_question():
             return
         default_cycles = load_state()["autonomy"]["auto_cycles_default"]
-        cycles = simpledialog.askinteger(
+        cycles_text = simpledialog.askstring(
             "Modo autonomo",
-            "Cuantos ciclos quieres ejecutar?",
-            initialvalue=default_cycles,
-            minvalue=1,
-            maxvalue=20,
+            "Cuantos ciclos quieres ejecutar? (vacio = hasta terminar)",
+            initialvalue="" if default_cycles is None else str(default_cycles),
             parent=self,
         )
-        if cycles is None:
+        if cycles_text is None:
+            return
+        cycles = normalize_cycle_count(cycles_text, default=0)
+        if cycles == 0:
+            messagebox.showerror(
+                "Modo autonomo",
+                "Indica un numero positivo o deja el campo vacio para ejecutar hasta terminar.",
+                parent=self,
+            )
             return
         self._start_background_job("Modo autonomo", _session_operation_subprocess, "run_auto", cycles=cycles)
 

@@ -47,9 +47,21 @@ class YarbisServiceTestCase(unittest.TestCase):
 
         self.assertFalse(settings["enabled"])
         self.assertEqual(settings["interval_seconds"], 60)
-        self.assertEqual(settings["cycles"], 5)
+        self.assertEqual(settings["cycles"], 9)
         self.assertEqual(settings["start_delay_seconds"], 0)
         self.assertEqual(settings["model"], "qwen3.5:0.8b")
+
+    def test_get_service_proactive_settings_accepts_unlimited_environment_cycles(self):
+        with patch.dict(
+            yarbis_service.os.environ,
+            {
+                yarbis_service.ENV_SERVICE_PROACTIVE_CYCLES: "unlimited",
+            },
+            clear=True,
+        ):
+            settings = yarbis_service.get_service_proactive_settings()
+
+        self.assertIsNone(settings["cycles"])
 
     def test_run_proactive_pulse_skips_when_waiting_for_user(self):
         state_path = TEST_RUNTIME_DIR / "service_waiting_state.json"

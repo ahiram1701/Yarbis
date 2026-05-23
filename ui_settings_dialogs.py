@@ -16,6 +16,8 @@ from memory import (
     MODEL_PROVIDER_OLLAMA,
     MODEL_PROVIDER_OPENROUTER,
     MIN_OLLAMA_TIMEOUT_SECONDS,
+    format_cycle_count,
+    normalize_cycle_count,
 )
 from ui_dialogs import ThemedDialog
 
@@ -233,7 +235,8 @@ class ServicePulseDialog(ThemedDialog):
         )
         interval_minutes = max(1, round(interval_seconds / 60))
         self.interval_minutes_var = tk.StringVar(value=str(interval_minutes))
-        self.cycles_var = tk.StringVar(value=str(self.initial_settings.get("cycles", 1)))
+        initial_cycles = self.initial_settings.get("cycles")
+        self.cycles_var = tk.StringVar(value="" if initial_cycles is None else str(initial_cycles))
         self.start_delay_var = tk.StringVar(value=str(self.initial_settings.get("start_delay_seconds", 60)))
         self.model_var = tk.StringVar(
             value=str(self.initial_settings.get("model", DEFAULT_SERVICE_PROACTIVE_MODEL) or "").strip()
@@ -305,16 +308,17 @@ class ServicePulseDialog(ThemedDialog):
             self.preset_buttons.append(button)
 
         ttk.Label(rhythm, text="Ciclos por pulso").grid(row=0, column=1, sticky="w", padx=10, pady=(10, 2))
-        self.cycles_spin = ttk.Spinbox(
+        self.cycles_entry = ttk.Entry(
             rhythm,
-            from_=1,
-            to=5,
-            increment=1,
             width=8,
             textvariable=self.cycles_var,
-            style="Yarbis.TSpinbox",
         )
-        self.cycles_spin.grid(row=1, column=1, sticky="w", padx=10)
+        self.cycles_entry.grid(row=1, column=1, sticky="w", padx=10)
+        ttk.Label(
+            rhythm,
+            text="Vacio = hasta terminar",
+            foreground=self.theme_palette["muted"],
+        ).grid(row=2, column=1, sticky="w", padx=10, pady=(8, 10))
 
         startup = ttk.LabelFrame(container, text="Arranque")
         startup.grid(row=2, column=0, sticky="ew", pady=(0, 10))
@@ -357,7 +361,7 @@ class ServicePulseDialog(ThemedDialog):
 
         self._controlled_widgets = [
             self.interval_spin,
-            self.cycles_spin,
+            self.cycles_entry,
             self.start_delay_spin,
             self.model_entry,
             *self.preset_buttons,
@@ -391,12 +395,13 @@ class ServicePulseDialog(ThemedDialog):
     def _refresh_preview(self):
         interval_minutes = max(1, self._safe_int(self.interval_minutes_var.get(), 30))
         interval_seconds = interval_minutes * 60
-        cycles = max(1, min(5, self._safe_int(self.cycles_var.get(), 1)))
+        cycles = normalize_cycle_count(self.cycles_var.get(), default=0)
+        cycles_text = "valor invalido" if cycles == 0 else format_cycle_count(cycles)
         start_delay = max(0, self._safe_int(self.start_delay_var.get(), 60))
         status = "Activo" if self.enabled_var.get() else "Desactivado"
         model_text = str(self.model_var.get() or "").strip() or "modelo principal"
         self.preview_var.set(
-            f"{status} | {cycles} ciclo(s) cada "
+            f"{status} | {cycles_text} cada "
             f"{self._format_duration(interval_seconds)} | "
             f"arranque {self._format_duration(start_delay)} | "
             f"{model_text}"

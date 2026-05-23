@@ -44,7 +44,9 @@ from memory import (
     MAX_OLLAMA_TIMEOUT_SECONDS,
     MIN_OLLAMA_TIMEOUT_SECONDS,
     default_state,
+    format_cycle_count,
     load_state,
+    normalize_cycle_count,
     render_state_summary,
     save_state,
     state_transaction,
@@ -1051,7 +1053,7 @@ def get_service_proactive_settings() -> dict:
 def update_service_proactive_settings(
     enabled: bool,
     interval_seconds: int,
-    cycles: int,
+    cycles: int | str | None,
     start_delay_seconds: int,
     model: str | None = None,
 ) -> str:
@@ -1061,10 +1063,11 @@ def update_service_proactive_settings(
         except (TypeError, ValueError) as exc:
             raise ValueError("El intervalo debe ser un numero de segundos.") from exc
 
-        try:
-            cleaned_cycles = int(cycles)
-        except (TypeError, ValueError) as exc:
-            raise ValueError("Los ciclos por pulso deben ser un numero.") from exc
+        cleaned_cycles = normalize_cycle_count(cycles, default=0)
+        if cleaned_cycles == 0:
+            raise ValueError(
+                "Los ciclos por pulso deben ser un numero positivo o quedar vacios para no limitar."
+            )
 
         try:
             cleaned_start_delay = int(start_delay_seconds)
@@ -1073,8 +1076,6 @@ def update_service_proactive_settings(
 
         if not 60 <= cleaned_interval <= 24 * 60 * 60:
             raise ValueError("El intervalo debe estar entre 60 y 86400 segundos.")
-        if not 1 <= cleaned_cycles <= 5:
-            raise ValueError("Los ciclos por pulso deben estar entre 1 y 5.")
         if not 0 <= cleaned_start_delay <= 24 * 60 * 60:
             raise ValueError("La espera inicial debe estar entre 0 y 86400 segundos.")
 
@@ -1107,7 +1108,7 @@ def update_service_proactive_settings(
             "Pulso proactivo actualizado.\n"
             f"Estado: {status}\n"
             f"Intervalo: {settings['interval_seconds']} segundos\n"
-            f"Ciclos por pulso: {settings['cycles']}\n"
+            f"Ciclos por pulso: {format_cycle_count(settings['cycles'])}\n"
             f"Espera inicial: {settings['start_delay_seconds']} segundos\n"
             f"Modelo: {model_text}"
         )

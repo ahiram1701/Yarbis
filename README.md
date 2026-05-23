@@ -202,7 +202,7 @@ La interfaz de escritorio permite:
 - cambiar el objetivo
 - cambiar proveedor, modelo y timeout
 - ejecutar un ciclo
-- ejecutar modo autonomo indicando de 1 a 20 ciclos
+- ejecutar modo autonomo hasta terminar o indicando un numero explicito de ciclos
 - responder preguntas pendientes
 - enviar contexto libre al agente
 - editar perfil
@@ -386,7 +386,7 @@ Comandos disponibles por Telegram:
 - `/goal nuevo objetivo`: cambia el objetivo
 - `/objetivo nuevo objetivo`: alias de `/goal`
 - `/run`: ejecuta un ciclo
-- `/auto`: ejecuta modo autonomo con los ciclos por defecto
+- `/auto`: ejecuta modo autonomo hasta terminar
 - `/auto 3`: ejecuta el numero indicado de ciclos
 - `/proveedor ollama`: usa Ollama como proveedor por defecto
 - `/proveedor openrouter`: usa OpenRouter como proveedor por defecto
@@ -497,12 +497,12 @@ Servicio proactivo, como override avanzado de la configuracion guardada:
 ```powershell
 $env:YARBIS_SERVICE_PROACTIVE="1"
 $env:YARBIS_SERVICE_PROACTIVE_INTERVAL_SECONDS="1800"
-$env:YARBIS_SERVICE_PROACTIVE_CYCLES="1"
+$env:YARBIS_SERVICE_PROACTIVE_CYCLES="unlimited"
 $env:YARBIS_SERVICE_PROACTIVE_START_DELAY_SECONDS="60"
 $env:YARBIS_SERVICE_PROACTIVE_MAX_RUNTIME_SECONDS="60"
 ```
 
-Usa `YARBIS_SERVICE_PROACTIVE="0"` para dejar el servicio solo como inbox remoto y desactivar los ciclos autonomos periodicos.
+Usa `YARBIS_SERVICE_PROACTIVE_CYCLES` con un numero positivo para limitar ciclos por pulso, o vacio/`none`/`unlimited` para ejecutar hasta terminar. Usa `YARBIS_SERVICE_PROACTIVE="0"` para dejar el servicio solo como inbox remoto y desactivar los ciclos autonomos periodicos.
 Si quieres volver temporalmente a la whitelist segura antigua, define `YARBIS_PROACTIVE_SAFE_MODE="1"` en el entorno del servicio.
 
 Notificaciones:
