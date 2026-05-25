@@ -92,6 +92,151 @@ class TelegramInboxTestCase(unittest.TestCase):
         self.assertIn("Respuesta procesada.", sent_text)
         self.assertEqual(send_mock.call_args.kwargs["chat_id"], "123")
 
+    def test_process_telegram_update_transcribes_voice_and_routes_as_text(self):
+        state_path = TEST_RUNTIME_DIR / "telegram_voice_state.json"
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+
+        seeded_state = memory.normalize_state({
+            "notifications": {
+                "enabled": True,
+                "channels": ["telegram"],
+                "telegram": {
+                    "bot_token": "bot-123",
+                    "chat_id": "123",
+                },
+            },
+            "voice": {
+                "enabled": True,
+                "telegram_reply_mode": "off",
+            },
+        })
+
+        update = {
+            "update_id": 200,
+            "message": {
+                "chat": {"id": 123, "type": "private"},
+                "voice": {"file_id": "voice-file", "duration": 3, "file_size": 100},
+            },
+        }
+
+        with patch.object(memory, "STATE_FILE", state_path):
+            memory.save_state(seeded_state)
+            with patch.object(telegram_inbox, "download_telegram_file", return_value=b"ogg") as download_mock:
+                with patch.object(
+                    telegram_inbox.yarbis_voice,
+                    "transcribe_audio_bytes",
+                    return_value="Trabajemos por voz",
+                ) as transcribe_mock:
+                    with patch.object(
+                        telegram_inbox,
+                        "submit_user_reply",
+                        return_value="Respuesta procesada.",
+                    ) as reply_mock:
+                        with patch.object(telegram_inbox, "send_telegram_message", return_value=True) as send_mock:
+                            telegram_inbox.process_telegram_update(update)
+
+        download_mock.assert_called_once_with(
+            "voice-file",
+            max_bytes=telegram_inbox.yarbis_voice.MAX_VOICE_AUDIO_BYTES,
+        )
+        transcribe_mock.assert_called_once()
+        reply_mock.assert_called_once_with("Trabajemos por voz", emit_notifications=False, blocking=False)
+        self.assertIn("Respuesta procesada.", send_mock.call_args.args[0])
+
+    def test_process_telegram_update_sends_optional_voice_reply_in_always_mode(self):
+        state_path = TEST_RUNTIME_DIR / "telegram_voice_reply_state.json"
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+        audio_path = TEST_RUNTIME_DIR / "reply.ogg"
+        audio_path.write_bytes(b"ogg")
+
+        seeded_state = memory.normalize_state({
+            "notifications": {
+                "enabled": True,
+                "channels": ["telegram"],
+                "telegram": {
+                    "bot_token": "bot-123",
+                    "chat_id": "123",
+                },
+            },
+            "voice": {
+                "enabled": True,
+                "telegram_reply_mode": "always",
+            },
+        })
+        update = {
+            "update_id": 201,
+            "message": {
+                "chat": {"id": 123, "type": "private"},
+                "voice": {"file_id": "voice-file", "duration": 3, "file_size": 100},
+            },
+        }
+
+        with patch.object(memory, "STATE_FILE", state_path):
+            memory.save_state(seeded_state)
+            with patch.object(telegram_inbox, "download_telegram_file", return_value=b"ogg"):
+                with patch.object(telegram_inbox.yarbis_voice, "transcribe_audio_bytes", return_value="Hola"):
+                    with patch.object(telegram_inbox, "submit_user_reply", return_value="Listo."):
+                        with patch.object(telegram_inbox, "send_telegram_message", return_value=True):
+                            with patch.object(
+                                telegram_inbox.yarbis_voice,
+                                "synthesize_speech_file",
+                                return_value=audio_path,
+                            ) as synth_mock:
+                                with patch.object(telegram_inbox, "send_telegram_voice", return_value=True) as voice_mock:
+                                    with patch.object(telegram_inbox.yarbis_voice, "cleanup_voice_file"):
+                                        telegram_inbox.process_telegram_update(update)
+
+        synth_mock.assert_called_once()
+        voice_mock.assert_called_once_with(audio_path, chat_id="123", caption="Yarbis")
+
+    def test_process_telegram_update_blocks_power_confirmation_from_voice(self):
+        state_path = TEST_RUNTIME_DIR / "telegram_voice_confirm_state.json"
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+
+        seeded_state = memory.normalize_state({
+            "notifications": {
+                "enabled": True,
+                "channels": ["telegram"],
+                "telegram": {
+                    "bot_token": "bot-123",
+                    "chat_id": "123",
+                    "pending_power_confirmation": {
+                        "action": "shutdown",
+                        "delay_seconds": 60,
+                        "token": "ABC123",
+                        "chat_id": "123",
+                        "requested_at": "2026-05-25T00:00:00+00:00",
+                    },
+                },
+            },
+            "voice": {
+                "enabled": True,
+                "telegram_reply_mode": "off",
+            },
+        })
+        update = {
+            "update_id": 202,
+            "message": {
+                "chat": {"id": 123, "type": "private"},
+                "voice": {"file_id": "voice-file", "duration": 3, "file_size": 100},
+            },
+        }
+
+        with patch.object(memory, "STATE_FILE", state_path):
+            memory.save_state(seeded_state)
+            with patch.object(telegram_inbox, "download_telegram_file", return_value=b"ogg"):
+                with patch.object(
+                    telegram_inbox.yarbis_voice,
+                    "transcribe_audio_bytes",
+                    return_value="/confirmar_apagado ABC123",
+                ):
+                    with patch.object(telegram_inbox, "request_system_shutdown") as shutdown_mock:
+                        with patch.object(telegram_inbox, "send_telegram_message", return_value=True) as send_mock:
+                            telegram_inbox.process_telegram_update(update)
+
+        shutdown_mock.assert_not_called()
+        self.assertIn("Por seguridad", send_mock.call_args.args[0])
+
     def test_process_telegram_update_stops_current_operation(self):
         state_path = TEST_RUNTIME_DIR / "telegram_stop_state.json"
         state_path.parent.mkdir(parents=True, exist_ok=True)

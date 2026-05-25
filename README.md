@@ -29,7 +29,7 @@ Yarbis ya funciona como agente personal local:
 - puede restaurar checkpoints y ejecutar tests del proyecto
 - puede trabajar como agente de coding sobre un repositorio local activo en modo `propose_first`: inspecciona archivos, genera propuestas con diff y aplica cambios solo tras aprobacion
 - ejecuta un autoanalisis de identidad, codigo fuente, sistema operativo y hardware al arrancar
-- puede recibir y responder mensajes por Telegram cuando ese canal esta configurado
+- puede recibir y responder mensajes por Telegram cuando ese canal esta configurado, incluidas notas de voz
 - puede ejecutarse como Windows Service y arrancar con Windows desde SCM
 - puede observar senales locales seguras de la PC para enriquecer el pulso proactivo: presencia/idle, proceso en primer plano si esta permitido, salud del sistema y cambios recientes del workspace
 
@@ -50,6 +50,10 @@ Dependencias Python declaradas:
 - `playwright>=1.45,<2`
 - `pystray>=0.19`
 - `Pillow>=10`
+- `faster-whisper>=1.1,<2`
+- `pyttsx3>=2.99,<3`
+- `sounddevice>=0.5,<1`
+- `imageio-ffmpeg>=0.6,<1`
 
 ## Instalacion
 
@@ -401,6 +405,10 @@ Comandos disponibles por Telegram:
 - `/ollama host https://ollama.com`: cambia solo el host
 - `/ollama fallback qwen3.5:2b, gpt-oss:120b-cloud`: configura modelos de respaldo en orden
 - `/openrouter proveedor/modelo`: configura OpenRouter y lo usa como proveedor por defecto
+- `/voz auto`: activa voz y respuestas habladas opcionales por Telegram
+- `/voz on`: activa entrada de voz
+- `/voz off`: desactiva entrada y respuestas de voz
+- `/voz status`: muestra configuracion de voz
 - `/notas`: lista notas persistentes
 - `/notas personal`: lista notas de una categoria
 - `/nota crear Titulo | contenido | categoria`: guarda una nota
@@ -424,8 +432,28 @@ sin depender del modelo local. Por seguridad, las solicitudes de apagado y reini
 la accion inmediatamente: Yarbis responde con un codigo y debes confirmar con
 `/confirmar_apagado CODIGO` o `/confirmar_reinicio CODIGO` dentro de 10 minutos.
 Los mensajes de texto sin `/` se procesan como respuesta
-o contexto libre cuando no coinciden con una accion remota explicita. Por ahora Telegram
-solo procesa texto.
+o contexto libre cuando no coinciden con una accion remota explicita.
+
+## Voz local
+
+Yarbis puede entender voz sin APIs pagadas ni subir audio a terceros. Usa `faster-whisper`
+en CPU para transcribir, `pyttsx3` para leer respuestas con la voz del sistema y
+`imageio-ffmpeg` para convertir audio cuando Telegram necesita una nota de voz.
+
+El primer uso de transcripcion puede descargar el modelo local `base`. La configuracion
+por defecto queda en `state.json` bajo `voice`: idioma `es`, `stt_model=base`,
+`stt_compute_type=int8`, maximo 120 segundos y respuestas de Telegram en modo `auto`.
+
+Superficies disponibles:
+
+- Telegram entiende `voice` y `audio`; siempre responde con texto y, en modo `auto`,
+  tambien envia nota de voz cuando la respuesta es corta.
+- La UI movil permite grabar en el compositor y transcribe en Yarbis mediante
+  `/api/voice/transcribe`; tambien puede leer resultados con `speechSynthesis` del navegador.
+- La app de escritorio tiene `Dictar` en el compositor y `Leer ultimo resultado`.
+
+Por seguridad, puedes pedir apagado o reinicio por voz, pero la confirmacion final
+`/confirmar_apagado CODIGO` o `/confirmar_reinicio CODIGO` debe escribirse como texto.
 
 ## Notificaciones
 
@@ -742,6 +770,7 @@ El servicio usa `.yarbis_runtime/` para PID y log. La marca `.yarbis_runtime/ser
 - `notifications.py`: Windows, ntfy y Telegram
 - `telegram_inbox.py`: polling y comandos remotos de Telegram
 - `telegram_format.py`: formato compartido de respuestas Telegram
+- `voice.py`: STT/TTS local y utilidades de audio
 - `intent_text.py`: normalizacion compartida de intenciones
 - `secrets_redaction.py`: redaccion de tokens en logs, eventos y errores
 - `credential_store.py`: almacen local de credenciales cifradas para tokens sociales
@@ -786,7 +815,7 @@ Ruff esta configurado solo con reglas seguras iniciales.
 ## Limitaciones actuales
 
 - La autonomia depende del modelo disponible en el proveedor configurado y de la calidad del objetivo inicial.
-- Telegram procesa mensajes de texto, no adjuntos.
+- Telegram procesa texto, notas de voz y archivos de audio compatibles; otros adjuntos se ignoran.
 - La automatizacion de navegador requiere Playwright y un navegador Chromium/Edge disponible.
 - Calendario y correo se integran con archivos `.ics`, `mailto:` y manejadores locales; no leen buzones ni calendarios cloud por OAuth.
 - La publicacion social real requiere apps, permisos y tokens validos del proveedor. Perfil personal de Facebook solo se maneja con publicacion asistida; Yarbis no publica automaticamente en perfiles personales.

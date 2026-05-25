@@ -11,6 +11,7 @@ from pathlib import Path
 from tkinter import filedialog, messagebox, simpledialog, ttk
 
 import activity
+import voice as yarbis_voice
 from memory import (
     DEFAULT_OLLAMA_MODEL,
     DEFAULT_OLLAMA_TIMEOUT_SECONDS,
@@ -423,6 +424,9 @@ class YarbisDesktop(tk.Tk):
         self._local_telegram_polling = False
         self._closing = False
         self._first_run_checked = False
+        self._voice_recording = False
+        self._voice_record_stop_event = None
+        self._voice_record_thread = None
 
         self._build_ui()
         self._apply_theme(self.current_theme_name)
@@ -604,6 +608,11 @@ class YarbisDesktop(tk.Tk):
             (
                 {"text": "Notificaciones", "command": self._edit_notifications},
                 {"text": "Probar notificacion", "command": self._send_test_notification},
+                {
+                    "text": "Leer ultimo resultado",
+                    "command": self._speak_last_result,
+                    "disable_when_busy": False,
+                },
             ),
         )
         self._build_action_group(
@@ -663,13 +672,27 @@ class YarbisDesktop(tk.Tk):
         composer.columnconfigure(0, weight=1)
         self.reply_text = tk.Text(composer, height=5, wrap="word")
         self.reply_text.grid(row=0, column=0, sticky="nsew", padx=8, pady=8)
+
+        composer_buttons = ttk.Frame(composer)
+        composer_buttons.grid(row=0, column=1, sticky="ns", padx=(0, 8), pady=8)
+        composer_buttons.columnconfigure(0, weight=1)
+
+        self.voice_button = ttk.Button(
+            composer_buttons,
+            text="Dictar",
+            command=self._toggle_voice_recording,
+            style="Secondary.TButton",
+        )
+        self.voice_button.grid(row=0, column=0, sticky="ew", pady=(0, 6))
+
         self.send_button = ttk.Button(
-            composer,
+            composer_buttons,
             text="Enviar y ejecutar",
             command=self._send_reply,
             style="Accent.TButton",
         )
-        self.send_button.grid(row=0, column=1, sticky="ns", padx=(0, 8), pady=8)
+        self.send_button.grid(row=1, column=0, sticky="nsew")
+        self._action_buttons.append(self.voice_button)
         self._action_buttons.append(self.send_button)
 
         status_shell = ttk.Frame(self)
@@ -1605,6 +1628,21 @@ class YarbisDesktop(tk.Tk):
                     self._append_activity(f"{label} (error)", str(payload))
                     self.refresh_state_view()
                     self.status_var.set("La accion termino con error.")
+                elif kind == "voice_transcript":
+                    self._finish_voice_recording_ui()
+                    transcript = str(payload).strip()
+                    if transcript:
+                        if self.reply_text.get("1.0", "end-1c").strip():
+                            self.reply_text.insert("end", "\n" + transcript)
+                        else:
+                            self.reply_text.insert("1.0", transcript)
+                        self.reply_text.focus_set()
+                    self._append_activity(label, transcript or "Voz sin texto detectado.")
+                    self.status_var.set("Dictado listo.")
+                elif kind == "voice_error":
+                    self._finish_voice_recording_ui()
+                    self._append_activity(f"{label} (error)", str(payload))
+                    self.status_var.set("No pude transcribir la voz.")
                 elif kind == "event":
                     self._append_activity(label, str(payload))
                     self.refresh_state_view()
@@ -1649,6 +1687,59 @@ class YarbisDesktop(tk.Tk):
         self._append_activity("Detener", result)
         self.status_var.set(result)
         self.refresh_state_view()
+
+    def _finish_voice_recording_ui(self):
+        self._voice_recording = False
+        self._voice_record_stop_event = None
+        self._voice_record_thread = None
+        if hasattr(self, "voice_button"):
+            self.voice_button.configure(text="Dictar")
+
+    def _toggle_voice_recording(self):
+        if self._voice_recording:
+            if self._voice_record_stop_event is not None:
+                self._voice_record_stop_event.set()
+            self.status_var.set("Transcribiendo voz...")
+            if hasattr(self, "voice_button"):
+                self.voice_button.configure(text="Dictar")
+            return
+
+        stop_event = threading.Event()
+        self._voice_record_stop_event = stop_event
+        self._voice_recording = True
+        self.voice_button.configure(text="Detener dictado")
+        self.status_var.set("Grabando voz...")
+
+        def worker():
+            audio_path = None
+            try:
+                audio_path = yarbis_voice.record_microphone_to_file(stop_event, settings=load_state())
+                transcript = yarbis_voice.transcribe_audio_file(audio_path, settings=load_state())
+                self._result_queue.put(("voice_transcript", "Dictado", transcript))
+            except Exception as exc:
+                self._result_queue.put(("voice_error", "Dictado", str(exc)))
+            finally:
+                yarbis_voice.cleanup_voice_file(audio_path)
+
+        thread = threading.Thread(target=worker, daemon=True)
+        self._voice_record_thread = thread
+        thread.start()
+
+    def _speak_last_result(self):
+        text = str(load_state().get("last_result", "")).strip()
+        if not text:
+            messagebox.showinfo("Yarbis", "No hay ultimo resultado para leer.", parent=self)
+            return
+
+        def worker():
+            try:
+                yarbis_voice.speak_text(text, settings=load_state())
+                self._result_queue.put(("event", "Voz", "Lectura finalizada."))
+            except Exception as exc:
+                self._result_queue.put(("voice_error", "Voz", str(exc)))
+
+        threading.Thread(target=worker, daemon=True).start()
+        self.status_var.set("Leyendo ultimo resultado...")
 
     def _show_pending_user_question(self) -> bool:
         state = load_state()
@@ -2035,6 +2126,8 @@ class YarbisDesktop(tk.Tk):
             "Actualizador externo iniciado. Esta ventana se cerrara y Yarbis se reabrira si termina bien.",
         )
         self._closing = True
+        if self._voice_record_stop_event is not None:
+            self._voice_record_stop_event.set()
         stop_telegram_polling()
         self.destroy()
 
@@ -2368,6 +2461,8 @@ class YarbisDesktop(tk.Tk):
             if not should_close:
                 return
         self._closing = True
+        if self._voice_record_stop_event is not None:
+            self._voice_record_stop_event.set()
         stop_telegram_polling()
         self.destroy()
 

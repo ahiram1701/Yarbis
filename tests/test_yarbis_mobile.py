@@ -1,4 +1,5 @@
 import http.client
+import base64
 import json
 import socket
 import threading
@@ -173,6 +174,70 @@ class YarbisMobileTestCase(unittest.TestCase):
                 self.assertEqual(response.status, 200)
                 self.assertEqual(payload["state"], {"view": "context"})
                 state_mock.assert_called_once_with("context")
+            finally:
+                server.shutdown()
+                server.server_close()
+
+    def test_http_api_voice_transcribe_requires_auth_and_csrf(self):
+        state_path = TEST_RUNTIME_DIR / "mobile_voice_state.json"
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+
+        with patch.object(memory, "STATE_FILE", state_path):
+            memory.save_state(memory.default_state())
+            yarbis_mobile.update_mobile_ui_settings(enabled=True, port=8787, pin="1357")
+            server = yarbis_mobile._MobileHTTPServer(("127.0.0.1", 0), yarbis_mobile.MobileRequestHandler)
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            port = int(server.server_address[1])
+            try:
+                conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+                body = json.dumps({
+                    "audio_b64": base64.b64encode(b"webm").decode("ascii"),
+                    "mime_type": "audio/webm",
+                })
+                conn.request("POST", "/api/voice/transcribe", body=body, headers={"Content-Type": "application/json"})
+                response = conn.getresponse()
+                response.read()
+                self.assertEqual(response.status, 401)
+
+                conn.request(
+                    "POST",
+                    "/api/login",
+                    body=json.dumps({"pin": "1357"}),
+                    headers={"Content-Type": "application/json"},
+                )
+                response = conn.getresponse()
+                login_payload = json.loads(response.read().decode("utf-8"))
+                cookie = response.getheader("Set-Cookie")
+
+                conn.request("POST", "/api/voice/transcribe", body=body, headers={
+                    "Content-Type": "application/json",
+                    "Cookie": cookie,
+                })
+                response = conn.getresponse()
+                response.read()
+                self.assertEqual(response.status, 401)
+
+                with patch.object(
+                    yarbis_mobile.yarbis_voice,
+                    "transcribe_audio_bytes",
+                    return_value="texto dictado",
+                ) as transcribe_mock:
+                    conn.request("POST", "/api/voice/transcribe", body=json.dumps({
+                        "csrf": login_payload["csrf"],
+                        "audio_b64": base64.b64encode(b"webm").decode("ascii"),
+                        "mime_type": "audio/webm",
+                    }), headers={
+                        "Content-Type": "application/json",
+                        "Cookie": cookie,
+                        "X-CSRF-Token": login_payload["csrf"],
+                    })
+                    response = conn.getresponse()
+                    payload = json.loads(response.read().decode("utf-8"))
+
+                self.assertEqual(response.status, 200)
+                self.assertEqual(payload["text"], "texto dictado")
+                transcribe_mock.assert_called_once()
             finally:
                 server.shutdown()
                 server.server_close()

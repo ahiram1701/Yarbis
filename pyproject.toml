@@ -14,6 +14,10 @@ dependencies = [
   "playwright>=1.45,<2",
   "pystray>=0.19",
   "Pillow>=10",
+  "faster-whisper>=1.1,<2",
+  "pyttsx3>=2.99,<3",
+  "sounddevice>=0.5,<1",
+  "imageio-ffmpeg>=0.6,<1",
 ]
 
 [project.optional-dependencies]
@@ -70,6 +74,7 @@ py-modules = [
   "ui_dialogs",
   "ui_settings_dialogs",
   "ui_theme",
+  "voice",
   "yarbis_desktop",
   "yarbis_mobile",
   "yarbis_service",

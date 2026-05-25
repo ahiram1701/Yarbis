@@ -1,11 +1,14 @@
 import os
 import importlib
 import json
+import mimetypes
+from pathlib import Path
 from urllib import request
 from uuid import uuid4
 
 from secrets_redaction import redact_secrets
 from telegram_format import format_telegram_operation_reply
+from voice import MAX_VOICE_AUDIO_BYTES
 
 ENV_NOTIFICATIONS = "YARBIS_NOTIFICATIONS"
 ENV_NOTIFICATION_CHANNELS = "YARBIS_NOTIFICATION_CHANNELS"
@@ -214,6 +217,52 @@ def _post_json(url: str, payload: dict, timeout: int = 10) -> dict:
     return json.loads(raw_body.decode("utf-8"))
 
 
+def _post_multipart_file(
+    url: str,
+    fields: dict,
+    file_field: str,
+    file_path: str | Path,
+    timeout: int = 10,
+    content_type: str = "",
+) -> dict:
+    path = Path(file_path)
+    boundary = f"yarbis-{uuid4().hex}"
+    body_parts = []
+    for key, value in fields.items():
+        body_parts.append(
+            (
+                f"--{boundary}\r\n"
+                f'Content-Disposition: form-data; name="{key}"\r\n\r\n'
+                f"{value}\r\n"
+            ).encode("utf-8")
+        )
+
+    filename = path.name
+    safe_content_type = content_type or mimetypes.guess_type(filename)[0] or "application/octet-stream"
+    body_parts.append(
+        (
+            f"--{boundary}\r\n"
+            f'Content-Disposition: form-data; name="{file_field}"; filename="{filename}"\r\n'
+            f"Content-Type: {safe_content_type}\r\n\r\n"
+        ).encode("utf-8")
+    )
+    body_parts.append(path.read_bytes())
+    body_parts.append(f"\r\n--{boundary}--\r\n".encode("utf-8"))
+
+    multipart_request = request.Request(
+        url,
+        data=b"".join(body_parts),
+        headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
+        method="POST",
+    )
+    with request.urlopen(multipart_request, timeout=timeout) as response:
+        raw_body = response.read()
+
+    if not raw_body:
+        return {}
+    return json.loads(raw_body.decode("utf-8"))
+
+
 def _send_ntfy_notification(title: str, body: str, settings: dict | None = None) -> bool:
     settings = settings or {}
     ntfy_settings = settings.get("ntfy", {}) if isinstance(settings.get("ntfy", {}), dict) else {}
@@ -398,6 +447,107 @@ def telegram_api_request(
         raise RuntimeError(f"Telegram rechazo la solicitud: {description}")
 
     return response
+
+
+def download_telegram_file(
+    file_id: str,
+    settings: dict | None = None,
+    max_bytes: int = MAX_VOICE_AUDIO_BYTES,
+) -> bytes:
+    config = get_telegram_settings(settings)
+    if not config["bot_token"]:
+        raise ValueError("Falta configurar el bot token de Telegram.")
+
+    response = telegram_api_request(
+        "getFile",
+        {"file_id": str(file_id).strip()},
+        settings=settings,
+    )
+    result = response.get("result", {})
+    if not isinstance(result, dict):
+        raise RuntimeError("Telegram no devolvio informacion del archivo.")
+    file_path = str(result.get("file_path", "")).strip()
+    if not file_path:
+        raise RuntimeError("Telegram no devolvio la ruta del archivo.")
+
+    file_url = f"{config['api_base']}/file/bot{config['bot_token']}/{file_path}"
+    redaction_state = {
+        "notifications": {
+            "telegram": {
+                "bot_token": config["bot_token"],
+            }
+        }
+    }
+    try:
+        with request.urlopen(file_url, timeout=config["timeout_seconds"]) as response:
+            content_length = response.headers.get("Content-Length", "")
+            try:
+                if content_length and int(content_length) > max_bytes:
+                    raise RuntimeError("El archivo excede el limite de voz permitido.")
+            except ValueError:
+                pass
+            raw_body = response.read(max_bytes + 1)
+    except Exception as exc:
+        raise RuntimeError(
+            redact_secrets(
+                f"No pude descargar el archivo de Telegram: {exc}",
+                state=redaction_state,
+            )
+        ) from exc
+
+    if len(raw_body) > max_bytes:
+        raise RuntimeError("El archivo excede el limite de voz permitido.")
+    return raw_body
+
+
+def send_telegram_voice(
+    audio_path: str | Path,
+    settings: dict | None = None,
+    chat_id: str = "",
+    caption: str = "",
+) -> bool:
+    config = get_telegram_settings(settings)
+    target_chat_id = str(chat_id).strip() or config["chat_id"]
+    path = Path(audio_path)
+    if not config["bot_token"] or not target_chat_id or not path.exists():
+        return False
+
+    api_url = f"{config['api_base']}/bot{config['bot_token']}/sendVoice"
+    fields = {"chat_id": target_chat_id}
+    safe_caption = str(caption or "").strip()
+    if safe_caption:
+        fields["caption"] = safe_caption[:1024]
+    redaction_state = {
+        "notifications": {
+            "telegram": {
+                "bot_token": config["bot_token"],
+            }
+        }
+    }
+    try:
+        response = _post_multipart_file(
+            api_url,
+            fields,
+            "voice",
+            path,
+            timeout=config["timeout_seconds"],
+            content_type="audio/ogg",
+        )
+    except Exception as exc:
+        raise RuntimeError(
+            redact_secrets(
+                f"No pude enviar voz por Telegram: {exc}",
+                state=redaction_state,
+            )
+        ) from exc
+
+    if response.get("ok") is False:
+        description = redact_secrets(
+            str(response.get("description", "")).strip() or "Error desconocido",
+            state=redaction_state,
+        )
+        raise RuntimeError(f"Telegram rechazo la voz: {description}")
+    return True
 
 
 def _compose_notification_text(title: str, body: str) -> str:

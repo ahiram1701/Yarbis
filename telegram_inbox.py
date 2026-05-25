@@ -24,12 +24,15 @@ from intent_text import (
     strip_yarbis_prefix as _strip_yarbis_prefix,
 )
 from notifications import (
+    download_telegram_file,
     get_telegram_settings,
     send_telegram_chat_action,
     send_telegram_message,
+    send_telegram_voice,
     telegram_api_request,
 )
 from telegram_format import format_telegram_operation_reply
+import voice as yarbis_voice
 from power import (
     DEFAULT_SHUTDOWN_DELAY_SECONDS,
     cancel_system_shutdown,
@@ -71,6 +74,7 @@ TELEGRAM_OPERATION_LABELS = {
     "Respuesta",
     "Respuesta diferida",
     "Timeout",
+    "Voz",
 }
 _poller_thread = None
 _poller_stop_event = threading.Event()
@@ -386,6 +390,10 @@ def _help_text() -> str:
         "/ollama local MODELO - volver al daemon local\n"
         "/ollama fallback MODELO1, MODELO2 - modelos de respaldo\n"
         "/openrouter MODELO - configurar OpenRouter y usarlo por defecto\n"
+        "/voz auto - voz activada y respuesta hablada opcional\n"
+        "/voz on - activar entrada de voz\n"
+        "/voz off - desactivar entrada y respuestas de voz\n"
+        "/voz status - ver configuracion de voz\n"
         "/notas - listar notas\n"
         "/nota crear Titulo | contenido | categoria - guardar una nota\n"
         "/nota ID - ver una nota\n"
@@ -399,8 +407,8 @@ def _help_text() -> str:
         "/cancelar_apagado - cancelar un apagado programado\n"
         "/cancelar_reinicio - cancelar un reinicio programado\n"
         "/help - ver esta ayuda\n\n"
-        "Tambien puedes decir 'guarda una nota: ...', 'detente', 'apaga la pc', 'reinicia pc' "
-        "o responder con texto libre cuando Yarbis te pida algo."
+        "Tambien puedes decir 'guarda una nota: ...', 'detente', 'apaga la pc', 'reinicia pc', "
+        "mandar una nota de voz o responder con texto libre cuando Yarbis te pida algo."
     )
 
 
@@ -442,6 +450,146 @@ def _trim_for_activity(text: str, limit: int = 180) -> str:
 def _incoming_activity_text(text: str) -> str:
     trimmed_text = _trim_for_activity(text)
     return f"Telegram: recibido '{redact_secrets(trimmed_text)}'. Estoy pensando..."
+
+
+def _incoming_voice_activity_text(text: str) -> str:
+    trimmed_text = _trim_for_activity(text)
+    return f"Telegram voz transcrita: '{redact_secrets(trimmed_text)}'. Estoy pensando..."
+
+
+def _voice_attachment_from_message(message: dict) -> dict | None:
+    for key in ("voice", "audio"):
+        value = message.get(key)
+        if isinstance(value, dict) and str(value.get("file_id", "")).strip():
+            attachment = dict(value)
+            attachment["kind"] = key
+            return attachment
+    return None
+
+
+def _voice_suffix_for_attachment(attachment: dict) -> str:
+    mime_type = str(attachment.get("mime_type", "")).strip().lower()
+    if mime_type in {"audio/ogg", "audio/opus"}:
+        return ".ogg"
+    if mime_type in {"audio/mpeg", "audio/mp3"}:
+        return ".mp3"
+    if mime_type in {"audio/mp4", "audio/m4a", "audio/x-m4a"}:
+        return ".m4a"
+    return ".ogg" if attachment.get("kind") == "voice" else ".audio"
+
+
+def _transcribe_telegram_attachment(attachment: dict) -> str:
+    voice_settings = yarbis_voice.ensure_voice_enabled(load_state())
+    try:
+        duration = int(attachment.get("duration", 0) or 0)
+    except (TypeError, ValueError):
+        duration = 0
+    max_seconds = int(voice_settings.get("max_audio_seconds", 120))
+    if duration and duration > max_seconds:
+        raise yarbis_voice.VoiceError(f"El audio dura {duration}s y el limite actual es {max_seconds}s.")
+
+    try:
+        file_size = int(attachment.get("file_size", 0) or 0)
+    except (TypeError, ValueError):
+        file_size = 0
+    if file_size and file_size > yarbis_voice.MAX_VOICE_AUDIO_BYTES:
+        raise yarbis_voice.VoiceError("El audio excede el limite de 20 MB.")
+
+    raw_audio = download_telegram_file(
+        str(attachment.get("file_id", "")).strip(),
+        max_bytes=yarbis_voice.MAX_VOICE_AUDIO_BYTES,
+    )
+    return yarbis_voice.transcribe_audio_bytes(
+        raw_audio,
+        mime_type=str(attachment.get("mime_type", "")),
+        suffix=_voice_suffix_for_attachment(attachment),
+        settings=load_state(),
+    )
+
+
+def _voice_power_confirmation_blocked(text: str) -> bool:
+    cleaned = str(text or "").strip()
+    if not cleaned.startswith("/"):
+        return False
+    command = cleaned.split()[0].split("@")[0].lower()
+    return command in {
+        "/confirmar_apagado",
+        "/confirmarapagado",
+        "/confirmar_reinicio",
+        "/confirmarreinicio",
+    }
+
+
+def _voice_status_text() -> str:
+    settings = load_state().get("voice", {})
+    return (
+        "Voz:\n"
+        f"- estado: {'activa' if settings.get('enabled', True) else 'desactivada'}\n"
+        f"- idioma: {settings.get('language', 'es')}\n"
+        f"- STT: {settings.get('stt_model', 'base')} ({settings.get('stt_compute_type', 'int8')})\n"
+        f"- max audio: {settings.get('max_audio_seconds', 120)}s\n"
+        f"- Telegram voz: {settings.get('telegram_reply_mode', 'auto')}"
+    )
+
+
+def _dispatch_voice_command(argument_text: str) -> str:
+    argument = str(argument_text or "").strip().lower()
+    if argument in {"", "status", "estado"}:
+        return _voice_status_text()
+
+    if argument in {"auto", "automatico"}:
+        def mutate(state):
+            voice = state.setdefault("voice", {})
+            voice["enabled"] = True
+            voice["telegram_reply_mode"] = "auto"
+
+        state_transaction("telegram_voice_auto", mutate)
+        return "Voz activada en modo auto: entiendo notas de voz y respondo con audio solo cuando conviene."
+
+    if argument in {"on", "activar", "activa"}:
+        def mutate(state):
+            voice = state.setdefault("voice", {})
+            voice["enabled"] = True
+            if str(voice.get("telegram_reply_mode", "")).strip().lower() == "off":
+                voice["telegram_reply_mode"] = "auto"
+
+        state_transaction("telegram_voice_on", mutate)
+        return "Voz activada."
+
+    if argument in {"off", "apagar", "desactivar", "desactiva"}:
+        def mutate(state):
+            voice = state.setdefault("voice", {})
+            voice["enabled"] = False
+            voice["telegram_reply_mode"] = "off"
+
+        state_transaction("telegram_voice_off", mutate)
+        return "Voz desactivada. Puedes volver con /voz on."
+
+    return "Uso: /voz auto, /voz on, /voz off o /voz status"
+
+
+def _send_optional_telegram_voice_reply(text: str, chat_id: str, source_was_voice: bool) -> bool:
+    settings = load_state()
+    if not yarbis_voice.should_send_telegram_voice_reply(
+        text,
+        source_was_voice=source_was_voice,
+        settings=settings,
+    ):
+        return False
+
+    audio_path = None
+    try:
+        audio_path = yarbis_voice.synthesize_speech_file(text, settings=settings)
+        return send_telegram_voice(audio_path, chat_id=chat_id, caption="Yarbis")
+    except Exception as exc:
+        _emit_event({
+            "type": "remote_job_failed",
+            "label": "Voz",
+            "content": f"No pude enviar respuesta hablada: {redact_secrets(exc)}",
+        })
+        return False
+    finally:
+        yarbis_voice.cleanup_voice_file(audio_path)
 
 
 def _should_format_operation_reply(label: str, content: str) -> bool:
@@ -1120,6 +1268,8 @@ def _job_label_for_message(text: str) -> str:
         return "Proveedor"
     if command in {"/timeout", "/tiempo"}:
         return "Timeout"
+    if command in {"/voz", "/voice"}:
+        return "Voz"
     if command in {"/goal", "/objetivo"}:
         return "Objetivo"
     if command in {"/notas", "/nota", "/crear_nota", "/guardar_nota", "/borrar_nota", "/eliminar_nota", "/ver_nota"}:
@@ -1162,6 +1312,9 @@ def _dispatch_command(command_text: str, chat_id: str = "") -> str:
 
     if command in {"/proveedor", "/provider"}:
         return _dispatch_provider_command(argument_text)
+
+    if command in {"/voz", "/voice"}:
+        return _dispatch_voice_command(argument_text)
 
     if command == "/ollama":
         return _dispatch_ollama_command(argument_text)
@@ -1234,13 +1387,27 @@ def process_telegram_update(update: dict) -> str:
     binding_notice = _bind_chat_if_needed(message)
     chat_id = str(message.get("chat", {}).get("id", "")).strip()
     text = str(message.get("text", "")).strip()
+    voice_input = False
+    voice_attachment = None
 
     if not text:
-        reply = "Por ahora solo puedo procesar mensajes de texto."
-        if binding_notice:
-            reply = f"{binding_notice}\n\n{reply}"
-        send_telegram_message(reply, chat_id=chat_id)
-        return "Telegram: mensaje no textual ignorado."
+        voice_attachment = _voice_attachment_from_message(message)
+        if voice_attachment is None:
+            reply = "Por ahora solo puedo procesar mensajes de texto o notas de voz."
+            if binding_notice:
+                reply = f"{binding_notice}\n\n{reply}"
+            send_telegram_message(reply, chat_id=chat_id)
+            return "Telegram: mensaje no textual ignorado."
+        voice_input = True
+        try:
+            _send_telegram_thinking_action(chat_id)
+            text = _transcribe_telegram_attachment(voice_attachment)
+        except Exception as exc:
+            reply = f"No pude entender esa nota de voz: {redact_secrets(exc)}"
+            if binding_notice:
+                reply = f"{binding_notice}\n\n{reply}"
+            send_telegram_message(reply, chat_id=chat_id)
+            return "Telegram: voz no procesada."
 
     stop_intent = _stop_intent_for_message(text)
     power_intent = _power_intent_for_message(text)
@@ -1252,7 +1419,10 @@ def process_telegram_update(update: dict) -> str:
         send_telegram_message(reply, chat_id=chat_id)
         return f"Telegram: vinculo chat para '{_trim_for_activity(text)}'."
 
-    _emit_event(_incoming_activity_text(text))
+    if voice_input:
+        _emit_event(_incoming_voice_activity_text(text))
+    else:
+        _emit_event(_incoming_activity_text(text))
     job_label = _job_label_for_message(text)
     pending_user_question = has_pending_user_question(load_state())
 
@@ -1264,7 +1434,12 @@ def process_telegram_update(update: dict) -> str:
     try:
         settings = load_state().get("notifications", {})
         with _telegram_thinking_indicator(chat_id, settings=settings, enabled=bool(job_label)):
-            if text.startswith("/"):
+            if voice_input and _voice_power_confirmation_blocked(text):
+                reply = (
+                    "Por seguridad, confirma apagado o reinicio escribiendo el comando exacto en texto. "
+                    "Puedes pedir la accion por voz, pero el codigo final debe ser escrito."
+                )
+            elif text.startswith("/"):
                 reply = _dispatch_command(text, chat_id=chat_id)
             elif stop_intent:
                 reply = request_stop_current_operation(source="telegram")
@@ -1295,12 +1470,14 @@ def process_telegram_update(update: dict) -> str:
     if job_label:
         _emit_job_finished(job_label, reply, operation_id=operation_id)
 
+    voice_reply_text = str(reply).strip()
     if binding_notice:
         reply = f"{binding_notice}\n\n{_telegram_reply_for_delivery(job_label, reply)}"
     else:
         reply = _telegram_reply_for_delivery(job_label, reply)
 
     send_telegram_message(reply, chat_id=chat_id)
+    _send_optional_telegram_voice_reply(voice_reply_text, chat_id, source_was_voice=voice_input)
     return f"Telegram: procesado '{_trim_for_activity(text)}'."
 
 

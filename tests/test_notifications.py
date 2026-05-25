@@ -239,6 +239,35 @@ class NotificationsTestCase(unittest.TestCase):
             settings=None,
         )
 
+    def test_send_telegram_voice_posts_multipart(self):
+        audio_path = TEST_RUNTIME_DIR / "voice.ogg"
+        audio_path.parent.mkdir(parents=True, exist_ok=True)
+        audio_path.write_bytes(b"ogg-data")
+
+        with patch.dict(
+            os.environ,
+            {
+                "YARBIS_NOTIFICATIONS": "1",
+                "YARBIS_NOTIFICATION_CHANNELS": "telegram",
+                "YARBIS_TELEGRAM_BOT_TOKEN": "123456:abc",
+                "YARBIS_TELEGRAM_CHAT_ID": "456",
+            },
+            clear=False,
+        ):
+            with patch.object(
+                notifications,
+                "_post_multipart_file",
+                return_value={"ok": True, "result": {}},
+            ) as post_mock:
+                result = notifications.send_telegram_voice(audio_path, caption="Yarbis")
+
+        self.assertTrue(result)
+        post_mock.assert_called_once()
+        self.assertEqual(post_mock.call_args.args[1], {"chat_id": "456", "caption": "Yarbis"})
+        self.assertEqual(post_mock.call_args.args[2], "voice")
+        self.assertEqual(post_mock.call_args.args[3], audio_path)
+        self.assertEqual(post_mock.call_args.kwargs["content_type"], "audio/ogg")
+
     def test_telegram_api_request_redacts_token_from_errors(self):
         with patch.dict(
             os.environ,

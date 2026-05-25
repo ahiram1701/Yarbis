@@ -17,6 +17,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 import activity
+import voice as yarbis_voice
 from secrets_redaction import build_secret_redactor
 from memory import (
     DEFAULT_MOBILE_UI_PORT,
@@ -85,6 +86,7 @@ MOBILE_SESSION_SECONDS = 7 * 24 * 60 * 60
 MOBILE_COOKIE_NAME = "yarbis_mobile"
 PIN_HASH_ITERATIONS = 200_000
 MAX_REQUEST_BYTES = 512 * 1024
+MAX_VOICE_REQUEST_BYTES = int(yarbis_voice.MAX_VOICE_AUDIO_BYTES * 1.4) + 4096
 MAX_JOBS = 50
 MOBILE_CACHE_TTL_SECONDS = 10.0
 MOBILE_ACTIVITY_EVENT_LIMIT = 40
@@ -1011,6 +1013,19 @@ def _copy_social_confirmation(publication_id: str) -> str:
     return str(matches[0].get("confirmation_phrase", f"PUBLICAR {matches[0]['id']}"))
 
 
+def _transcribe_mobile_voice(payload: dict) -> str:
+    raw_audio, suffix = yarbis_voice.decode_audio_b64(
+        _payload_text(payload, "audio_b64"),
+        mime_type=_payload_text(payload, "mime_type"),
+    )
+    return yarbis_voice.transcribe_audio_bytes(
+        raw_audio,
+        mime_type=_payload_text(payload, "mime_type"),
+        suffix=suffix,
+        settings=load_state(),
+    )
+
+
 def _execute_action(action: str, payload: dict | None = None) -> dict:
     payload = payload if isinstance(payload, dict) else {}
     action = str(action).strip()
@@ -1493,6 +1508,10 @@ let appState = null;
 let currentTab = "home";
 let refreshInFlight = false;
 const loadedViews = { home: true, run: true };
+let voiceRecorder = null;
+let voiceStream = null;
+let voiceChunks = [];
+let voiceStopTimer = null;
 const $ = (id) => document.getElementById(id);
 
 function escapeHtml(value) {
@@ -1507,6 +1526,100 @@ function toast(message) {
   node.style.display = "block";
   window.clearTimeout(window._toastTimer);
   window._toastTimer = window.setTimeout(() => node.style.display = "none", 4200);
+}
+
+function speakText(text) {
+  const clean = String(text || "").trim();
+  if (!clean) {
+    toast("No hay texto para escuchar");
+    return;
+  }
+  if (!("speechSynthesis" in window)) {
+    toast("Este navegador no tiene lectura de voz");
+    return;
+  }
+  window.speechSynthesis.cancel();
+  const utterance = new SpeechSynthesisUtterance(clean);
+  utterance.lang = "es-MX";
+  window.speechSynthesis.speak(utterance);
+}
+
+function bytesToBase64(bytes) {
+  let binary = "";
+  const chunkSize = 0x8000;
+  for (let index = 0; index < bytes.length; index += chunkSize) {
+    const chunk = bytes.subarray(index, index + chunkSize);
+    binary += String.fromCharCode.apply(null, chunk);
+  }
+  return btoa(binary);
+}
+
+async function transcribeBlob(blob) {
+  const bytes = new Uint8Array(await blob.arrayBuffer());
+  const data = await api("/api/voice/transcribe", {
+    method: "POST",
+    headers: { "X-CSRF-Token": csrfToken },
+    body: {
+      csrf: csrfToken,
+      audio_b64: bytesToBase64(bytes),
+      mime_type: blob.type || "audio/webm"
+    }
+  });
+  return data.text || "";
+}
+
+function stopVoiceTracks() {
+  if (voiceStream) {
+    voiceStream.getTracks().forEach(track => track.stop());
+    voiceStream = null;
+  }
+}
+
+async function toggleReplyRecording() {
+  if (voiceRecorder && voiceRecorder.state === "recording") {
+    voiceRecorder.stop();
+    toast("Transcribiendo voz...");
+    return;
+  }
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia || !window.MediaRecorder) {
+    toast("Este navegador no permite grabar audio aqui");
+    return;
+  }
+  try {
+    voiceStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    voiceChunks = [];
+    voiceRecorder = new MediaRecorder(voiceStream);
+    voiceRecorder.ondataavailable = (event) => {
+      if (event.data && event.data.size > 0) voiceChunks.push(event.data);
+    };
+    voiceRecorder.onstop = async () => {
+      window.clearTimeout(voiceStopTimer);
+      stopVoiceTracks();
+      try {
+        const blob = new Blob(voiceChunks, { type: voiceRecorder.mimeType || "audio/webm" });
+        const text = await transcribeBlob(blob);
+        if (text) {
+          $("replyText").value = ($("replyText").value ? `${$("replyText").value}\n${text}` : text);
+          toast("Voz transcrita");
+        }
+      } catch (error) {
+        toast(error.message);
+      } finally {
+        voiceRecorder = null;
+        voiceChunks = [];
+        renderCurrent();
+      }
+    };
+    voiceRecorder.start();
+    voiceStopTimer = window.setTimeout(() => {
+      if (voiceRecorder && voiceRecorder.state === "recording") voiceRecorder.stop();
+    }, 120000);
+    toast("Grabando voz...");
+    renderCurrent();
+  } catch (error) {
+    stopVoiceTracks();
+    toast(error.message);
+  }
 }
 
 async function api(path, options = {}) {
@@ -1664,6 +1777,7 @@ function renderHome() {
     </section>
     <section class="section">
       <h2>Ultimo resultado</h2>
+      <div class="actions"><button data-speak="${escapeHtml(appState.last_result || "")}">Escuchar</button></div>
       <div class="panel"><pre>${escapeHtml(appState.last_result || "Sin resultado reciente.")}</pre></div>
     </section>`;
 }
@@ -1683,7 +1797,10 @@ function renderRun() {
       <h2>Respuesta o contexto</h2>
       <div class="form-grid">
         <textarea id="replyText" placeholder="Escribe respuesta, instruccion o contexto libre"></textarea>
-        <button class="primary" data-action="send-reply">Enviar y ejecutar</button>
+        <div class="actions">
+          <button data-action="record-reply">${voiceRecorder && voiceRecorder.state === "recording" ? "Detener voz" : "Grabar voz"}</button>
+          <button class="primary" data-action="send-reply">Enviar y ejecutar</button>
+        </div>
       </div>
     </section>
     <section class="section">
@@ -1692,6 +1809,7 @@ function renderRun() {
         <div class="item">
           <strong>${escapeHtml(job.label)}</strong>
           <div class="muted">${escapeHtml(job.status)} ${escapeHtml(job.started_at || "")}</div>
+          <button data-speak="${escapeHtml(job.result || job.error || "")}">Escuchar</button>
           <pre>${escapeHtml(job.result || job.error || "")}</pre>
         </div>`).join("") || `<div class="muted">Sin trabajos recientes.</div>`}
       </div>
@@ -1919,6 +2037,10 @@ function showTab(name) {
 document.addEventListener("click", async (event) => {
   const button = event.target.closest("button");
   if (!button) return;
+  if (button.dataset.speak !== undefined) {
+    speakText(button.dataset.speak);
+    return;
+  }
   if (button.dataset.tab) {
     showTab(button.dataset.tab);
     return;
@@ -1939,6 +2061,8 @@ document.addEventListener("click", async (event) => {
       if (cycles !== null) await action("run_auto", { cycles });
     } else if (name === "stop-operation") {
       await action("stop_operation");
+    } else if (name === "record-reply") {
+      await toggleReplyRecording();
     } else if (name === "send-reply") {
       await action("submit_reply", { reply_text: $("replyText").value });
       $("replyText").value = "";
@@ -2087,12 +2211,12 @@ class MobileRequestHandler(BaseHTTPRequestHandler):
         body = json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
         self._send_bytes(status, body, "application/json; charset=utf-8", headers=headers)
 
-    def _read_json(self) -> dict:
+    def _read_json(self, max_bytes: int = MAX_REQUEST_BYTES) -> dict:
         try:
             length = int(self.headers.get("Content-Length", "0"))
         except (TypeError, ValueError):
             length = 0
-        if length > MAX_REQUEST_BYTES:
+        if length > max_bytes:
             raise MobileUiError("La peticion es demasiado grande.")
         if length <= 0:
             return {}
@@ -2173,7 +2297,8 @@ class MobileRequestHandler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         try:
-            payload = self._read_json()
+            max_bytes = MAX_VOICE_REQUEST_BYTES if self.path == "/api/voice/transcribe" else MAX_REQUEST_BYTES
+            payload = self._read_json(max_bytes=max_bytes)
         except MobileUiError as exc:
             self._send_json(HTTPStatus.BAD_REQUEST, {"ok": False, "error": str(exc)})
             return
@@ -2201,6 +2326,11 @@ class MobileRequestHandler(BaseHTTPRequestHandler):
                 if rendered:
                     activity.append_activity("UI movil", rendered)
                 self._send_json(HTTPStatus.OK, {"ok": True, "csrf": session["csrf"], **result})
+                return
+            if self.path == "/api/voice/transcribe":
+                text = _transcribe_mobile_voice(payload)
+                activity.append_activity("UI movil voz", text)
+                self._send_json(HTTPStatus.OK, {"ok": True, "csrf": session["csrf"], "text": text})
                 return
             self._send_json(HTTPStatus.NOT_FOUND, {"ok": False, "error": "Ruta no encontrada."})
         except PermissionError as exc:

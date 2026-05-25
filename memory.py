@@ -109,6 +109,24 @@ DEFAULT_NTFY_TIMEOUT_SECONDS = 10
 DEFAULT_TELEGRAM_API_BASE = "https://api.telegram.org"
 DEFAULT_TELEGRAM_TIMEOUT_SECONDS = 10
 DEFAULT_TELEGRAM_POLL_TIMEOUT_SECONDS = 25
+DEFAULT_VOICE_ENABLED = True
+DEFAULT_VOICE_LANGUAGE = "es"
+DEFAULT_VOICE_STT_MODEL = "base"
+DEFAULT_VOICE_STT_COMPUTE_TYPE = "int8"
+DEFAULT_VOICE_MAX_AUDIO_SECONDS = 120
+DEFAULT_VOICE_TTS_RATE = 175
+DEFAULT_VOICE_TTS_VOICE_ID = ""
+DEFAULT_VOICE_TELEGRAM_REPLY_MODE = "auto"
+VALID_VOICE_TELEGRAM_REPLY_MODES = {"off", "auto", "always"}
+VALID_VOICE_STT_COMPUTE_TYPES = {"default", "int8", "int8_float16", "int16", "float16", "float32"}
+MIN_VOICE_MAX_AUDIO_SECONDS = 1
+MAX_VOICE_MAX_AUDIO_SECONDS = 600
+MIN_VOICE_TTS_RATE = 80
+MAX_VOICE_TTS_RATE = 320
+MAX_VOICE_LANGUAGE_CHARS = 16
+MAX_VOICE_STT_MODEL_CHARS = 80
+MAX_VOICE_STT_COMPUTE_TYPE_CHARS = 24
+MAX_VOICE_TTS_VOICE_ID_CHARS = 240
 DEFAULT_INTERNET_MODE = "auto"
 VALID_INTERNET_MODES = {"off", "auto"}
 DEFAULT_SEARCH_PROVIDER = "duckduckgo_html"
@@ -376,6 +394,16 @@ def default_state():
                     "requested_at": "",
                 },
             },
+        },
+        "voice": {
+            "enabled": DEFAULT_VOICE_ENABLED,
+            "language": DEFAULT_VOICE_LANGUAGE,
+            "stt_model": DEFAULT_VOICE_STT_MODEL,
+            "stt_compute_type": DEFAULT_VOICE_STT_COMPUTE_TYPE,
+            "max_audio_seconds": DEFAULT_VOICE_MAX_AUDIO_SECONDS,
+            "tts_rate": DEFAULT_VOICE_TTS_RATE,
+            "tts_voice_id": DEFAULT_VOICE_TTS_VOICE_ID,
+            "telegram_reply_mode": DEFAULT_VOICE_TELEGRAM_REPLY_MODE,
         },
         "social": {
             "settings": {
@@ -1430,6 +1458,65 @@ def _normalize_notifications(notifications):
     }
 
 
+def _normalize_voice_settings(voice):
+    defaults = default_state()["voice"]
+    if not isinstance(voice, dict):
+        voice = {}
+
+    language = _coerce_text(
+        voice.get("language", defaults["language"]),
+        MAX_VOICE_LANGUAGE_CHARS,
+    ).strip().lower()[:MAX_VOICE_LANGUAGE_CHARS]
+    if not language:
+        language = defaults["language"]
+
+    compute_type = _coerce_text(
+        voice.get("stt_compute_type", defaults["stt_compute_type"]),
+        MAX_VOICE_STT_COMPUTE_TYPE_CHARS,
+    ).strip().lower()[:MAX_VOICE_STT_COMPUTE_TYPE_CHARS]
+    if compute_type not in VALID_VOICE_STT_COMPUTE_TYPES:
+        compute_type = defaults["stt_compute_type"]
+
+    reply_mode = _coerce_text(
+        voice.get("telegram_reply_mode", defaults["telegram_reply_mode"]),
+        20,
+    ).strip().lower()[:20]
+    if reply_mode not in VALID_VOICE_TELEGRAM_REPLY_MODES:
+        reply_mode = defaults["telegram_reply_mode"]
+
+    try:
+        max_audio_seconds = int(voice.get("max_audio_seconds", defaults["max_audio_seconds"]))
+    except (TypeError, ValueError):
+        max_audio_seconds = defaults["max_audio_seconds"]
+    max_audio_seconds = max(
+        MIN_VOICE_MAX_AUDIO_SECONDS,
+        min(MAX_VOICE_MAX_AUDIO_SECONDS, max_audio_seconds),
+    )
+
+    try:
+        tts_rate = int(voice.get("tts_rate", defaults["tts_rate"]))
+    except (TypeError, ValueError):
+        tts_rate = defaults["tts_rate"]
+    tts_rate = max(MIN_VOICE_TTS_RATE, min(MAX_VOICE_TTS_RATE, tts_rate))
+
+    return {
+        "enabled": bool(voice.get("enabled", defaults["enabled"])),
+        "language": language,
+        "stt_model": _coerce_text(
+            voice.get("stt_model", defaults["stt_model"]),
+            MAX_VOICE_STT_MODEL_CHARS,
+        ).strip()[:MAX_VOICE_STT_MODEL_CHARS] or defaults["stt_model"],
+        "stt_compute_type": compute_type,
+        "max_audio_seconds": max_audio_seconds,
+        "tts_rate": tts_rate,
+        "tts_voice_id": _coerce_text(
+            voice.get("tts_voice_id", defaults["tts_voice_id"]),
+            MAX_VOICE_TTS_VOICE_ID_CHARS,
+        ).strip()[:MAX_VOICE_TTS_VOICE_ID_CHARS],
+        "telegram_reply_mode": reply_mode,
+    }
+
+
 def _normalize_metadata(value, limit: int = MAX_SOCIAL_METADATA_CHARS) -> dict:
     if not isinstance(value, dict):
         return {}
@@ -1690,6 +1777,7 @@ def normalize_state(state):
     normalized["internet"] = _normalize_internet(state.get("internet", {}))
     normalized["self_knowledge"] = _normalize_self_knowledge(state.get("self_knowledge", {}))
     normalized["notifications"] = _normalize_notifications(state.get("notifications", {}))
+    normalized["voice"] = _normalize_voice_settings(state.get("voice", {}))
     normalized["social"] = _normalize_social(state.get("social", {}))
 
     raw_messages = state.get("messages", [])
@@ -1791,6 +1879,15 @@ def render_state_summary(
         f"titulos={'si' if local_context['include_window_title'] else 'no'}, "
         f"workspace={'si' if local_context['include_workspace_changes'] else 'no'}, "
         f"sistema={'si' if local_context['include_system_health'] else 'no'}"
+    )
+
+    voice_settings = normalized["voice"]
+    lines.append(
+        "Voz: "
+        f"{'activa' if voice_settings['enabled'] else 'desactivada'}, "
+        f"idioma={voice_settings['language']}, "
+        f"stt={voice_settings['stt_model']} ({voice_settings['stt_compute_type']}), "
+        f"telegram={voice_settings['telegram_reply_mode']}"
     )
 
     if include_last_result:

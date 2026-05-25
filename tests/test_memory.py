@@ -764,6 +764,31 @@ class MemoryTestCase(unittest.TestCase):
         self.assertEqual(settings["telegram"]["poll_timeout_seconds"], 1)
         self.assertEqual(settings["telegram"]["last_update_id"], 0)
 
+    def test_normalize_state_sanitizes_voice_settings(self):
+        normalized = memory.normalize_state({
+            "voice": {
+                "enabled": True,
+                "language": " ES-MX ",
+                "stt_model": "base" * 40,
+                "stt_compute_type": "invalid",
+                "max_audio_seconds": 9999,
+                "tts_rate": 5,
+                "tts_voice_id": "voice-1",
+                "telegram_reply_mode": "LOUD",
+            },
+        })
+
+        settings = normalized["voice"]
+
+        self.assertTrue(settings["enabled"])
+        self.assertEqual(settings["language"], "es-mx")
+        self.assertEqual(len(settings["stt_model"]), memory.MAX_VOICE_STT_MODEL_CHARS)
+        self.assertEqual(settings["stt_compute_type"], memory.DEFAULT_VOICE_STT_COMPUTE_TYPE)
+        self.assertEqual(settings["max_audio_seconds"], memory.MAX_VOICE_MAX_AUDIO_SECONDS)
+        self.assertEqual(settings["tts_rate"], memory.MIN_VOICE_TTS_RATE)
+        self.assertEqual(settings["tts_voice_id"], "voice-1")
+        self.assertEqual(settings["telegram_reply_mode"], memory.DEFAULT_VOICE_TELEGRAM_REPLY_MODE)
+
     def test_render_state_summary_highlights_unlinked_telegram(self):
         summary = memory.render_state_summary({
             "internet": {
