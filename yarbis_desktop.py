@@ -1290,7 +1290,8 @@ class YarbisDesktop(tk.Tk):
         mobile_status = public_mobile_ui_status(state.get("service", {}).get("mobile_ui", {}))
         if mobile_status["enabled"]:
             mobile_url = mobile_status.get("tailscale_url") or mobile_status.get("local_url")
-            mobile_text = f"UI movil activa ({mobile_url})."
+            mobile_timeout = mobile_status.get("job_timeout_seconds")
+            mobile_text = f"UI movil activa ({mobile_url}, timeout={mobile_timeout}s)."
         else:
             mobile_text = "UI movil desactivada."
         if not service_status["installed"]:

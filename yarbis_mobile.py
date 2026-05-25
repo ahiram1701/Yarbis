@@ -20,10 +20,13 @@ import activity
 from secrets_redaction import build_secret_redactor
 from memory import (
     DEFAULT_MOBILE_UI_PORT,
+    DEFAULT_MOBILE_UI_JOB_TIMEOUT_SECONDS,
     DEFAULT_OLLAMA_MODEL,
     DEFAULT_OLLAMA_TIMEOUT_SECONDS,
     DEFAULT_OPENROUTER_HOST,
     DEFAULT_OPENROUTER_TIMEOUT_SECONDS,
+    MAX_MOBILE_UI_JOB_TIMEOUT_SECONDS,
+    MIN_MOBILE_UI_JOB_TIMEOUT_SECONDS,
     MODEL_PROVIDER_OLLAMA,
     MODEL_PROVIDER_OPENROUTER,
     default_state,
@@ -31,6 +34,7 @@ from memory import (
     render_state_summary,
     state_transaction,
 )
+from notifications import send_notification
 from service_manager import (
     format_health_status,
     get_service_status,
@@ -82,7 +86,6 @@ MOBILE_COOKIE_NAME = "yarbis_mobile"
 PIN_HASH_ITERATIONS = 200_000
 MAX_REQUEST_BYTES = 512 * 1024
 MAX_JOBS = 50
-MOBILE_JOB_TIMEOUT_SECONDS = 30 * 60
 MOBILE_CACHE_TTL_SECONDS = 10.0
 MOBILE_ACTIVITY_EVENT_LIMIT = 40
 MOBILE_ACTIVITY_MAX_BYTES = 32 * 1024
@@ -141,6 +144,15 @@ sys.exit(exit_code)
 
 class MobileUiError(RuntimeError):
     pass
+
+
+class MobileJobTimeoutError(RuntimeError):
+    def __init__(self, timeout_seconds: int):
+        self.timeout_seconds = timeout_seconds
+        super().__init__(
+            "La operacion movil excedio el tiempo limite "
+            f"({timeout_seconds} segundos) y fue detenida."
+        )
 
 
 class _MobileHTTPServer(ThreadingHTTPServer):
@@ -276,6 +288,19 @@ def _mobile_defaults() -> dict:
     return default_state()["service"]["mobile_ui"]
 
 
+def _normalize_mobile_job_timeout(value) -> int:
+    try:
+        timeout_seconds = int(value)
+    except (TypeError, ValueError):
+        timeout_seconds = DEFAULT_MOBILE_UI_JOB_TIMEOUT_SECONDS
+    if not MIN_MOBILE_UI_JOB_TIMEOUT_SECONDS <= timeout_seconds <= MAX_MOBILE_UI_JOB_TIMEOUT_SECONDS:
+        raise ValueError(
+            "El timeout de operaciones moviles debe estar entre "
+            f"{MIN_MOBILE_UI_JOB_TIMEOUT_SECONDS} y {MAX_MOBILE_UI_JOB_TIMEOUT_SECONDS} segundos."
+        )
+    return timeout_seconds
+
+
 def get_mobile_ui_settings() -> dict:
     state = load_state()
     service = state.get("service", {}) if isinstance(state, dict) else {}
@@ -302,6 +327,7 @@ def update_mobile_ui_settings(
     enabled: bool,
     port: int | str = DEFAULT_MOBILE_UI_PORT,
     pin: str = "",
+    job_timeout_seconds: int | str | None = None,
 ) -> str:
     try:
         cleaned_port = int(port)
@@ -319,6 +345,12 @@ def update_mobile_ui_settings(
     elif enabled and not next_hash:
         raise ValueError("Configura un PIN antes de activar la UI movil.")
 
+    timeout_source = (
+        job_timeout_seconds
+        if job_timeout_seconds is not None
+        else current.get("job_timeout_seconds", DEFAULT_MOBILE_UI_JOB_TIMEOUT_SECONDS)
+    )
+    cleaned_job_timeout_seconds = _normalize_mobile_job_timeout(timeout_source)
     session_secret = str(current.get("session_secret", "")).strip() or secrets.token_urlsafe(32)
 
     def mutate(state):
@@ -326,6 +358,7 @@ def update_mobile_ui_settings(
         mobile.update({
             "enabled": bool(enabled),
             "port": cleaned_port,
+            "job_timeout_seconds": cleaned_job_timeout_seconds,
             "pin_hash": next_hash,
             "pin_salt": next_salt,
             "session_secret": session_secret,
@@ -340,6 +373,7 @@ def update_mobile_ui_settings(
         "UI movil actualizada.\n"
         f"Estado: {_bool_text(bool(enabled))}\n"
         f"Puerto: {cleaned_port}\n"
+        f"Timeout operaciones: {cleaned_job_timeout_seconds} segundos\n"
         f"{pin_text}.\n"
         f"URL: {url_text or 'pendiente de Tailscale'}"
     )
@@ -406,11 +440,16 @@ def _active_mobile_urls() -> list[str]:
 def public_mobile_ui_status(settings: dict | None = None) -> dict:
     settings = settings or get_mobile_ui_settings()
     port = int(settings.get("port", DEFAULT_MOBILE_UI_PORT) or DEFAULT_MOBILE_UI_PORT)
+    job_timeout_seconds = int(
+        settings.get("job_timeout_seconds", DEFAULT_MOBILE_UI_JOB_TIMEOUT_SECONDS)
+        or DEFAULT_MOBILE_UI_JOB_TIMEOUT_SECONDS
+    )
     tailscale_ip = _cached_tailscale_ipv4()
     return {
         "enabled": bool(settings.get("enabled")),
         "configured": bool(str(settings.get("pin_hash", "")).strip()),
         "port": port,
+        "job_timeout_seconds": job_timeout_seconds,
         "local_url": f"http://127.0.0.1:{port}",
         "tailscale_ip": tailscale_ip,
         "tailscale_url": f"http://{tailscale_ip}:{port}" if tailscale_ip else "",
@@ -455,8 +494,16 @@ def _terminate_process_tree(process: subprocess.Popen) -> None:
         pass
 
 
+def _mobile_job_timeout_seconds() -> int:
+    settings = get_mobile_ui_settings()
+    return _normalize_mobile_job_timeout(
+        settings.get("job_timeout_seconds", DEFAULT_MOBILE_UI_JOB_TIMEOUT_SECONDS)
+    )
+
+
 def _session_operation_subprocess(operation: str, **payload) -> str:
     RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
+    timeout_seconds = _mobile_job_timeout_seconds()
     token = f"{time.time_ns()}-{threading.get_ident()}"
     request_path = RUNTIME_DIR / f"mobile-operation-{token}.request.json"
     response_path = RUNTIME_DIR / f"mobile-operation-{token}.response.json"
@@ -483,7 +530,7 @@ def _session_operation_subprocess(operation: str, **payload) -> str:
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
         try:
-            stdout, stderr = process.communicate(timeout=MOBILE_JOB_TIMEOUT_SECONDS)
+            stdout, stderr = process.communicate(timeout=timeout_seconds)
         except subprocess.TimeoutExpired as exc:
             try:
                 request_stop_current_operation(source="mobile-timeout")
@@ -491,7 +538,7 @@ def _session_operation_subprocess(operation: str, **payload) -> str:
                 pass
             _terminate_process_tree(process)
             process.communicate()
-            raise RuntimeError("La operacion movil excedio el tiempo limite y fue detenida.") from exc
+            raise MobileJobTimeoutError(timeout_seconds) from exc
 
         response_payload = {}
         if response_path.exists():
@@ -548,6 +595,20 @@ def _start_job(label: str, operation: str, payload: dict | None = None) -> dict:
     def worker():
         try:
             result = _session_operation_subprocess(operation, **payload)
+        except MobileJobTimeoutError as exc:
+            with _JOBS_LOCK:
+                job["status"] = "failed"
+                job["finished_at"] = _utc_now()
+                job["error"] = str(exc)
+            activity.emit_event(
+                "remote_job_failed",
+                operation_id=job_id,
+                label=job["label"],
+                source="mobile_ui",
+                content=str(exc),
+            )
+            activity.append_activity(f"{job['label']} movil (timeout)", str(exc))
+            _notify_mobile_job_timeout(job, exc)
         except Exception as exc:
             with _JOBS_LOCK:
                 job["status"] = "failed"
@@ -588,6 +649,18 @@ def _get_job(job_id: str) -> dict | None:
     with _JOBS_LOCK:
         job = _JOBS.get(str(job_id).strip())
         return dict(job) if job else None
+
+
+def _notify_mobile_job_timeout(job: dict, exc: MobileJobTimeoutError) -> None:
+    label = str(job.get("label", "Operacion movil")).strip() or "Operacion movil"
+    body = (
+        f"{label} excedio el timeout movil de {exc.timeout_seconds} segundos y fue detenida.\n"
+        "Puedes aumentar este limite desde Configuracion > UI movil."
+    )
+    try:
+        send_notification("Yarbis detuvo una operacion movil", body)
+    except Exception:
+        pass
 
 
 def _public_model_settings(settings: dict, provider: str) -> dict:
@@ -716,6 +789,7 @@ def _mobile_health_status_from_state(state: dict, service_status: dict) -> dict:
             "enabled": bool(mobile_settings.get("enabled")),
             "configured": bool(str(mobile_settings.get("pin_hash", "")).strip()),
             "port": mobile_settings.get("port"),
+            "job_timeout_seconds": mobile_settings.get("job_timeout_seconds", DEFAULT_MOBILE_UI_JOB_TIMEOUT_SECONDS),
             "last_bind_error": str(mobile_settings.get("last_bind_error", "")).strip(),
         },
         "operation": {
@@ -1067,6 +1141,7 @@ def _execute_action(action: str, payload: dict | None = None) -> dict:
         return {"result": update_mobile_ui_settings(
             enabled=bool(payload.get("enabled")),
             port=payload.get("port", DEFAULT_MOBILE_UI_PORT),
+            job_timeout_seconds=payload.get("job_timeout_seconds"),
             pin=str(payload.get("pin", "")),
         )}
     if action == "memory_protection":
@@ -1718,6 +1793,7 @@ function renderSettings() {
       <div class="form-grid wide">
         <label><input id="mobileEnabled" type="checkbox" ${mobile.enabled ? "checked" : ""}> Activa</label>
         <div><label>Puerto</label><input id="mobilePort" type="number" value="${escapeHtml(mobile.port || 8787)}"></div>
+        <div><label>Timeout operaciones</label><input id="mobileJobTimeout" type="number" min="60" max="86400" value="${escapeHtml(mobile.job_timeout_seconds || 1800)}"></div>
         <div><label>Nuevo PIN</label><input id="mobilePin" type="password" placeholder="${mobile.configured ? "conservar PIN" : "PIN requerido"}"></div>
         <div class="panel"><pre>${escapeHtml((mobile.tailscale_url || mobile.local_url || "") + (mobile.last_bind_error ? "\n" + mobile.last_bind_error : ""))}</pre></div>
         <button data-action="save-mobile">Guardar UI movil</button>
@@ -1891,7 +1967,7 @@ document.addEventListener("click", async (event) => {
         api_key: $("modelApiKey").value
       });
     } else if (name === "save-mobile") {
-      await action("mobile_ui", { enabled: $("mobileEnabled").checked, port: $("mobilePort").value, pin: $("mobilePin").value });
+      await action("mobile_ui", { enabled: $("mobileEnabled").checked, port: $("mobilePort").value, job_timeout_seconds: $("mobileJobTimeout").value, pin: $("mobilePin").value });
     } else if (name === "save-pulse") {
       await action("service_proactive", {
         enabled: $("pulseEnabled").checked,

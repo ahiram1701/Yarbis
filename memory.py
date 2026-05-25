@@ -66,6 +66,9 @@ DEFAULT_SERVICE_PROACTIVE_CYCLES = None
 DEFAULT_SERVICE_PROACTIVE_START_DELAY_SECONDS = 60
 DEFAULT_SERVICE_PROACTIVE_MODEL = ""
 DEFAULT_MOBILE_UI_PORT = 8787
+DEFAULT_MOBILE_UI_JOB_TIMEOUT_SECONDS = 30 * 60
+MIN_MOBILE_UI_JOB_TIMEOUT_SECONDS = 60
+MAX_MOBILE_UI_JOB_TIMEOUT_SECONDS = 24 * 60 * 60
 MODEL_PROVIDER_OLLAMA = "ollama"
 MODEL_PROVIDER_OPENROUTER = "openrouter"
 DEFAULT_MODEL_PROVIDER = MODEL_PROVIDER_OLLAMA
@@ -297,6 +300,7 @@ def default_state():
             "mobile_ui": {
                 "enabled": False,
                 "port": DEFAULT_MOBILE_UI_PORT,
+                "job_timeout_seconds": DEFAULT_MOBILE_UI_JOB_TIMEOUT_SECONDS,
                 "pin_hash": "",
                 "pin_salt": "",
                 "session_secret": "",
@@ -953,6 +957,15 @@ def _normalize_service(service, *, migrate_legacy_cycles: bool = False):
         mobile_port = mobile_defaults["port"]
     if not 1 <= mobile_port <= 65535:
         mobile_port = mobile_defaults["port"]
+    try:
+        mobile_job_timeout_seconds = int(mobile_ui.get(
+            "job_timeout_seconds",
+            mobile_defaults["job_timeout_seconds"],
+        ))
+    except (TypeError, ValueError):
+        mobile_job_timeout_seconds = mobile_defaults["job_timeout_seconds"]
+    if not MIN_MOBILE_UI_JOB_TIMEOUT_SECONDS <= mobile_job_timeout_seconds <= MAX_MOBILE_UI_JOB_TIMEOUT_SECONDS:
+        mobile_job_timeout_seconds = mobile_defaults["job_timeout_seconds"]
 
     return {
         "proactive": {
@@ -981,6 +994,7 @@ def _normalize_service(service, *, migrate_legacy_cycles: bool = False):
                 mobile_defaults["enabled"],
             ),
             "port": mobile_port,
+            "job_timeout_seconds": mobile_job_timeout_seconds,
             "pin_hash": _coerce_text(
                 mobile_ui.get("pin_hash", mobile_defaults["pin_hash"]),
                 MAX_MOBILE_UI_HASH_CHARS,

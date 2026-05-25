@@ -3,6 +3,7 @@ import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
 from memory import (
+    DEFAULT_MOBILE_UI_JOB_TIMEOUT_SECONDS,
     DEFAULT_MOBILE_UI_PORT,
     DEFAULT_OLLAMA_API_KEY_ENV_VAR,
     DEFAULT_OLLAMA_HOST,
@@ -13,7 +14,9 @@ from memory import (
     DEFAULT_OPENROUTER_MODEL,
     DEFAULT_OPENROUTER_TIMEOUT_SECONDS,
     DEFAULT_SERVICE_PROACTIVE_MODEL,
+    MAX_MOBILE_UI_JOB_TIMEOUT_SECONDS,
     MAX_OLLAMA_TIMEOUT_SECONDS,
+    MIN_MOBILE_UI_JOB_TIMEOUT_SECONDS,
     MODEL_PROVIDER_OLLAMA,
     MODEL_PROVIDER_OPENROUTER,
     MIN_OLLAMA_TIMEOUT_SECONDS,
@@ -494,6 +497,14 @@ class ServiceMobileUiDialog(ThemedDialog):
         self.port_var = tk.StringVar(
             value=str(self.initial_settings.get("port", DEFAULT_MOBILE_UI_PORT) or DEFAULT_MOBILE_UI_PORT)
         )
+        self.timeout_var = tk.StringVar(
+            value=str(
+                self.initial_settings.get(
+                    "job_timeout_seconds",
+                    DEFAULT_MOBILE_UI_JOB_TIMEOUT_SECONDS,
+                ) or DEFAULT_MOBILE_UI_JOB_TIMEOUT_SECONDS
+            )
+        )
         self.pin_var = tk.StringVar()
         self.preview_var = tk.StringVar()
         self._configured = bool(str(self.initial_settings.get("pin_hash", "")).strip())
@@ -534,12 +545,29 @@ class ServiceMobileUiDialog(ThemedDialog):
             style="Yarbis.TSpinbox",
         )
         self.port_spin.grid(row=1, column=0, sticky="w", padx=10)
+        ttk.Label(network, text="Timeout operaciones (segundos)").grid(
+            row=0,
+            column=1,
+            sticky="w",
+            padx=10,
+            pady=(10, 2),
+        )
+        self.timeout_spin = ttk.Spinbox(
+            network,
+            from_=MIN_MOBILE_UI_JOB_TIMEOUT_SECONDS,
+            to=MAX_MOBILE_UI_JOB_TIMEOUT_SECONDS,
+            increment=60,
+            width=10,
+            textvariable=self.timeout_var,
+            style="Yarbis.TSpinbox",
+        )
+        self.timeout_spin.grid(row=1, column=1, sticky="w", padx=10)
         ttk.Label(
             network,
-            text="Escucha en localhost y en la IP Tailscale detectada.",
+            text="Escucha en localhost y en la IP Tailscale detectada. El timeout aplica a ejecutar/responder desde iPhone.",
             foreground=self.theme_palette["muted"],
             wraplength=440,
-        ).grid(row=2, column=0, sticky="ew", padx=10, pady=(6, 10))
+        ).grid(row=2, column=0, columnspan=2, sticky="ew", padx=10, pady=(6, 10))
 
         access = ttk.LabelFrame(master, text="Acceso")
         access.grid(row=2, column=0, sticky="ew", padx=6, pady=(0, 10))
@@ -573,6 +601,7 @@ class ServiceMobileUiDialog(ThemedDialog):
         ).grid(row=0, column=0, sticky="ew", padx=10, pady=10)
 
         self.port_var.trace_add("write", lambda *_args: self._refresh_preview())
+        self.timeout_var.trace_add("write", lambda *_args: self._refresh_preview())
         self.pin_var.trace_add("write", lambda *_args: self._refresh_preview())
         self._refresh_preview()
         return self.pin_entry if not self._configured else self.port_spin
@@ -587,10 +616,11 @@ class ServiceMobileUiDialog(ThemedDialog):
     def _refresh_preview(self):
         enabled_text = "Activa" if self.enabled_var.get() else "Desactivada"
         port = self._safe_int(self.port_var.get(), DEFAULT_MOBILE_UI_PORT)
+        timeout = self._safe_int(self.timeout_var.get(), DEFAULT_MOBILE_UI_JOB_TIMEOUT_SECONDS)
         pin_text = "PIN configurado" if self._configured else "sin PIN"
         if self.pin_var.get():
             pin_text = "PIN nuevo"
-        self.preview_var.set(f"{enabled_text} | puerto {port} | {pin_text}")
+        self.preview_var.set(f"{enabled_text} | puerto {port} | timeout {timeout}s | {pin_text}")
 
     def validate(self):
         try:
@@ -600,6 +630,21 @@ class ServiceMobileUiDialog(ThemedDialog):
             return False
         if not 1 <= port <= 65535:
             messagebox.showwarning("Yarbis", "El puerto debe estar entre 1 y 65535.", parent=self)
+            return False
+        try:
+            timeout = int(self.timeout_var.get())
+        except (TypeError, ValueError):
+            messagebox.showwarning("Yarbis", "El timeout debe ser un numero de segundos.", parent=self)
+            return False
+        if not MIN_MOBILE_UI_JOB_TIMEOUT_SECONDS <= timeout <= MAX_MOBILE_UI_JOB_TIMEOUT_SECONDS:
+            messagebox.showwarning(
+                "Yarbis",
+                (
+                    "El timeout debe estar entre "
+                    f"{MIN_MOBILE_UI_JOB_TIMEOUT_SECONDS} y {MAX_MOBILE_UI_JOB_TIMEOUT_SECONDS} segundos."
+                ),
+                parent=self,
+            )
             return False
         pin = self.pin_var.get()
         if pin and not 4 <= len(pin) <= 64:
@@ -614,6 +659,7 @@ class ServiceMobileUiDialog(ThemedDialog):
         self.result = {
             "enabled": self.enabled_var.get(),
             "port": self.port_var.get().strip(),
+            "job_timeout_seconds": self.timeout_var.get().strip(),
             "pin": self.pin_var.get(),
         }
 

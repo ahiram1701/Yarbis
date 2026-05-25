@@ -60,14 +60,34 @@ class YarbisMobileTestCase(unittest.TestCase):
             with self.assertRaises(ValueError):
                 yarbis_mobile.update_mobile_ui_settings(enabled=True, port=8787, pin="")
 
-            result = yarbis_mobile.update_mobile_ui_settings(enabled=True, port=8787, pin="2468")
+            result = yarbis_mobile.update_mobile_ui_settings(
+                enabled=True,
+                port=8787,
+                pin="2468",
+                job_timeout_seconds=3600,
+            )
             state = memory.load_state()
 
         self.assertIn("UI movil actualizada", result)
         self.assertTrue(state["service"]["mobile_ui"]["enabled"])
         self.assertEqual(state["service"]["mobile_ui"]["port"], 8787)
+        self.assertEqual(state["service"]["mobile_ui"]["job_timeout_seconds"], 3600)
         self.assertTrue(state["service"]["mobile_ui"]["pin_hash"])
         self.assertTrue(state["service"]["mobile_ui"]["session_secret"])
+
+    def test_update_mobile_ui_settings_rejects_invalid_job_timeout(self):
+        state_path = TEST_RUNTIME_DIR / "mobile_invalid_timeout_state.json"
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+
+        with patch.object(memory, "STATE_FILE", state_path):
+            memory.save_state(memory.default_state())
+            with self.assertRaises(ValueError):
+                yarbis_mobile.update_mobile_ui_settings(
+                    enabled=True,
+                    port=8787,
+                    pin="2468",
+                    job_timeout_seconds=10,
+                )
 
     def test_http_api_requires_auth_login_and_csrf(self):
         state_path = TEST_RUNTIME_DIR / "mobile_http_state.json"
@@ -221,12 +241,36 @@ class YarbisMobileTestCase(unittest.TestCase):
         self.assertIn("historial", rendered)
         self.assertIn("Respuesta remoto finalizado", rendered)
 
+    def test_mobile_job_timeout_sends_notification(self):
+        sent = []
+        notified = threading.Event()
+
+        def fake_notification(title, body):
+            sent.append((title, body))
+            notified.set()
+            return True
+
+        with patch.object(
+            yarbis_mobile,
+            "_session_operation_subprocess",
+            side_effect=yarbis_mobile.MobileJobTimeoutError(120),
+        ):
+            with patch.object(yarbis_mobile, "send_notification", side_effect=fake_notification):
+                job = yarbis_mobile._start_job("Respuesta", "submit_user_reply", {"reply_text": "hola"})
+                self.assertTrue(notified.wait(timeout=2))
+
+        stored = yarbis_mobile._get_job(job["id"])
+        self.assertEqual(stored["status"], "failed")
+        self.assertIn("excedio el timeout movil", sent[0][1])
+        self.assertIn("120 segundos", sent[0][1])
+
     def test_mobile_html_uses_lazy_views_and_slow_auto_refresh(self):
         html = yarbis_mobile._html_page()
 
         self.assertIn("refreshInFlight", html)
         self.assertIn("statePath(name)", html)
         self.assertIn("currentTab === \"activity\"", html)
+        self.assertIn("mobileJobTimeout", html)
         self.assertIn("}, 15000);", html)
 
     def test_ensure_mobile_ui_servers_starts_localhost_when_tailscale_missing(self):
@@ -250,6 +294,7 @@ class YarbisMobileTestCase(unittest.TestCase):
         dialog = object.__new__(ServiceMobileUiDialog)
         dialog.enabled_var = SimpleNamespace(get=lambda: True)
         dialog.port_var = SimpleNamespace(get=lambda: "8787")
+        dialog.timeout_var = SimpleNamespace(get=lambda: "1800")
         dialog.pin_var = SimpleNamespace(get=lambda: "")
         dialog._configured = False
 
