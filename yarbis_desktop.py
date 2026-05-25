@@ -105,6 +105,7 @@ from ui_settings_dialogs import (
     ServiceInstallDialog,
     ServiceMobileUiDialog,
     ServicePulseDialog,
+    VoiceSettingsDialog,
 )
 from ui_theme import THEMES, style_scrollbar_widget, style_text_widget
 from yarbis_mobile import get_mobile_ui_settings, public_mobile_ui_status, update_mobile_ui_settings
@@ -608,9 +609,15 @@ class YarbisDesktop(tk.Tk):
             (
                 {"text": "Notificaciones", "command": self._edit_notifications},
                 {"text": "Probar notificacion", "command": self._send_test_notification},
+                {"text": "Voz", "command": self._edit_voice_settings},
                 {
                     "text": "Leer ultimo resultado",
                     "command": self._speak_last_result,
+                    "disable_when_busy": False,
+                },
+                {
+                    "text": "Detener voz",
+                    "command": self._stop_speaking,
                     "disable_when_busy": False,
                 },
             ),
@@ -1733,13 +1740,18 @@ class YarbisDesktop(tk.Tk):
 
         def worker():
             try:
-                yarbis_voice.speak_text(text, settings=load_state())
+                yarbis_voice.speak_text(text, settings=load_state(), cancellable=True)
                 self._result_queue.put(("event", "Voz", "Lectura finalizada."))
             except Exception as exc:
                 self._result_queue.put(("voice_error", "Voz", str(exc)))
 
         threading.Thread(target=worker, daemon=True).start()
         self.status_var.set("Leyendo ultimo resultado...")
+
+    def _stop_speaking(self):
+        stopped = yarbis_voice.stop_speaking()
+        self._append_activity("Voz", "Lectura detenida." if stopped else "No habia lectura activa.")
+        self.status_var.set("Voz detenida." if stopped else "Sin voz activa.")
 
     def _show_pending_user_question(self) -> bool:
         state = load_state()
@@ -1786,6 +1798,30 @@ class YarbisDesktop(tk.Tk):
 
         self._append_activity("Modelo", result)
         readiness_status(force=True)
+        self.refresh_state_view()
+
+    def _edit_voice_settings(self):
+        try:
+            voices = yarbis_voice.list_tts_voices(load_state())
+        except Exception as exc:
+            voices = []
+            self._append_activity("Voz", f"No pude listar voces del sistema: {exc}")
+
+        dialog = VoiceSettingsDialog(
+            self,
+            initial_settings=load_state().get("voice", {}),
+            voices=voices,
+        )
+        if dialog.result is None:
+            return
+
+        try:
+            result = yarbis_voice.update_voice_settings_text(**dialog.result)
+        except ValueError as exc:
+            messagebox.showwarning("Yarbis", str(exc), parent=self)
+            return
+
+        self._append_activity("Voz", result)
         self.refresh_state_view()
 
     def _edit_notifications(self):

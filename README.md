@@ -409,6 +409,10 @@ Comandos disponibles por Telegram:
 - `/voz on`: activa entrada de voz
 - `/voz off`: desactiva entrada y respuestas de voz
 - `/voz status`: muestra configuracion de voz
+- `/voz voces`: lista voces locales disponibles para TTS
+- `/voz usar NUMERO`: cambia la voz del sistema/Telegram por numero o ID
+- `/voz velocidad 190`: cambia la velocidad de lectura local
+- `/voz callar`: desactiva futuras respuestas habladas por Telegram
 - `/notas`: lista notas persistentes
 - `/notas personal`: lista notas de una categoria
 - `/nota crear Titulo | contenido | categoria`: guarda una nota
@@ -442,15 +446,21 @@ en CPU para transcribir, `pyttsx3` para leer respuestas con la voz del sistema y
 
 El primer uso de transcripcion puede descargar el modelo local `base`. La configuracion
 por defecto queda en `state.json` bajo `voice`: idioma `es`, `stt_model=base`,
-`stt_compute_type=int8`, maximo 120 segundos y respuestas de Telegram en modo `auto`.
+`stt_compute_type=int8`, maximo 120 segundos, voz del sistema, velocidad `175`,
+voz del navegador opcional y respuestas de Telegram en modo `auto`.
 
 Superficies disponibles:
 
 - Telegram entiende `voice` y `audio`; siempre responde con texto y, en modo `auto`,
-  tambien envia nota de voz cuando la respuesta es corta.
+  tambien envia nota de voz cuando la respuesta es corta. Usa `/voz voces`,
+  `/voz usar NUMERO`, `/voz velocidad NUMERO` y `/voz callar` para ajustar o silenciar.
 - La UI movil permite grabar en el compositor y transcribe en Yarbis mediante
-  `/api/voice/transcribe`; tambien puede leer resultados con `speechSynthesis` del navegador.
-- La app de escritorio tiene `Dictar` en el compositor y `Leer ultimo resultado`.
+  `/api/voice/transcribe`; tambien puede leer resultados con `speechSynthesis` del navegador,
+  elegir voz/rate/pitch en `Config` -> `Voz` y detener habla activa con `Detener habla`.
+  Si iPhone/Safari bloquea el microfono por HTTP o por origen no seguro, usa `Grabar archivo`:
+  abre la captura/subida de audio del sistema y reutiliza la misma transcripcion local.
+- La app de escritorio tiene `Dictar` en el compositor, `Voz` para elegir voz del sistema,
+  velocidad y modo Telegram, `Leer ultimo resultado` y `Detener voz`.
 
 Por seguridad, puedes pedir apagado o reinicio por voz, pero la confirmacion final
 `/confirmar_apagado CODIGO` o `/confirmar_reinicio CODIGO` debe escribirse como texto.

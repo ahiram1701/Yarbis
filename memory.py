@@ -116,6 +116,9 @@ DEFAULT_VOICE_STT_COMPUTE_TYPE = "int8"
 DEFAULT_VOICE_MAX_AUDIO_SECONDS = 120
 DEFAULT_VOICE_TTS_RATE = 175
 DEFAULT_VOICE_TTS_VOICE_ID = ""
+DEFAULT_VOICE_BROWSER_VOICE_NAME = ""
+DEFAULT_VOICE_BROWSER_TTS_RATE = 1.0
+DEFAULT_VOICE_BROWSER_TTS_PITCH = 1.0
 DEFAULT_VOICE_TELEGRAM_REPLY_MODE = "auto"
 VALID_VOICE_TELEGRAM_REPLY_MODES = {"off", "auto", "always"}
 VALID_VOICE_STT_COMPUTE_TYPES = {"default", "int8", "int8_float16", "int16", "float16", "float32"}
@@ -123,10 +126,15 @@ MIN_VOICE_MAX_AUDIO_SECONDS = 1
 MAX_VOICE_MAX_AUDIO_SECONDS = 600
 MIN_VOICE_TTS_RATE = 80
 MAX_VOICE_TTS_RATE = 320
+MIN_VOICE_BROWSER_TTS_RATE = 0.5
+MAX_VOICE_BROWSER_TTS_RATE = 2.0
+MIN_VOICE_BROWSER_TTS_PITCH = 0.0
+MAX_VOICE_BROWSER_TTS_PITCH = 2.0
 MAX_VOICE_LANGUAGE_CHARS = 16
 MAX_VOICE_STT_MODEL_CHARS = 80
 MAX_VOICE_STT_COMPUTE_TYPE_CHARS = 24
 MAX_VOICE_TTS_VOICE_ID_CHARS = 240
+MAX_VOICE_BROWSER_VOICE_NAME_CHARS = 160
 DEFAULT_INTERNET_MODE = "auto"
 VALID_INTERNET_MODES = {"off", "auto"}
 DEFAULT_SEARCH_PROVIDER = "duckduckgo_html"
@@ -403,6 +411,9 @@ def default_state():
             "max_audio_seconds": DEFAULT_VOICE_MAX_AUDIO_SECONDS,
             "tts_rate": DEFAULT_VOICE_TTS_RATE,
             "tts_voice_id": DEFAULT_VOICE_TTS_VOICE_ID,
+            "browser_voice_name": DEFAULT_VOICE_BROWSER_VOICE_NAME,
+            "browser_tts_rate": DEFAULT_VOICE_BROWSER_TTS_RATE,
+            "browser_tts_pitch": DEFAULT_VOICE_BROWSER_TTS_PITCH,
             "telegram_reply_mode": DEFAULT_VOICE_TELEGRAM_REPLY_MODE,
         },
         "social": {
@@ -1499,6 +1510,18 @@ def _normalize_voice_settings(voice):
         tts_rate = defaults["tts_rate"]
     tts_rate = max(MIN_VOICE_TTS_RATE, min(MAX_VOICE_TTS_RATE, tts_rate))
 
+    try:
+        browser_tts_rate = float(voice.get("browser_tts_rate", defaults["browser_tts_rate"]))
+    except (TypeError, ValueError):
+        browser_tts_rate = defaults["browser_tts_rate"]
+    browser_tts_rate = max(MIN_VOICE_BROWSER_TTS_RATE, min(MAX_VOICE_BROWSER_TTS_RATE, browser_tts_rate))
+
+    try:
+        browser_tts_pitch = float(voice.get("browser_tts_pitch", defaults["browser_tts_pitch"]))
+    except (TypeError, ValueError):
+        browser_tts_pitch = defaults["browser_tts_pitch"]
+    browser_tts_pitch = max(MIN_VOICE_BROWSER_TTS_PITCH, min(MAX_VOICE_BROWSER_TTS_PITCH, browser_tts_pitch))
+
     return {
         "enabled": bool(voice.get("enabled", defaults["enabled"])),
         "language": language,
@@ -1513,6 +1536,12 @@ def _normalize_voice_settings(voice):
             voice.get("tts_voice_id", defaults["tts_voice_id"]),
             MAX_VOICE_TTS_VOICE_ID_CHARS,
         ).strip()[:MAX_VOICE_TTS_VOICE_ID_CHARS],
+        "browser_voice_name": _coerce_text(
+            voice.get("browser_voice_name", defaults["browser_voice_name"]),
+            MAX_VOICE_BROWSER_VOICE_NAME_CHARS,
+        ).strip()[:MAX_VOICE_BROWSER_VOICE_NAME_CHARS],
+        "browser_tts_rate": browser_tts_rate,
+        "browser_tts_pitch": browser_tts_pitch,
         "telegram_reply_mode": reply_mode,
     }
 

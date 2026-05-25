@@ -1,5 +1,7 @@
 import base64
 import unittest
+from types import SimpleNamespace
+from unittest.mock import Mock, patch
 
 import voice
 
@@ -35,6 +37,32 @@ class VoiceTestCase(unittest.TestCase):
             source_was_voice=False,
             settings={"telegram_reply_mode": "always"},
         ))
+
+    def test_list_tts_voices_renders_system_voices(self):
+        engine = Mock()
+        engine.getProperty.return_value = [
+            SimpleNamespace(id="voice-1", name="Voz Uno", languages=[b"es-MX"], gender="female", age=None),
+        ]
+
+        with patch.object(voice, "_tts_engine", return_value=engine):
+            voices = voice.list_tts_voices({"enabled": True})
+
+        self.assertEqual(voices[0]["index"], 1)
+        self.assertEqual(voices[0]["id"], "voice-1")
+        self.assertEqual(voices[0]["name"], "Voz Uno")
+        self.assertEqual(voices[0]["languages"], ["es-MX"])
+        engine.stop.assert_called_once()
+
+    def test_stop_speaking_stops_active_engine(self):
+        engine = Mock()
+        previous = voice._TTS_ENGINE
+        voice._TTS_ENGINE = engine
+        try:
+            self.assertTrue(voice.stop_speaking())
+        finally:
+            voice._TTS_ENGINE = previous
+
+        engine.stop.assert_called_once()
 
 
 if __name__ == "__main__":

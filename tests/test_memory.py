@@ -774,6 +774,9 @@ class MemoryTestCase(unittest.TestCase):
                 "max_audio_seconds": 9999,
                 "tts_rate": 5,
                 "tts_voice_id": "voice-1",
+                "browser_voice_name": "Samantha" * 50,
+                "browser_tts_rate": 9,
+                "browser_tts_pitch": -4,
                 "telegram_reply_mode": "LOUD",
             },
         })
@@ -787,6 +790,9 @@ class MemoryTestCase(unittest.TestCase):
         self.assertEqual(settings["max_audio_seconds"], memory.MAX_VOICE_MAX_AUDIO_SECONDS)
         self.assertEqual(settings["tts_rate"], memory.MIN_VOICE_TTS_RATE)
         self.assertEqual(settings["tts_voice_id"], "voice-1")
+        self.assertEqual(len(settings["browser_voice_name"]), memory.MAX_VOICE_BROWSER_VOICE_NAME_CHARS)
+        self.assertEqual(settings["browser_tts_rate"], memory.MAX_VOICE_BROWSER_TTS_RATE)
+        self.assertEqual(settings["browser_tts_pitch"], memory.MIN_VOICE_BROWSER_TTS_PITCH)
         self.assertEqual(settings["telegram_reply_mode"], memory.DEFAULT_VOICE_TELEGRAM_REPLY_MODE)
 
     def test_render_state_summary_highlights_unlinked_telegram(self):

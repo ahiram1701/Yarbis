@@ -8,9 +8,20 @@ from pathlib import Path
 
 from memory import (
     DEFAULT_VOICE_MAX_AUDIO_SECONDS,
+    DEFAULT_VOICE_BROWSER_TTS_PITCH,
+    DEFAULT_VOICE_BROWSER_TTS_RATE,
     DEFAULT_VOICE_TELEGRAM_REPLY_MODE,
+    DEFAULT_VOICE_TTS_RATE,
+    MAX_VOICE_BROWSER_TTS_PITCH,
+    MAX_VOICE_BROWSER_TTS_RATE,
+    MAX_VOICE_TTS_RATE,
+    MIN_VOICE_BROWSER_TTS_PITCH,
+    MIN_VOICE_BROWSER_TTS_RATE,
+    MIN_VOICE_TTS_RATE,
+    VALID_VOICE_TELEGRAM_REPLY_MODES,
     load_state,
     normalize_state,
+    state_transaction,
 )
 
 WORKSPACE_ROOT = Path(__file__).resolve().parent
@@ -22,6 +33,8 @@ DEFAULT_RECORD_SAMPLE_RATE = 16_000
 DEFAULT_RECORD_CHANNELS = 1
 _WHISPER_LOCK = threading.RLock()
 _WHISPER_MODELS = {}
+_TTS_LOCK = threading.RLock()
+_TTS_ENGINE = None
 
 
 class VoiceError(RuntimeError):
@@ -199,14 +212,150 @@ def _tts_engine(settings: dict):
     return engine
 
 
-def speak_text(text: str, settings: dict | None = None) -> None:
+def list_tts_voices(settings: dict | None = None) -> list[dict]:
+    voice_settings = get_voice_settings(settings)
+    engine = _tts_engine(voice_settings)
+    try:
+        voices = engine.getProperty("voices") or []
+    except Exception as exc:
+        raise VoiceError(f"No pude listar voces del sistema: {exc}") from exc
+
+    rendered = []
+    for index, item in enumerate(voices, start=1):
+        voice_id = str(getattr(item, "id", "") or "").strip()
+        name = str(getattr(item, "name", "") or voice_id or f"Voz {index}").strip()
+        languages = getattr(item, "languages", []) or []
+        rendered_languages = []
+        for language in languages:
+            if isinstance(language, bytes):
+                rendered_languages.append(language.decode("utf-8", errors="ignore"))
+            else:
+                rendered_languages.append(str(language))
+        rendered.append({
+            "index": index,
+            "id": voice_id,
+            "name": name,
+            "languages": [item for item in rendered_languages if item],
+            "gender": str(getattr(item, "gender", "") or "").strip(),
+            "age": str(getattr(item, "age", "") or "").strip(),
+        })
+    try:
+        engine.stop()
+    except Exception:
+        pass
+    return rendered
+
+
+def stop_speaking() -> bool:
+    with _TTS_LOCK:
+        engine = _TTS_ENGINE
+    if engine is None:
+        return False
+    try:
+        engine.stop()
+    except Exception:
+        return False
+    return True
+
+
+def speak_text(text: str, settings: dict | None = None, cancellable: bool = True) -> None:
+    global _TTS_ENGINE
     voice_settings = ensure_voice_enabled(settings)
     cleaned_text = str(text or "").strip()
     if not cleaned_text:
         raise VoiceError("No hay texto para leer.")
     engine = _tts_engine(voice_settings)
-    engine.say(cleaned_text)
-    engine.runAndWait()
+    if cancellable:
+        with _TTS_LOCK:
+            _TTS_ENGINE = engine
+    try:
+        engine.say(cleaned_text)
+        engine.runAndWait()
+    finally:
+        try:
+            engine.stop()
+        except Exception:
+            pass
+        if cancellable:
+            with _TTS_LOCK:
+                if _TTS_ENGINE is engine:
+                    _TTS_ENGINE = None
+
+
+def _optional_int(value, default: int) -> int:
+    if value is None:
+        return default
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _optional_float(value, default: float) -> float:
+    if value is None:
+        return default
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def update_voice_settings_text(
+    *,
+    enabled: bool | None = None,
+    tts_voice_id: str | None = None,
+    tts_rate=None,
+    browser_voice_name: str | None = None,
+    browser_tts_rate=None,
+    browser_tts_pitch=None,
+    telegram_reply_mode: str | None = None,
+) -> str:
+    current = get_voice_settings()
+    next_tts_rate = max(
+        MIN_VOICE_TTS_RATE,
+        min(MAX_VOICE_TTS_RATE, _optional_int(tts_rate, int(current.get("tts_rate", DEFAULT_VOICE_TTS_RATE)))),
+    )
+    next_browser_rate = max(
+        MIN_VOICE_BROWSER_TTS_RATE,
+        min(
+            MAX_VOICE_BROWSER_TTS_RATE,
+            _optional_float(browser_tts_rate, float(current.get("browser_tts_rate", DEFAULT_VOICE_BROWSER_TTS_RATE))),
+        ),
+    )
+    next_browser_pitch = max(
+        MIN_VOICE_BROWSER_TTS_PITCH,
+        min(
+            MAX_VOICE_BROWSER_TTS_PITCH,
+            _optional_float(browser_tts_pitch, float(current.get("browser_tts_pitch", DEFAULT_VOICE_BROWSER_TTS_PITCH))),
+        ),
+    )
+    next_reply_mode = str(
+        telegram_reply_mode if telegram_reply_mode is not None else current.get("telegram_reply_mode", "auto")
+    ).strip().lower()
+    if next_reply_mode not in VALID_VOICE_TELEGRAM_REPLY_MODES:
+        raise ValueError("Modo Telegram de voz invalido. Usa off, auto o always.")
+
+    def mutate(state):
+        voice = state.setdefault("voice", {})
+        if enabled is not None:
+            voice["enabled"] = bool(enabled)
+        if tts_voice_id is not None:
+            voice["tts_voice_id"] = str(tts_voice_id).strip()
+        voice["tts_rate"] = next_tts_rate
+        if browser_voice_name is not None:
+            voice["browser_voice_name"] = str(browser_voice_name).strip()
+        voice["browser_tts_rate"] = next_browser_rate
+        voice["browser_tts_pitch"] = next_browser_pitch
+        voice["telegram_reply_mode"] = next_reply_mode
+
+    state_transaction("update_voice_settings", mutate)
+    return (
+        "Voz actualizada: "
+        f"{'activa' if (bool(enabled) if enabled is not None else current.get('enabled', True)) else 'desactivada'}, "
+        f"sistema={'predeterminada' if not str(tts_voice_id if tts_voice_id is not None else current.get('tts_voice_id', '')).strip() else 'personalizada'}, "
+        f"velocidad={next_tts_rate}, navegador={next_browser_rate:g}/{next_browser_pitch:g}, "
+        f"Telegram={next_reply_mode}."
+    )
 
 
 def _ffmpeg_executable() -> str:

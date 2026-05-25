@@ -237,6 +237,46 @@ class TelegramInboxTestCase(unittest.TestCase):
         shutdown_mock.assert_not_called()
         self.assertIn("Por seguridad", send_mock.call_args.args[0])
 
+    def test_telegram_voice_commands_list_select_speed_and_mute(self):
+        state_path = TEST_RUNTIME_DIR / "telegram_voice_commands_state.json"
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+
+        seeded_state = memory.normalize_state({
+            "notifications": {
+                "enabled": True,
+                "channels": ["telegram"],
+                "telegram": {
+                    "bot_token": "bot-123",
+                    "chat_id": "123",
+                },
+            },
+        })
+
+        updates = [
+            {"update_id": 203, "message": {"chat": {"id": 123, "type": "private"}, "text": "/voz voces"}},
+            {"update_id": 204, "message": {"chat": {"id": 123, "type": "private"}, "text": "/voz usar 1"}},
+            {"update_id": 205, "message": {"chat": {"id": 123, "type": "private"}, "text": "/voz velocidad 190"}},
+            {"update_id": 206, "message": {"chat": {"id": 123, "type": "private"}, "text": "/voz callar"}},
+        ]
+
+        with patch.object(memory, "STATE_FILE", state_path):
+            memory.save_state(seeded_state)
+            with patch.object(
+                telegram_inbox.yarbis_voice,
+                "list_tts_voices",
+                return_value=[{"index": 1, "id": "voice-1", "name": "Voz Uno", "languages": ["es-MX"]}],
+            ):
+                with patch.object(telegram_inbox, "send_telegram_message", return_value=True) as send_mock:
+                    for update in updates:
+                        telegram_inbox.process_telegram_update(update)
+            state = memory.load_state()
+
+        sent_text = "\n".join(call.args[0] for call in send_mock.call_args_list)
+        self.assertIn("Voces disponibles", sent_text)
+        self.assertEqual(state["voice"]["tts_voice_id"], "voice-1")
+        self.assertEqual(state["voice"]["tts_rate"], 190)
+        self.assertEqual(state["voice"]["telegram_reply_mode"], "off")
+
     def test_process_telegram_update_stops_current_operation(self):
         state_path = TEST_RUNTIME_DIR / "telegram_stop_state.json"
         state_path.parent.mkdir(parents=True, exist_ok=True)

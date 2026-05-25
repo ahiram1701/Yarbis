@@ -394,6 +394,10 @@ def _help_text() -> str:
         "/voz on - activar entrada de voz\n"
         "/voz off - desactivar entrada y respuestas de voz\n"
         "/voz status - ver configuracion de voz\n"
+        "/voz voces - listar voces del sistema\n"
+        "/voz usar NUMERO - elegir voz del sistema/Telegram\n"
+        "/voz velocidad NUMERO - cambiar velocidad de voz\n"
+        "/voz callar - no enviar mas respuestas habladas por Telegram\n"
         "/notas - listar notas\n"
         "/nota crear Titulo | contenido | categoria - guardar una nota\n"
         "/nota ID - ver una nota\n"
@@ -528,44 +532,78 @@ def _voice_status_text() -> str:
         f"- idioma: {settings.get('language', 'es')}\n"
         f"- STT: {settings.get('stt_model', 'base')} ({settings.get('stt_compute_type', 'int8')})\n"
         f"- max audio: {settings.get('max_audio_seconds', 120)}s\n"
+        f"- voz sistema: {settings.get('tts_voice_id') or 'predeterminada'}\n"
+        f"- velocidad sistema: {settings.get('tts_rate', 175)}\n"
         f"- Telegram voz: {settings.get('telegram_reply_mode', 'auto')}"
     )
+
+
+def _voice_list_text() -> str:
+    voices = yarbis_voice.list_tts_voices(load_state())
+    if not voices:
+        return "No encontre voces del sistema disponibles."
+    lines = ["Voces disponibles:"]
+    for item in voices[:30]:
+        languages = item.get("languages", [])
+        language_text = f" ({', '.join(languages)})" if isinstance(languages, list) and languages else ""
+        lines.append(f"{item.get('index')}. {item.get('name')}{language_text}\n   {item.get('id')}")
+    return "\n".join(lines)
+
+
+def _voice_id_for_selection(selection: str) -> str:
+    target = str(selection or "").strip()
+    if not target:
+        return ""
+    voices = yarbis_voice.list_tts_voices(load_state())
+    if target.isdigit():
+        index = int(target)
+        for item in voices:
+            if int(item.get("index", 0) or 0) == index:
+                return str(item.get("id", "")).strip()
+        raise ValueError("No encontre una voz con ese numero.")
+    normalized_target = target.lower()
+    for item in voices:
+        voice_id = str(item.get("id", "")).strip()
+        name = str(item.get("name", "")).strip()
+        if normalized_target in {voice_id.lower(), name.lower()}:
+            return voice_id
+    return target
 
 
 def _dispatch_voice_command(argument_text: str) -> str:
     argument = str(argument_text or "").strip().lower()
     if argument in {"", "status", "estado"}:
         return _voice_status_text()
+    if argument in {"voces", "voices", "listar"}:
+        return _voice_list_text()
+    if argument in {"callar", "silencio", "mute"}:
+        return yarbis_voice.update_voice_settings_text(telegram_reply_mode="off")
 
     if argument in {"auto", "automatico"}:
-        def mutate(state):
-            voice = state.setdefault("voice", {})
-            voice["enabled"] = True
-            voice["telegram_reply_mode"] = "auto"
-
-        state_transaction("telegram_voice_auto", mutate)
-        return "Voz activada en modo auto: entiendo notas de voz y respondo con audio solo cuando conviene."
+        return yarbis_voice.update_voice_settings_text(enabled=True, telegram_reply_mode="auto")
 
     if argument in {"on", "activar", "activa"}:
-        def mutate(state):
-            voice = state.setdefault("voice", {})
-            voice["enabled"] = True
-            if str(voice.get("telegram_reply_mode", "")).strip().lower() == "off":
-                voice["telegram_reply_mode"] = "auto"
-
-        state_transaction("telegram_voice_on", mutate)
-        return "Voz activada."
+        mode = load_state().get("voice", {}).get("telegram_reply_mode", "auto")
+        if str(mode).strip().lower() == "off":
+            mode = "auto"
+        return yarbis_voice.update_voice_settings_text(enabled=True, telegram_reply_mode=mode)
 
     if argument in {"off", "apagar", "desactivar", "desactiva"}:
-        def mutate(state):
-            voice = state.setdefault("voice", {})
-            voice["enabled"] = False
-            voice["telegram_reply_mode"] = "off"
+        return yarbis_voice.update_voice_settings_text(enabled=False, telegram_reply_mode="off")
 
-        state_transaction("telegram_voice_off", mutate)
-        return "Voz desactivada. Puedes volver con /voz on."
+    if argument.startswith("usar "):
+        selection = argument_text.strip()[len("usar "):].strip()
+        try:
+            voice_id = _voice_id_for_selection(selection)
+        except ValueError as exc:
+            return str(exc)
+        return yarbis_voice.update_voice_settings_text(tts_voice_id=voice_id)
 
-    return "Uso: /voz auto, /voz on, /voz off o /voz status"
+    if argument.startswith("velocidad "):
+        rate = argument_text.strip()[len("velocidad "):].strip()
+        return yarbis_voice.update_voice_settings_text(tts_rate=rate)
+
+    return "Uso: /voz auto, /voz on, /voz off, /voz status, /voz voces, /voz usar NUMERO, /voz velocidad NUMERO o /voz callar"
 
 
 def _send_optional_telegram_voice_reply(text: str, chat_id: str, source_was_voice: bool) -> bool:

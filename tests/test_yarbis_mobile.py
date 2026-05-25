@@ -242,6 +242,78 @@ class YarbisMobileTestCase(unittest.TestCase):
                 server.shutdown()
                 server.server_close()
 
+    def test_http_api_voice_voices_requires_auth_and_returns_settings(self):
+        state_path = TEST_RUNTIME_DIR / "mobile_voice_voices_state.json"
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+
+        with patch.object(memory, "STATE_FILE", state_path):
+            memory.save_state(memory.default_state())
+            yarbis_mobile.update_mobile_ui_settings(enabled=True, port=8787, pin="1357")
+            server = yarbis_mobile._MobileHTTPServer(("127.0.0.1", 0), yarbis_mobile.MobileRequestHandler)
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            port = int(server.server_address[1])
+            try:
+                conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+                conn.request("GET", "/api/voice/voices")
+                response = conn.getresponse()
+                response.read()
+                self.assertEqual(response.status, 401)
+
+                conn.request(
+                    "POST",
+                    "/api/login",
+                    body=json.dumps({"pin": "1357"}),
+                    headers={"Content-Type": "application/json"},
+                )
+                response = conn.getresponse()
+                login_payload = json.loads(response.read().decode("utf-8"))
+                cookie = response.getheader("Set-Cookie")
+
+                with patch.object(
+                    yarbis_mobile.yarbis_voice,
+                    "list_tts_voices",
+                    return_value=[{"index": 1, "id": "voice-1", "name": "Voz Uno"}],
+                ) as voices_mock:
+                    conn.request("GET", "/api/voice/voices", headers={"Cookie": cookie})
+                    response = conn.getresponse()
+                    payload = json.loads(response.read().decode("utf-8"))
+
+                self.assertEqual(response.status, 200)
+                self.assertTrue(payload["ok"])
+                self.assertEqual(payload["csrf"], login_payload["csrf"])
+                self.assertEqual(payload["voices"][0]["id"], "voice-1")
+                self.assertIn("browser_voice_name", payload["settings"])
+                voices_mock.assert_called_once()
+            finally:
+                server.shutdown()
+                server.server_close()
+
+    def test_mobile_voice_settings_action_updates_state(self):
+        state_path = TEST_RUNTIME_DIR / "mobile_voice_settings_state.json"
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+
+        with patch.object(memory, "STATE_FILE", state_path):
+            memory.save_state(memory.default_state())
+            result = yarbis_mobile._execute_action("voice_settings", {
+                "enabled": True,
+                "tts_voice_id": "voice-1",
+                "tts_rate": 190,
+                "browser_voice_name": "Samantha",
+                "browser_tts_rate": 1.2,
+                "browser_tts_pitch": 0.8,
+                "telegram_reply_mode": "always",
+            })
+            state = memory.load_state()
+
+        self.assertIn("Voz actualizada", result["result"])
+        self.assertEqual(state["voice"]["tts_voice_id"], "voice-1")
+        self.assertEqual(state["voice"]["tts_rate"], 190)
+        self.assertEqual(state["voice"]["browser_voice_name"], "Samantha")
+        self.assertEqual(state["voice"]["browser_tts_rate"], 1.2)
+        self.assertEqual(state["voice"]["browser_tts_pitch"], 0.8)
+        self.assertEqual(state["voice"]["telegram_reply_mode"], "always")
+
     def test_public_state_default_is_lightweight_and_loads_state_once(self):
         seeded_state = memory.default_state()
         seeded_state["messages"] = [
@@ -337,6 +409,9 @@ class YarbisMobileTestCase(unittest.TestCase):
         self.assertIn("currentTab === \"activity\"", html)
         self.assertIn("mobileJobTimeout", html)
         self.assertIn("}, 15000);", html)
+        self.assertIn("type=\"file\" accept=\"audio/*\" capture", html)
+        self.assertIn("Detener habla", html)
+        self.assertIn("speechSynthesis.cancel", html)
 
     def test_ensure_mobile_ui_servers_starts_localhost_when_tailscale_missing(self):
         state_path = TEST_RUNTIME_DIR / "mobile_server_state.json"

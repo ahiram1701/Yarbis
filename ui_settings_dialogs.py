@@ -13,10 +13,13 @@ from memory import (
     DEFAULT_OPENROUTER_HOST,
     DEFAULT_OPENROUTER_MODEL,
     DEFAULT_OPENROUTER_TIMEOUT_SECONDS,
+    DEFAULT_VOICE_TTS_RATE,
+    MAX_VOICE_TTS_RATE,
     DEFAULT_SERVICE_PROACTIVE_MODEL,
     MAX_MOBILE_UI_JOB_TIMEOUT_SECONDS,
     MAX_OLLAMA_TIMEOUT_SECONDS,
     MIN_MOBILE_UI_JOB_TIMEOUT_SECONDS,
+    MIN_VOICE_TTS_RATE,
     MODEL_PROVIDER_OLLAMA,
     MODEL_PROVIDER_OPENROUTER,
     MIN_OLLAMA_TIMEOUT_SECONDS,
@@ -1018,6 +1021,111 @@ class MemoryProtectionDialog(ThemedDialog):
             "keep_daily_days": self.keep_daily_spin.get().strip(),
             "verify_after_write": self.verify_var.get(),
             "auto_restore": self.restore_var.get(),
+        }
+
+
+class VoiceSettingsDialog(ThemedDialog):
+    def __init__(self, parent, initial_settings: dict, voices: list[dict] | None = None):
+        self.initial_settings = initial_settings if isinstance(initial_settings, dict) else {}
+        self.voices = voices if isinstance(voices, list) else []
+        self._voice_label_to_id = {}
+        super().__init__(parent, "Voz")
+
+    def body(self, master):
+        self._prepare_body(master)
+        master.columnconfigure(0, weight=1)
+        master.columnconfigure(1, weight=1)
+
+        self.enabled_var = tk.BooleanVar(value=bool(self.initial_settings.get("enabled", True)))
+        self.rate_var = tk.StringVar(value=str(self.initial_settings.get("tts_rate", DEFAULT_VOICE_TTS_RATE)))
+        self.telegram_mode_var = tk.StringVar(
+            value=str(self.initial_settings.get("telegram_reply_mode", "auto") or "auto")
+        )
+
+        ttk.Checkbutton(
+            master,
+            text="Activar voz",
+            variable=self.enabled_var,
+        ).grid(row=0, column=0, columnspan=2, sticky="w", padx=6, pady=(6, 8))
+
+        ttk.Label(master, text="Voz sistema/Telegram").grid(row=1, column=0, sticky="w", padx=6, pady=(8, 2))
+        voice_values = ["predeterminada"]
+        self._voice_label_to_id = {"predeterminada": ""}
+        current_voice_id = str(self.initial_settings.get("tts_voice_id", "")).strip()
+        selected_label = "predeterminada"
+        for item in self.voices:
+            voice_id = str(item.get("id", "")).strip()
+            label = f"{item.get('index', len(voice_values))}. {item.get('name', voice_id or 'Voz')}"
+            languages = item.get("languages", [])
+            if isinstance(languages, list) and languages:
+                label += " - " + ", ".join(str(value) for value in languages if str(value).strip())
+            self._voice_label_to_id[label] = voice_id
+            voice_values.append(label)
+            if voice_id and voice_id == current_voice_id:
+                selected_label = label
+
+        self.voice_combo = ttk.Combobox(master, values=voice_values, state="readonly", width=44)
+        self.voice_combo.grid(row=2, column=0, columnspan=2, sticky="ew", padx=6)
+        self.voice_combo.set(selected_label)
+
+        ttk.Label(master, text="Velocidad").grid(row=3, column=0, sticky="w", padx=6, pady=(10, 2))
+        self.rate_spin = ttk.Spinbox(
+            master,
+            from_=MIN_VOICE_TTS_RATE,
+            to=MAX_VOICE_TTS_RATE,
+            increment=5,
+            width=10,
+            textvariable=self.rate_var,
+            style="Yarbis.TSpinbox",
+        )
+        self.rate_spin.grid(row=4, column=0, sticky="w", padx=6)
+
+        ttk.Label(master, text="Respuesta hablada en Telegram").grid(
+            row=3,
+            column=1,
+            sticky="w",
+            padx=6,
+            pady=(10, 2),
+        )
+        self.telegram_mode_combo = ttk.Combobox(
+            master,
+            textvariable=self.telegram_mode_var,
+            values=("off", "auto", "always"),
+            state="readonly",
+            width=16,
+        )
+        self.telegram_mode_combo.grid(row=4, column=1, sticky="w", padx=6)
+
+        ttk.Label(
+            master,
+            text="off=no manda audio, auto=solo respuestas cortas, always=audio siempre que pueda.",
+            foreground=self.theme_palette["muted"],
+            wraplength=420,
+        ).grid(row=5, column=0, columnspan=2, sticky="ew", padx=6, pady=(8, 6))
+        return self.voice_combo
+
+    def validate(self):
+        try:
+            rate = int(self.rate_var.get())
+        except (TypeError, ValueError):
+            messagebox.showwarning("Yarbis", "La velocidad debe ser numerica.", parent=self)
+            return False
+        if not MIN_VOICE_TTS_RATE <= rate <= MAX_VOICE_TTS_RATE:
+            messagebox.showwarning(
+                "Yarbis",
+                f"La velocidad debe estar entre {MIN_VOICE_TTS_RATE} y {MAX_VOICE_TTS_RATE}.",
+                parent=self,
+            )
+            return False
+        return True
+
+    def apply(self):
+        label = self.voice_combo.get().strip() or "predeterminada"
+        self.result = {
+            "enabled": self.enabled_var.get(),
+            "tts_voice_id": self._voice_label_to_id.get(label, ""),
+            "tts_rate": self.rate_var.get().strip(),
+            "telegram_reply_mode": self.telegram_mode_var.get().strip() or "auto",
         }
 
 

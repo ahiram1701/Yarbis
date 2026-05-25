@@ -957,6 +957,7 @@ def _public_settings_state(state: dict) -> dict:
         },
         "local_context": state.get("local_context", {}),
         "notifications": _public_notifications(state.get("notifications", {})),
+        "voice": state.get("voice", {}),
         "social": social,
         "social_accounts_text": _mobile_social_accounts_text(state),
         "social_drafts_text": f"Drafts: {social.get('drafts_count', 0)}",
@@ -1024,6 +1025,17 @@ def _transcribe_mobile_voice(payload: dict) -> str:
         suffix=suffix,
         settings=load_state(),
     )
+
+
+def _public_voice_payload() -> dict:
+    try:
+        voices = yarbis_voice.list_tts_voices(load_state())
+    except Exception:
+        voices = []
+    return {
+        "voices": voices,
+        "settings": load_state().get("voice", {}),
+    }
 
 
 def _execute_action(action: str, payload: dict | None = None) -> dict:
@@ -1158,6 +1170,16 @@ def _execute_action(action: str, payload: dict | None = None) -> dict:
             port=payload.get("port", DEFAULT_MOBILE_UI_PORT),
             job_timeout_seconds=payload.get("job_timeout_seconds"),
             pin=str(payload.get("pin", "")),
+        )}
+    if action == "voice_settings":
+        return {"result": yarbis_voice.update_voice_settings_text(
+            enabled=bool(payload.get("enabled", True)),
+            tts_voice_id=_payload_text(payload, "tts_voice_id"),
+            tts_rate=payload.get("tts_rate"),
+            browser_voice_name=_payload_text(payload, "browser_voice_name"),
+            browser_tts_rate=payload.get("browser_tts_rate"),
+            browser_tts_pitch=payload.get("browser_tts_pitch"),
+            telegram_reply_mode=_payload_text(payload, "telegram_reply_mode", "auto") or "auto",
         )}
     if action == "memory_protection":
         return {"result": update_memory_protection_settings_text(**payload)}
@@ -1512,6 +1534,9 @@ let voiceRecorder = null;
 let voiceStream = null;
 let voiceChunks = [];
 let voiceStopTimer = null;
+let localTtsVoices = [];
+let browserVoices = [];
+let voiceOptionsLoaded = false;
 const $ = (id) => document.getElementById(id);
 
 function escapeHtml(value) {
@@ -1540,8 +1565,34 @@ function speakText(text) {
   }
   window.speechSynthesis.cancel();
   const utterance = new SpeechSynthesisUtterance(clean);
-  utterance.lang = "es-MX";
+  const voiceSettings = (appState && appState.voice) || {};
+  const browserVoiceName = voiceSettings.browser_voice_name || window.localStorage.getItem("yarbis_browser_voice_name") || "";
+  const selectedVoice = browserVoices.find(voice => voice.name === browserVoiceName);
+  if (selectedVoice) utterance.voice = selectedVoice;
+  utterance.lang = (selectedVoice && selectedVoice.lang) || "es-MX";
+  utterance.rate = Number(voiceSettings.browser_tts_rate || window.localStorage.getItem("yarbis_browser_tts_rate") || 1);
+  utterance.pitch = Number(voiceSettings.browser_tts_pitch || window.localStorage.getItem("yarbis_browser_tts_pitch") || 1);
   window.speechSynthesis.speak(utterance);
+}
+
+function stopSpeech() {
+  if ("speechSynthesis" in window) window.speechSynthesis.cancel();
+  toast("Voz detenida");
+}
+
+function refreshBrowserVoices() {
+  if (!("speechSynthesis" in window)) {
+    browserVoices = [];
+    return;
+  }
+  browserVoices = window.speechSynthesis.getVoices() || [];
+}
+
+function liveRecordingBlockReason() {
+  if (!window.isSecureContext) return "iPhone exige HTTPS para abrir el microfono aqui. Usa Grabar archivo.";
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) return "Este navegador no expone microfono directo. Usa Grabar archivo.";
+  if (!window.MediaRecorder) return "Este navegador no soporta grabacion directa. Usa Grabar archivo.";
+  return "";
 }
 
 function bytesToBase64(bytes) {
@@ -1568,6 +1619,19 @@ async function transcribeBlob(blob) {
   return data.text || "";
 }
 
+function insertTranscript(text) {
+  const clean = String(text || "").trim();
+  if (!clean) return;
+  $("replyText").value = ($("replyText").value ? `${$("replyText").value}\n${clean}` : clean);
+}
+
+async function transcribeVoiceBlob(blob) {
+  toast("Transcribiendo voz...");
+  const text = await transcribeBlob(blob);
+  insertTranscript(text);
+  toast(text ? "Voz transcrita" : "No detecte texto");
+}
+
 function stopVoiceTracks() {
   if (voiceStream) {
     voiceStream.getTracks().forEach(track => track.stop());
@@ -1582,7 +1646,16 @@ async function toggleReplyRecording() {
     return;
   }
   if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia || !window.MediaRecorder) {
-    toast("Este navegador no permite grabar audio aqui");
+    toast(liveRecordingBlockReason());
+    const fileInput = $("voiceFileInput");
+    if (fileInput) fileInput.click();
+    return;
+  }
+  const blockedReason = liveRecordingBlockReason();
+  if (blockedReason) {
+    toast(blockedReason);
+    const fileInput = $("voiceFileInput");
+    if (fileInput) fileInput.click();
     return;
   }
   try {
@@ -1597,11 +1670,7 @@ async function toggleReplyRecording() {
       stopVoiceTracks();
       try {
         const blob = new Blob(voiceChunks, { type: voiceRecorder.mimeType || "audio/webm" });
-        const text = await transcribeBlob(blob);
-        if (text) {
-          $("replyText").value = ($("replyText").value ? `${$("replyText").value}\n${text}` : text);
-          toast("Voz transcrita");
-        }
+        await transcribeVoiceBlob(blob);
       } catch (error) {
         toast(error.message);
       } finally {
@@ -1618,6 +1687,21 @@ async function toggleReplyRecording() {
     renderCurrent();
   } catch (error) {
     stopVoiceTracks();
+    toast(error.message);
+  }
+}
+
+async function loadVoiceOptions(force = false) {
+  if (voiceOptionsLoaded && !force) return;
+  try {
+    const data = await api("/api/voice/voices");
+    csrfToken = data.csrf || csrfToken;
+    localTtsVoices = data.voices || [];
+    if (!appState) appState = {};
+    appState.voice = { ...(appState.voice || {}), ...(data.settings || {}) };
+    voiceOptionsLoaded = true;
+    if (currentTab === "settings") renderCurrent();
+  } catch (error) {
     toast(error.message);
   }
 }
@@ -1777,7 +1861,10 @@ function renderHome() {
     </section>
     <section class="section">
       <h2>Ultimo resultado</h2>
-      <div class="actions"><button data-speak="${escapeHtml(appState.last_result || "")}">Escuchar</button></div>
+      <div class="actions">
+        <button data-speak="${escapeHtml(appState.last_result || "")}">Escuchar</button>
+        <button data-action="stop-speaking">Detener habla</button>
+      </div>
       <div class="panel"><pre>${escapeHtml(appState.last_result || "Sin resultado reciente.")}</pre></div>
     </section>`;
 }
@@ -1790,6 +1877,7 @@ function renderRun() {
         <button class="primary" data-action="run-cycle">Ejecutar ciclo</button>
         <button class="secondary" data-action="run-auto">Modo autonomo</button>
         <button class="danger" data-action="stop-operation">Detener pensando</button>
+        <button data-action="stop-speaking">Detener habla</button>
         <button data-action="refresh">Refrescar</button>
       </div>
     </section>
@@ -1797,8 +1885,10 @@ function renderRun() {
       <h2>Respuesta o contexto</h2>
       <div class="form-grid">
         <textarea id="replyText" placeholder="Escribe respuesta, instruccion o contexto libre"></textarea>
+        <input id="voiceFileInput" class="hidden" type="file" accept="audio/*" capture>
         <div class="actions">
           <button data-action="record-reply">${voiceRecorder && voiceRecorder.state === "recording" ? "Detener voz" : "Grabar voz"}</button>
+          <button data-action="voice-file">Grabar archivo</button>
           <button class="primary" data-action="send-reply">Enviar y ejecutar</button>
         </div>
       </div>
@@ -1893,6 +1983,16 @@ function renderSettings() {
   const ntfy = notifications.ntfy || {};
   const telegram = notifications.telegram || {};
   const internet = appState.internet || {};
+  const voice = appState.voice || {};
+  refreshBrowserVoices();
+  if (!voiceOptionsLoaded) window.setTimeout(() => loadVoiceOptions(), 0);
+  const systemVoiceOptions = localTtsVoices.map(item => {
+    const label = `${item.index}. ${item.name}${item.languages && item.languages.length ? " - " + item.languages.join(", ") : ""}`;
+    return `<option value="${escapeHtml(item.id || "")}">${escapeHtml(label)}</option>`;
+  }).join("");
+  const browserVoiceOptions = browserVoices.map(item => (
+    `<option value="${escapeHtml(item.name || "")}">${escapeHtml((item.name || "Voz") + (item.lang ? " - " + item.lang : ""))}</option>`
+  )).join("");
   $("settings").innerHTML = `
     <section class="section">
       <h2>Modelo</h2>
@@ -1915,6 +2015,20 @@ function renderSettings() {
         <div><label>Nuevo PIN</label><input id="mobilePin" type="password" placeholder="${mobile.configured ? "conservar PIN" : "PIN requerido"}"></div>
         <div class="panel"><pre>${escapeHtml((mobile.tailscale_url || mobile.local_url || "") + (mobile.last_bind_error ? "\n" + mobile.last_bind_error : ""))}</pre></div>
         <button data-action="save-mobile">Guardar UI movil</button>
+      </div>
+    </section>
+    <section class="section">
+      <h2>Voz</h2>
+      <div class="form-grid wide">
+        <label><input id="voiceEnabled" type="checkbox" ${voice.enabled === false ? "" : "checked"}> Activa</label>
+        <div><label>Voz sistema/Telegram</label><select id="ttsVoiceId"><option value="">predeterminada</option>${systemVoiceOptions}</select></div>
+        <div><label>Velocidad sistema</label><input id="ttsRate" type="number" min="80" max="320" value="${escapeHtml(voice.tts_rate || 175)}"></div>
+        <div><label>Voz navegador</label><select id="browserVoiceName"><option value="">predeterminada</option>${browserVoiceOptions}</select></div>
+        <div><label>Velocidad navegador</label><input id="browserTtsRate" type="number" min="0.5" max="2" step="0.1" value="${escapeHtml(voice.browser_tts_rate || 1)}"></div>
+        <div><label>Tono navegador</label><input id="browserTtsPitch" type="number" min="0" max="2" step="0.1" value="${escapeHtml(voice.browser_tts_pitch || 1)}"></div>
+        <div><label>Telegram voz</label><select id="telegramVoiceMode"><option value="off">off</option><option value="auto">auto</option><option value="always">always</option></select></div>
+        <button data-action="save-voice">Guardar voz</button>
+        <button data-action="stop-speaking">Detener habla</button>
       </div>
     </section>
     <section class="section">
@@ -1999,6 +2113,12 @@ function renderSettings() {
   if (localMode) localMode.value = local.mode || "safe";
   const internetMode = $("internetMode");
   if (internetMode) internetMode.value = internet.mode || "auto";
+  const ttsVoiceId = $("ttsVoiceId");
+  if (ttsVoiceId) ttsVoiceId.value = voice.tts_voice_id || "";
+  const browserVoiceName = $("browserVoiceName");
+  if (browserVoiceName) browserVoiceName.value = voice.browser_voice_name || window.localStorage.getItem("yarbis_browser_voice_name") || "";
+  const telegramVoiceMode = $("telegramVoiceMode");
+  if (telegramVoiceMode) telegramVoiceMode.value = voice.telegram_reply_mode || "auto";
 }
 
 function renderActivity() {
@@ -2061,8 +2181,13 @@ document.addEventListener("click", async (event) => {
       if (cycles !== null) await action("run_auto", { cycles });
     } else if (name === "stop-operation") {
       await action("stop_operation");
+    } else if (name === "stop-speaking") {
+      stopSpeech();
     } else if (name === "record-reply") {
       await toggleReplyRecording();
+    } else if (name === "voice-file") {
+      const fileInput = $("voiceFileInput");
+      if (fileInput) fileInput.click();
     } else if (name === "send-reply") {
       await action("submit_reply", { reply_text: $("replyText").value });
       $("replyText").value = "";
@@ -2092,6 +2217,20 @@ document.addEventListener("click", async (event) => {
       });
     } else if (name === "save-mobile") {
       await action("mobile_ui", { enabled: $("mobileEnabled").checked, port: $("mobilePort").value, job_timeout_seconds: $("mobileJobTimeout").value, pin: $("mobilePin").value });
+    } else if (name === "save-voice") {
+      window.localStorage.setItem("yarbis_browser_voice_name", $("browserVoiceName").value);
+      window.localStorage.setItem("yarbis_browser_tts_rate", $("browserTtsRate").value);
+      window.localStorage.setItem("yarbis_browser_tts_pitch", $("browserTtsPitch").value);
+      await action("voice_settings", {
+        enabled: $("voiceEnabled").checked,
+        tts_voice_id: $("ttsVoiceId").value,
+        tts_rate: $("ttsRate").value,
+        browser_voice_name: $("browserVoiceName").value,
+        browser_tts_rate: $("browserTtsRate").value,
+        browser_tts_pitch: $("browserTtsPitch").value,
+        telegram_reply_mode: $("telegramVoiceMode").value
+      });
+      voiceOptionsLoaded = false;
     } else if (name === "save-pulse") {
       await action("service_proactive", {
         enabled: $("pulseEnabled").checked,
@@ -2158,6 +2297,19 @@ document.addEventListener("click", async (event) => {
   }
 });
 
+document.addEventListener("change", async (event) => {
+  const input = event.target;
+  if (!input || input.id !== "voiceFileInput") return;
+  const file = input.files && input.files[0];
+  input.value = "";
+  if (!file) return;
+  try {
+    await transcribeVoiceBlob(file);
+  } catch (error) {
+    toast(error.message);
+  }
+});
+
 $("loginForm").addEventListener("submit", async (event) => {
   event.preventDefault();
   try {
@@ -2169,6 +2321,14 @@ $("loginForm").addEventListener("submit", async (event) => {
     $("loginMessage").textContent = error.message;
   }
 });
+
+if ("speechSynthesis" in window) {
+  refreshBrowserVoices();
+  window.speechSynthesis.onvoiceschanged = () => {
+    refreshBrowserVoices();
+    if (currentTab === "settings") renderCurrent();
+  };
+}
 
 function isEditingField() {
   const tag = (document.activeElement && document.activeElement.tagName || "").toUpperCase();
@@ -2292,6 +2452,19 @@ class MobileRequestHandler(BaseHTTPRequestHandler):
                 self._send_json(HTTPStatus.OK, {"ok": True, "csrf": session["csrf"], "job": job})
             except PermissionError as exc:
                 self._send_json(HTTPStatus.UNAUTHORIZED, {"ok": False, "error": str(exc)})
+            return
+        if parsed.path == "/api/voice/voices":
+            try:
+                _settings, session = self._require_session({})
+                self._send_json(HTTPStatus.OK, {
+                    "ok": True,
+                    "csrf": session["csrf"],
+                    **_public_voice_payload(),
+                })
+            except PermissionError as exc:
+                self._send_json(HTTPStatus.UNAUTHORIZED, {"ok": False, "error": str(exc)})
+            except Exception as exc:
+                self._send_json(HTTPStatus.INTERNAL_SERVER_ERROR, {"ok": False, "error": str(exc)})
             return
         self._send_json(HTTPStatus.NOT_FOUND, {"ok": False, "error": "Ruta no encontrada."})
 
