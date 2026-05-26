@@ -10,7 +10,7 @@ from unittest.mock import patch
 
 import memory
 import yarbis_mobile
-from ui_settings_dialogs import ServiceMobileUiDialog
+from ui_settings_dialogs import ServiceMobileUiDialog, VoiceSettingsDialog
 
 TEST_RUNTIME_DIR = Path.cwd() / "tests_runtime"
 
@@ -289,6 +289,66 @@ class YarbisMobileTestCase(unittest.TestCase):
                 server.shutdown()
                 server.server_close()
 
+    def test_http_api_voice_voices_catalog_flag_and_speak_endpoint(self):
+        state_path = TEST_RUNTIME_DIR / "mobile_voice_catalog_state.json"
+        audio_path = TEST_RUNTIME_DIR / "mobile_speak.ogg"
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+        audio_path.write_bytes(b"ogg")
+
+        with patch.object(memory, "STATE_FILE", state_path):
+            memory.save_state(memory.default_state())
+            yarbis_mobile.update_mobile_ui_settings(enabled=True, port=8787, pin="1357")
+            server = yarbis_mobile._MobileHTTPServer(("127.0.0.1", 0), yarbis_mobile.MobileRequestHandler)
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            port = int(server.server_address[1])
+            try:
+                conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+                conn.request(
+                    "POST",
+                    "/api/login",
+                    body=json.dumps({"pin": "1357"}),
+                    headers={"Content-Type": "application/json"},
+                )
+                response = conn.getresponse()
+                login_payload = json.loads(response.read().decode("utf-8"))
+                cookie = response.getheader("Set-Cookie")
+
+                with patch.object(
+                    yarbis_mobile.yarbis_voice,
+                    "list_tts_voices",
+                    return_value=[{"index": 2, "id": "es_MX-claude-high", "provider": "piper"}],
+                ) as voices_mock:
+                    conn.request("GET", "/api/voice/voices?catalog=1&refresh=1", headers={"Cookie": cookie})
+                    response = conn.getresponse()
+                    payload = json.loads(response.read().decode("utf-8"))
+
+                self.assertEqual(response.status, 200)
+                self.assertEqual(payload["voices"][0]["provider"], "piper")
+                self.assertTrue(voices_mock.call_args.kwargs["include_downloadable"])
+                self.assertTrue(voices_mock.call_args.kwargs["refresh_catalog"])
+
+                with patch.object(yarbis_mobile.yarbis_voice, "synthesize_speech_file", return_value=audio_path):
+                    with patch.object(yarbis_mobile.yarbis_voice, "cleanup_voice_file") as cleanup_mock:
+                        conn.request("POST", "/api/voice/speak", body=json.dumps({
+                            "csrf": login_payload["csrf"],
+                            "text": "Hola",
+                        }), headers={
+                            "Content-Type": "application/json",
+                            "Cookie": cookie,
+                            "X-CSRF-Token": login_payload["csrf"],
+                        })
+                        response = conn.getresponse()
+                        speak_payload = json.loads(response.read().decode("utf-8"))
+
+                self.assertEqual(response.status, 200)
+                self.assertEqual(base64.b64decode(speak_payload["audio_b64"]), b"ogg")
+                self.assertEqual(speak_payload["mime_type"], "audio/ogg")
+                cleanup_mock.assert_called_once_with(audio_path)
+            finally:
+                server.shutdown()
+                server.server_close()
+
     def test_mobile_voice_settings_action_updates_state(self):
         state_path = TEST_RUNTIME_DIR / "mobile_voice_settings_state.json"
         state_path.parent.mkdir(parents=True, exist_ok=True)
@@ -297,6 +357,7 @@ class YarbisMobileTestCase(unittest.TestCase):
             memory.save_state(memory.default_state())
             result = yarbis_mobile._execute_action("voice_settings", {
                 "enabled": True,
+                "tts_provider": "system",
                 "tts_voice_id": "voice-1",
                 "tts_rate": 190,
                 "browser_voice_name": "Samantha",
@@ -308,11 +369,34 @@ class YarbisMobileTestCase(unittest.TestCase):
 
         self.assertIn("Voz actualizada", result["result"])
         self.assertEqual(state["voice"]["tts_voice_id"], "voice-1")
+        self.assertEqual(state["voice"]["tts_provider"], "system")
         self.assertEqual(state["voice"]["tts_rate"], 190)
         self.assertEqual(state["voice"]["browser_voice_name"], "Samantha")
         self.assertEqual(state["voice"]["browser_tts_rate"], 1.2)
         self.assertEqual(state["voice"]["browser_tts_pitch"], 0.8)
         self.assertEqual(state["voice"]["telegram_reply_mode"], "always")
+
+    def test_mobile_voice_settings_action_updates_piper_state(self):
+        state_path = TEST_RUNTIME_DIR / "mobile_voice_piper_settings_state.json"
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+
+        with patch.object(memory, "STATE_FILE", state_path):
+            memory.save_state(memory.default_state())
+            with patch.object(yarbis_mobile.yarbis_voice, "download_piper_voice", return_value={"id": "es_MX-claude-high"}):
+                result = yarbis_mobile._execute_action("voice_settings", {
+                    "enabled": True,
+                    "tts_provider": "piper",
+                    "piper_voice_id": "es_MX-claude-high",
+                    "piper_speaker_id": 2,
+                    "tts_rate": 200,
+                    "telegram_reply_mode": "auto",
+                })
+            state = memory.load_state()
+
+        self.assertIn("Voz actualizada", result["result"])
+        self.assertEqual(state["voice"]["tts_provider"], "piper")
+        self.assertEqual(state["voice"]["piper_voice_id"], "es_MX-claude-high")
+        self.assertEqual(state["voice"]["piper_speaker_id"], 2)
 
     def test_public_state_default_is_lightweight_and_loads_state_once(self):
         seeded_state = memory.default_state()
@@ -348,7 +432,12 @@ class YarbisMobileTestCase(unittest.TestCase):
         with patch.object(yarbis_mobile, "load_state", return_value=seeded_state):
             with patch.object(yarbis_mobile, "get_service_status", return_value=self._service_status()):
                 with patch.object(yarbis_mobile, "detect_tailscale_ipv4", return_value=""):
-                    context_payload = yarbis_mobile._public_state("context")
+                    with patch.object(
+                        yarbis_mobile,
+                        "coding_list_proposals_text",
+                        return_value="Propuestas pendientes:\n- prop-1",
+                    ):
+                        context_payload = yarbis_mobile._public_state("context")
                     settings_payload = yarbis_mobile._public_state("settings")
                     activity_payload = yarbis_mobile._public_state("activity")
 
@@ -412,6 +501,34 @@ class YarbisMobileTestCase(unittest.TestCase):
         self.assertIn("type=\"file\" accept=\"audio/*\" capture", html)
         self.assertIn("Detener habla", html)
         self.assertIn("speechSynthesis.cancel", html)
+        self.assertIn("/api/voice/speak", html)
+        self.assertIn("Actualizar catalogo", html)
+        self.assertIn("Probar voz", html)
+        self.assertIn("Guardar validacion", html)
+        self.assertIn("coding_validate", html)
+
+    def test_mobile_coding_validation_actions_route_to_session_helpers(self):
+        with patch.object(
+            yarbis_mobile,
+            "coding_update_validation_command_text",
+            return_value="guardado",
+        ) as update_mock:
+            update_result = yarbis_mobile._execute_action("coding_validation", {"command": "pytest"})
+
+        with patch.object(
+            yarbis_mobile,
+            "coding_run_validation_text",
+            return_value="validado",
+        ) as validate_mock:
+            validate_result = yarbis_mobile._execute_action(
+                "coding_validate",
+                {"proposal_id": "proposal-1", "command": "pytest"},
+            )
+
+        self.assertEqual(update_result["result"], "guardado")
+        self.assertEqual(validate_result["result"], "validado")
+        update_mock.assert_called_once_with("pytest")
+        validate_mock.assert_called_once_with(proposal_id="proposal-1", command="pytest")
 
     def test_ensure_mobile_ui_servers_starts_localhost_when_tailscale_missing(self):
         state_path = TEST_RUNTIME_DIR / "mobile_server_state.json"
@@ -442,6 +559,25 @@ class YarbisMobileTestCase(unittest.TestCase):
             self.assertFalse(ServiceMobileUiDialog.validate(dialog))
 
         warning_mock.assert_called_once()
+
+    def test_voice_settings_dialog_apply_preserves_provider_choices(self):
+        dialog = object.__new__(VoiceSettingsDialog)
+        dialog.enabled_var = SimpleNamespace(get=lambda: True)
+        dialog.provider_var = SimpleNamespace(get=lambda: "piper")
+        dialog.voice_combo = SimpleNamespace(get=lambda: "Sistema Uno")
+        dialog.piper_combo = SimpleNamespace(get=lambda: "Piper Uno")
+        dialog.piper_speaker_var = SimpleNamespace(get=lambda: "3")
+        dialog.rate_var = SimpleNamespace(get=lambda: "195")
+        dialog.telegram_mode_var = SimpleNamespace(get=lambda: "always")
+        dialog._system_label_to_id = {"Sistema Uno": "system-voice"}
+        dialog._piper_label_to_id = {"Piper Uno": "es_MX-claude-high"}
+
+        VoiceSettingsDialog.apply(dialog)
+
+        self.assertEqual(dialog.result["tts_provider"], "piper")
+        self.assertEqual(dialog.result["tts_voice_id"], "system-voice")
+        self.assertEqual(dialog.result["piper_voice_id"], "es_MX-claude-high")
+        self.assertEqual(dialog.result["piper_speaker_id"], "3")
 
 
 if __name__ == "__main__":

@@ -54,6 +54,7 @@ Dependencias Python declaradas:
 - `pyttsx3>=2.99,<3`
 - `sounddevice>=0.5,<1`
 - `imageio-ffmpeg>=0.6,<1`
+- `piper-tts>=1.4,<2`
 
 ## Instalacion
 
@@ -410,6 +411,9 @@ Comandos disponibles por Telegram:
 - `/voz off`: desactiva entrada y respuestas de voz
 - `/voz status`: muestra configuracion de voz
 - `/voz voces`: lista voces locales disponibles para TTS
+- `/voz catalogo [es|en|all]`: lista voces Piper descargables
+- `/voz proveedor piper|sistema`: cambia entre voces del sistema y Piper local
+- `/voz descargar ID`: descarga una voz Piper
 - `/voz usar NUMERO`: cambia la voz del sistema/Telegram por numero o ID
 - `/voz velocidad 190`: cambia la velocidad de lectura local
 - `/voz callar`: desactiva futuras respuestas habladas por Telegram
@@ -442,25 +446,31 @@ o contexto libre cuando no coinciden con una accion remota explicita.
 
 Yarbis puede entender voz sin APIs pagadas ni subir audio a terceros. Usa `faster-whisper`
 en CPU para transcribir, `pyttsx3` para leer respuestas con la voz del sistema y
-`imageio-ffmpeg` para convertir audio cuando Telegram necesita una nota de voz.
+`piper-tts` para voces neuronales locales descargables. `imageio-ffmpeg` convierte audio
+cuando Telegram necesita una nota de voz.
 
 El primer uso de transcripcion puede descargar el modelo local `base`. La configuracion
 por defecto queda en `state.json` bajo `voice`: idioma `es`, `stt_model=base`,
-`stt_compute_type=int8`, maximo 120 segundos, voz del sistema, velocidad `175`,
-voz del navegador opcional y respuestas de Telegram en modo `auto`.
+`stt_compute_type=int8`, maximo 120 segundos, proveedor TTS `system`, velocidad `175`,
+voz Piper opcional, voz del navegador opcional y respuestas de Telegram en modo `auto`.
+Las voces Piper se guardan bajo `.yarbis_runtime/voice/piper/voices/` y se descargan de una
+en una cuando las eliges.
 
 Superficies disponibles:
 
 - Telegram entiende `voice` y `audio`; siempre responde con texto y, en modo `auto`,
-  tambien envia nota de voz cuando la respuesta es corta. Usa `/voz voces`,
-  `/voz usar NUMERO`, `/voz velocidad NUMERO` y `/voz callar` para ajustar o silenciar.
+  tambien envia nota de voz cuando la respuesta es corta. Usa `/voz catalogo es`,
+  `/voz descargar ID`, `/voz proveedor piper`, `/voz usar NUMERO`,
+  `/voz velocidad NUMERO` y `/voz callar` para ajustar o silenciar.
 - La UI movil permite grabar en el compositor y transcribe en Yarbis mediante
   `/api/voice/transcribe`; tambien puede leer resultados con `speechSynthesis` del navegador,
-  elegir voz/rate/pitch en `Config` -> `Voz` y detener habla activa con `Detener habla`.
+  elegir motor `Sistema/Piper`, descargar voces Piper, probar voz, elegir voz/rate/pitch
+  en `Config` -> `Voz` y detener habla activa con `Detener habla`.
   Si iPhone/Safari bloquea el microfono por HTTP o por origen no seguro, usa `Grabar archivo`:
   abre la captura/subida de audio del sistema y reutiliza la misma transcripcion local.
-- La app de escritorio tiene `Dictar` en el compositor, `Voz` para elegir voz del sistema,
-  velocidad y modo Telegram, `Leer ultimo resultado` y `Detener voz`.
+- La app de escritorio tiene `Dictar` en el compositor, `Voz` para elegir motor, voz del sistema
+  o Piper, velocidad y modo Telegram, `Actualizar voces`, `Probar voz`,
+  `Leer ultimo resultado` y `Detener voz`.
 
 Por seguridad, puedes pedir apagado o reinicio por voz, pero la confirmacion final
 `/confirmar_apagado CODIGO` o `/confirmar_reinicio CODIGO` debe escribirse como texto.
@@ -658,8 +668,8 @@ Yarbis expone al modelo estas herramientas:
 - `memory_protection_status`, `update_memory_protection_settings` y `verify_memory_backups`: proteccion automatica de memoria
 - `create_memory_backup`, `list_memory_backups`, `inspect_memory_backup` e `import_memory_backup`: respaldo y trasplante manual de memoria
 - `coding_set_workspace`, `coding_workspace_overview`, `coding_list_files` y `coding_read_text_file`: contexto de un repositorio local activo
-- `coding_propose_text_file`, `coding_list_proposals`, `coding_get_proposal`, `coding_apply_proposal` y `coding_discard_proposal`: propuestas de cambios de codigo en modo `propose_first`
-- `coding_git_status`, `coding_git_diff` y `coding_run_validation`: estado Git, diff y validaciones dentro del repo activo
+- `coding_propose_changes`, `coding_propose_text_file`, `coding_list_proposals`, `coding_get_proposal`, `coding_apply_proposal` y `coding_discard_proposal`: propuestas de cambios de codigo en modo `propose_first`
+- `coding_git_status`, `coding_git_diff`, `coding_detect_validation_command`, `coding_update_validation_command` y `coding_run_validation`: estado Git, diff y validaciones dentro del repo activo
 - `list_files` y `read_text_file`: lectura de rutas del workspace o del filesystem local
 - `write_text_file`: escritura con checkpoint y diff
 - `list_checkpoints` y `restore_checkpoint`: recuperacion de cambios
@@ -690,7 +700,21 @@ python main.py
 >>> coding workspace C:\ruta\al\repo
 ```
 
-En este modo el flujo por defecto es `propose_first`: Yarbis no escribe directamente en archivos del repo activo con `write_text_file`; crea propuestas persistidas en `.yarbis_runtime/coding_proposals/` con contenido previo, contenido propuesto y diff. Puedes revisarlas con `coding proposals`, aplicarlas con `coding apply <id>` o descartarlas con `coding discard <id>`. Al aplicar una propuesta se crea un checkpoint previo y despues puedes validar con `coding_run_validation` o un comando de tests.
+En este modo el flujo por defecto es `propose_first`: Yarbis no escribe directamente en archivos del repo activo con `write_text_file`; crea propuestas persistidas en `.yarbis_runtime/coding_proposals/` con contenido previo, contenido propuesto y diff. Las propuestas nuevas usan `schema_version=2` y pueden agrupar varios archivos como una unidad de trabajo: creacion, actualizacion o borrado de archivos de texto UTF-8.
+
+Puedes revisar propuestas con `coding proposals`, abrir una con `coding get <id>`, aplicarla con `coding apply <id>` o descartarla con `coding discard <id>`. Al aplicar, Yarbis hace preflight de todos los archivos, bloquea la aplicacion si algo cambio desde la propuesta, crea checkpoints por archivo y limpia la propuesta pendiente. Las propuestas v1 de un archivo siguen siendo legibles y aplicables.
+
+La validacion puede detectarse y guardarse por repo:
+
+```powershell
+>>> coding validation
+>>> coding validation "python -m unittest discover -s tests"
+>>> coding validate <id>
+```
+
+`coding validation` intenta detectar `scripts/check.ps1`, proyectos Python con `pyproject.toml` y `tests`, `package.json` o proyectos .NET. `coding validate [id]` usa el comando explicito, el guardado o el detectado, guarda el ultimo resultado en `state["coding"]["last_validation"]` y puede asociarlo a una propuesta.
+
+El mismo flujo esta disponible en escritorio desde `Workspace de codigo` y `Propuestas`; en movil puedes elegir workspace, guardar comando de validacion, ver/aplicar/descartar/validar propuestas; por Telegram existen `/coding`, `/coding propuestas`, `/coding ver <id>`, `/coding aplicar <id>`, `/coding descartar <id>`, `/coding validar [id]` y `/coding workspace <ruta>`.
 
 Limites de salida actuales:
 

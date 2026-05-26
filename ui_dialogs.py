@@ -713,11 +713,12 @@ class NotesDialog(ThemedDialog):
 
 
 class CodingProposalsDialog(ThemedDialog):
-    def __init__(self, parent, apply_callback, discard_callback, detail_callback, list_callback):
+    def __init__(self, parent, apply_callback, discard_callback, detail_callback, list_callback, validate_callback):
         self.apply_callback = apply_callback
         self.discard_callback = discard_callback
         self.detail_callback = detail_callback
         self.list_callback = list_callback
+        self.validate_callback = validate_callback
         self.proposal_lines = []
         self.activity_messages = []
         super().__init__(parent, "Propuestas de coding")
@@ -795,6 +796,12 @@ class CodingProposalsDialog(ThemedDialog):
             style="Danger.TButton",
         )
         self.discard_button.pack(side="left", padx=(0, 8))
+        self.validate_button = ttk.Button(
+            box,
+            text="Validar",
+            command=self._validate_selected_proposal,
+        )
+        self.validate_button.pack(side="left", padx=(0, 8))
         ttk.Button(box, text="Refrescar", command=self._refresh_proposals).pack(side="left", padx=(0, 8))
         ttk.Button(box, text="Cerrar", command=self.ok).pack(side="left")
 
@@ -830,6 +837,8 @@ class CodingProposalsDialog(ThemedDialog):
             self.apply_button.configure(state=enabled)
         if hasattr(self, "discard_button"):
             self.discard_button.configure(state=enabled)
+        if hasattr(self, "validate_button"):
+            self.validate_button.configure(state=enabled)
 
     def _show_selected_proposal(self, _event=None):
         line = self._selected_line()
@@ -895,6 +904,14 @@ class CodingProposalsDialog(ThemedDialog):
         if not should_discard:
             return
         result = self.discard_callback(proposal_id)
+        self.activity_messages.append(result)
+        self._refresh_proposals()
+
+    def _validate_selected_proposal(self):
+        proposal_id = self._proposal_id_from_line(self._selected_line())
+        if not proposal_id:
+            return
+        result = self.validate_callback(proposal_id=proposal_id)
         self.activity_messages.append(result)
         self._refresh_proposals()
 

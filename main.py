@@ -1,10 +1,14 @@
 from memory import load_state, render_state_summary
 from session import (
     coding_apply_proposal_text,
+    coding_detect_validation_command_text,
     coding_discard_proposal_text,
     coding_git_status_text,
+    coding_get_proposal_text,
     coding_list_proposals_text,
+    coding_run_validation_text,
     coding_set_workspace_text,
+    coding_update_validation_command_text,
     coding_workspace_overview_text,
     delete_note_text,
     get_note_text,
@@ -114,11 +118,29 @@ def main():
                     print(coding_list_proposals_text(status="pending", limit=20))
                     continue
 
+                if coding_action in {"get", "ver"}:
+                    if not coding_value:
+                        print("Uso: coding get <proposal_id>")
+                        continue
+                    print(coding_get_proposal_text(coding_value))
+                    continue
+
                 if coding_action == "apply":
                     if not coding_value:
                         print("Uso: coding apply <proposal_id>")
                         continue
                     print(coding_apply_proposal_text(coding_value))
+                    continue
+
+                if coding_action in {"validate", "validar"}:
+                    print(coding_run_validation_text(proposal_id=coding_value))
+                    continue
+
+                if coding_action in {"validation", "validacion"}:
+                    if coding_value:
+                        print(coding_update_validation_command_text(coding_value))
+                    else:
+                        print(coding_detect_validation_command_text())
                     continue
 
                 if coding_action in {"discard", "descartar"}:
@@ -128,7 +150,7 @@ def main():
                     print(coding_discard_proposal_text(coding_value))
                     continue
 
-                print("Uso: coding [workspace|status|proposals|apply|discard]")
+                print("Uso: coding [workspace|status|proposals|get|apply|discard|validate|validation]")
                 continue
 
             if cmd == "self":

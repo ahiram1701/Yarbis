@@ -42,6 +42,8 @@ class MemoryTestCase(unittest.TestCase):
         self.assertEqual(state["coding"]["workspace_path"], "")
         self.assertEqual(state["coding"]["mode"], memory.DEFAULT_CODING_MODE)
         self.assertEqual(state["coding"]["pending_proposal_ids"], [])
+        self.assertEqual(state["coding"]["validation_command"], "")
+        self.assertIsNone(state["coding"]["last_validation"]["exit_code"])
 
     def test_legacy_default_goal_normalizes_to_empty(self):
         normalized = memory.normalize_state({
@@ -56,12 +58,22 @@ class MemoryTestCase(unittest.TestCase):
                 "workspace_path": "C:/repo/demo",
                 "mode": "propose_first",
                 "pending_proposal_ids": ["proposal-1", "proposal-1", "", "proposal-2"],
+                "validation_command": "pytest",
+                "last_validation": {
+                    "command": "pytest",
+                    "proposal_id": "proposal-1",
+                    "exit_code": "0",
+                    "output": "OK",
+                    "ran_at": "2026-05-26T00:00:00+00:00",
+                },
             }
         })
 
         self.assertEqual(normalized["coding"]["workspace_path"], "C:/repo/demo")
         self.assertEqual(normalized["coding"]["mode"], "propose_first")
         self.assertEqual(normalized["coding"]["pending_proposal_ids"], ["proposal-1", "proposal-2"])
+        self.assertEqual(normalized["coding"]["validation_command"], "pytest")
+        self.assertEqual(normalized["coding"]["last_validation"]["exit_code"], 0)
 
     def test_normalize_state_defaults_invalid_coding_mode(self):
         normalized = memory.normalize_state({
@@ -774,6 +786,10 @@ class MemoryTestCase(unittest.TestCase):
                 "max_audio_seconds": 9999,
                 "tts_rate": 5,
                 "tts_voice_id": "voice-1",
+                "tts_provider": "invalid",
+                "piper_voice_id": "es_MX-claude-high" * 20,
+                "piper_speaker_id": -4,
+                "piper_catalog_updated_at": "2026-05-26T00:00:00+00:00" * 10,
                 "browser_voice_name": "Samantha" * 50,
                 "browser_tts_rate": 9,
                 "browser_tts_pitch": -4,
@@ -790,6 +806,10 @@ class MemoryTestCase(unittest.TestCase):
         self.assertEqual(settings["max_audio_seconds"], memory.MAX_VOICE_MAX_AUDIO_SECONDS)
         self.assertEqual(settings["tts_rate"], memory.MIN_VOICE_TTS_RATE)
         self.assertEqual(settings["tts_voice_id"], "voice-1")
+        self.assertEqual(settings["tts_provider"], memory.DEFAULT_VOICE_TTS_PROVIDER)
+        self.assertEqual(len(settings["piper_voice_id"]), memory.MAX_VOICE_PIPER_VOICE_ID_CHARS)
+        self.assertEqual(settings["piper_speaker_id"], 0)
+        self.assertEqual(len(settings["piper_catalog_updated_at"]), memory.MAX_VOICE_PIPER_CATALOG_TIMESTAMP_CHARS)
         self.assertEqual(len(settings["browser_voice_name"]), memory.MAX_VOICE_BROWSER_VOICE_NAME_CHARS)
         self.assertEqual(settings["browser_tts_rate"], memory.MAX_VOICE_BROWSER_TTS_RATE)
         self.assertEqual(settings["browser_tts_pitch"], memory.MIN_VOICE_BROWSER_TTS_PITCH)

@@ -1028,7 +1028,8 @@ class VoiceSettingsDialog(ThemedDialog):
     def __init__(self, parent, initial_settings: dict, voices: list[dict] | None = None):
         self.initial_settings = initial_settings if isinstance(initial_settings, dict) else {}
         self.voices = voices if isinstance(voices, list) else []
-        self._voice_label_to_id = {}
+        self._system_label_to_id = {}
+        self._piper_label_to_id = {}
         super().__init__(parent, "Voz")
 
     def body(self, master):
@@ -1037,7 +1038,9 @@ class VoiceSettingsDialog(ThemedDialog):
         master.columnconfigure(1, weight=1)
 
         self.enabled_var = tk.BooleanVar(value=bool(self.initial_settings.get("enabled", True)))
+        self.provider_var = tk.StringVar(value=str(self.initial_settings.get("tts_provider", "system") or "system"))
         self.rate_var = tk.StringVar(value=str(self.initial_settings.get("tts_rate", DEFAULT_VOICE_TTS_RATE)))
+        self.piper_speaker_var = tk.StringVar(value=str(self.initial_settings.get("piper_speaker_id", 0)))
         self.telegram_mode_var = tk.StringVar(
             value=str(self.initial_settings.get("telegram_reply_mode", "auto") or "auto")
         )
@@ -1048,27 +1051,59 @@ class VoiceSettingsDialog(ThemedDialog):
             variable=self.enabled_var,
         ).grid(row=0, column=0, columnspan=2, sticky="w", padx=6, pady=(6, 8))
 
-        ttk.Label(master, text="Voz sistema/Telegram").grid(row=1, column=0, sticky="w", padx=6, pady=(8, 2))
-        voice_values = ["predeterminada"]
-        self._voice_label_to_id = {"predeterminada": ""}
+        ttk.Label(master, text="Motor").grid(row=1, column=0, sticky="w", padx=6, pady=(8, 2))
+        self.provider_combo = ttk.Combobox(
+            master,
+            textvariable=self.provider_var,
+            values=("system", "piper"),
+            state="readonly",
+            width=16,
+        )
+        self.provider_combo.grid(row=2, column=0, sticky="w", padx=6)
+
+        ttk.Label(master, text="Voz sistema/Telegram").grid(row=1, column=1, sticky="w", padx=6, pady=(8, 2))
+        system_values = ["predeterminada"]
+        self._system_label_to_id = {"predeterminada": ""}
         current_voice_id = str(self.initial_settings.get("tts_voice_id", "")).strip()
-        selected_label = "predeterminada"
+        selected_system_label = "predeterminada"
         for item in self.voices:
+            if str(item.get("provider", "system")) != "system":
+                continue
             voice_id = str(item.get("id", "")).strip()
-            label = f"{item.get('index', len(voice_values))}. {item.get('name', voice_id or 'Voz')}"
+            label = f"{item.get('index', len(system_values))}. {item.get('name', voice_id or 'Voz')}"
             languages = item.get("languages", [])
             if isinstance(languages, list) and languages:
                 label += " - " + ", ".join(str(value) for value in languages if str(value).strip())
-            self._voice_label_to_id[label] = voice_id
-            voice_values.append(label)
+            self._system_label_to_id[label] = voice_id
+            system_values.append(label)
             if voice_id and voice_id == current_voice_id:
-                selected_label = label
+                selected_system_label = label
 
-        self.voice_combo = ttk.Combobox(master, values=voice_values, state="readonly", width=44)
-        self.voice_combo.grid(row=2, column=0, columnspan=2, sticky="ew", padx=6)
-        self.voice_combo.set(selected_label)
+        self.voice_combo = ttk.Combobox(master, values=system_values, state="readonly", width=44)
+        self.voice_combo.grid(row=2, column=1, sticky="ew", padx=6)
+        self.voice_combo.set(selected_system_label)
 
-        ttk.Label(master, text="Velocidad").grid(row=3, column=0, sticky="w", padx=6, pady=(10, 2))
+        ttk.Label(master, text="Voz Piper").grid(row=3, column=0, columnspan=2, sticky="w", padx=6, pady=(10, 2))
+        piper_values = ["sin elegir"]
+        self._piper_label_to_id = {"sin elegir": ""}
+        current_piper_id = str(self.initial_settings.get("piper_voice_id", "")).strip()
+        selected_piper_label = "sin elegir"
+        for item in self.voices:
+            if str(item.get("provider", "")) != "piper":
+                continue
+            voice_id = str(item.get("id", "")).strip()
+            status = "instalada" if item.get("installed") else "descargable"
+            label = f"{item.get('index', len(piper_values))}. {item.get('name', voice_id or 'Piper')} - {status}"
+            self._piper_label_to_id[label] = voice_id
+            piper_values.append(label)
+            if voice_id and voice_id == current_piper_id:
+                selected_piper_label = label
+
+        self.piper_combo = ttk.Combobox(master, values=piper_values, state="readonly", width=56)
+        self.piper_combo.grid(row=4, column=0, columnspan=2, sticky="ew", padx=6)
+        self.piper_combo.set(selected_piper_label)
+
+        ttk.Label(master, text="Velocidad").grid(row=5, column=0, sticky="w", padx=6, pady=(10, 2))
         self.rate_spin = ttk.Spinbox(
             master,
             from_=MIN_VOICE_TTS_RATE,
@@ -1078,10 +1113,22 @@ class VoiceSettingsDialog(ThemedDialog):
             textvariable=self.rate_var,
             style="Yarbis.TSpinbox",
         )
-        self.rate_spin.grid(row=4, column=0, sticky="w", padx=6)
+        self.rate_spin.grid(row=6, column=0, sticky="w", padx=6)
+
+        ttk.Label(master, text="Speaker Piper").grid(row=5, column=1, sticky="w", padx=6, pady=(10, 2))
+        self.piper_speaker_spin = ttk.Spinbox(
+            master,
+            from_=0,
+            to=9999,
+            increment=1,
+            width=10,
+            textvariable=self.piper_speaker_var,
+            style="Yarbis.TSpinbox",
+        )
+        self.piper_speaker_spin.grid(row=6, column=1, sticky="w", padx=6)
 
         ttk.Label(master, text="Respuesta hablada en Telegram").grid(
-            row=3,
+            row=7,
             column=1,
             sticky="w",
             padx=6,
@@ -1094,14 +1141,14 @@ class VoiceSettingsDialog(ThemedDialog):
             state="readonly",
             width=16,
         )
-        self.telegram_mode_combo.grid(row=4, column=1, sticky="w", padx=6)
+        self.telegram_mode_combo.grid(row=8, column=1, sticky="w", padx=6)
 
         ttk.Label(
             master,
             text="off=no manda audio, auto=solo respuestas cortas, always=audio siempre que pueda.",
             foreground=self.theme_palette["muted"],
             wraplength=420,
-        ).grid(row=5, column=0, columnspan=2, sticky="ew", padx=6, pady=(8, 6))
+        ).grid(row=9, column=0, columnspan=2, sticky="ew", padx=6, pady=(8, 6))
         return self.voice_combo
 
     def validate(self):
@@ -1117,13 +1164,25 @@ class VoiceSettingsDialog(ThemedDialog):
                 parent=self,
             )
             return False
+        try:
+            speaker_id = int(self.piper_speaker_var.get())
+        except (TypeError, ValueError):
+            messagebox.showwarning("Yarbis", "El speaker Piper debe ser numerico.", parent=self)
+            return False
+        if speaker_id < 0:
+            messagebox.showwarning("Yarbis", "El speaker Piper no puede ser negativo.", parent=self)
+            return False
         return True
 
     def apply(self):
-        label = self.voice_combo.get().strip() or "predeterminada"
+        system_label = self.voice_combo.get().strip() or "predeterminada"
+        piper_label = self.piper_combo.get().strip() or "sin elegir"
         self.result = {
             "enabled": self.enabled_var.get(),
-            "tts_voice_id": self._voice_label_to_id.get(label, ""),
+            "tts_provider": self.provider_var.get().strip() or "system",
+            "tts_voice_id": self._system_label_to_id.get(system_label, ""),
+            "piper_voice_id": self._piper_label_to_id.get(piper_label, ""),
+            "piper_speaker_id": self.piper_speaker_var.get().strip(),
             "tts_rate": self.rate_var.get().strip(),
             "telegram_reply_mode": self.telegram_mode_var.get().strip() or "auto",
         }

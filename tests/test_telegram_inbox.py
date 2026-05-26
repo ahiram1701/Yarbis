@@ -9,6 +9,33 @@ TEST_RUNTIME_DIR = Path.cwd() / "tests_runtime"
 
 
 class TelegramInboxTestCase(unittest.TestCase):
+    def test_dispatch_coding_commands(self):
+        with patch.object(
+            telegram_inbox,
+            "coding_list_proposals_text",
+            return_value="propuestas",
+        ) as proposals_mock:
+            with patch.object(
+                telegram_inbox,
+                "coding_get_proposal_text",
+                return_value="detalle",
+            ) as get_mock:
+                with patch.object(
+                    telegram_inbox,
+                    "coding_run_validation_text",
+                    return_value="validado",
+                ) as validation_mock:
+                    proposals_result = telegram_inbox._dispatch_command("/coding propuestas", chat_id="123")
+                    get_result = telegram_inbox._dispatch_command("/coding ver proposal-1", chat_id="123")
+                    validation_result = telegram_inbox._dispatch_command("/coding validar proposal-1", chat_id="123")
+
+        self.assertEqual(proposals_result, "propuestas")
+        self.assertEqual(get_result, "detalle")
+        self.assertEqual(validation_result, "validado")
+        proposals_mock.assert_called_once_with(status="pending", limit=20)
+        get_mock.assert_called_once_with("proposal-1")
+        validation_mock.assert_called_once_with(proposal_id="proposal-1")
+
     def test_process_telegram_update_binds_first_private_chat_and_runs_command(self):
         state_path = TEST_RUNTIME_DIR / "telegram_bind_state.json"
         state_path.parent.mkdir(parents=True, exist_ok=True)
@@ -276,6 +303,58 @@ class TelegramInboxTestCase(unittest.TestCase):
         self.assertEqual(state["voice"]["tts_voice_id"], "voice-1")
         self.assertEqual(state["voice"]["tts_rate"], 190)
         self.assertEqual(state["voice"]["telegram_reply_mode"], "off")
+
+    def test_telegram_voice_piper_catalog_provider_download_and_select(self):
+        state_path = TEST_RUNTIME_DIR / "telegram_voice_piper_commands_state.json"
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+
+        seeded_state = memory.normalize_state({
+            "notifications": {
+                "enabled": True,
+                "channels": ["telegram"],
+                "telegram": {
+                    "bot_token": "bot-123",
+                    "chat_id": "123",
+                },
+            },
+        })
+
+        updates = [
+            {"update_id": 213, "message": {"chat": {"id": 123, "type": "private"}, "text": "/voz catalogo es"}},
+            {"update_id": 214, "message": {"chat": {"id": 123, "type": "private"}, "text": "/voz proveedor piper"}},
+            {"update_id": 215, "message": {"chat": {"id": 123, "type": "private"}, "text": "/voz descargar es_MX-claude-high"}},
+            {"update_id": 216, "message": {"chat": {"id": 123, "type": "private"}, "text": "/voz usar es_MX-claude-high"}},
+        ]
+
+        with patch.object(memory, "STATE_FILE", state_path):
+            memory.save_state(seeded_state)
+            with patch.object(telegram_inbox.yarbis_voice, "piper_catalog_text", return_value="Catalogo Piper"):
+                with patch.object(
+                    telegram_inbox.yarbis_voice,
+                    "download_piper_voice",
+                    return_value={"id": "es_MX-claude-high", "name": "es_MX claude high"},
+                ) as download_mock:
+                    with patch.object(
+                        telegram_inbox.yarbis_voice,
+                        "find_tts_voice",
+                        return_value={
+                            "provider": "piper",
+                            "id": "es_MX-claude-high",
+                            "name": "es_MX claude high",
+                            "installed": False,
+                        },
+                    ):
+                        with patch.object(telegram_inbox, "send_telegram_message", return_value=True) as send_mock:
+                            for update in updates:
+                                telegram_inbox.process_telegram_update(update)
+            state = memory.load_state()
+
+        sent_text = "\n".join(call.args[0] for call in send_mock.call_args_list)
+        self.assertIn("Catalogo Piper", sent_text)
+        self.assertIn("Voz Piper descargada", sent_text)
+        self.assertEqual(download_mock.call_count, 2)
+        self.assertEqual(state["voice"]["tts_provider"], "piper")
+        self.assertEqual(state["voice"]["piper_voice_id"], "es_MX-claude-high")
 
     def test_process_telegram_update_stops_current_operation(self):
         state_path = TEST_RUNTIME_DIR / "telegram_stop_state.json"

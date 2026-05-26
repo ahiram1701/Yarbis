@@ -41,16 +41,19 @@ from tools import (
     agent_overview,
     browser_automation,
     coding_apply_proposal,
+    coding_detect_validation_command,
     coding_discard_proposal,
     coding_git_diff,
     coding_git_status,
     coding_get_proposal,
     coding_list_files,
     coding_list_proposals,
+    coding_propose_changes,
     coding_propose_text_file,
     coding_read_text_file,
     coding_run_validation,
     coding_set_workspace,
+    coding_update_validation_command,
     coding_workspace_overview,
     compose_email,
     create_memory_backup,
@@ -698,6 +701,7 @@ tool_definitions = [
     coding_workspace_overview,
     coding_list_files,
     coding_read_text_file,
+    coding_propose_changes,
     coding_propose_text_file,
     coding_list_proposals,
     coding_get_proposal,
@@ -705,6 +709,8 @@ tool_definitions = [
     coding_discard_proposal,
     coding_git_status,
     coding_git_diff,
+    coding_detect_validation_command,
+    coding_update_validation_command,
     coding_run_validation,
     list_files,
     read_text_file,
@@ -756,6 +762,7 @@ available_functions = {
     "coding_workspace_overview": coding_workspace_overview,
     "coding_list_files": coding_list_files,
     "coding_read_text_file": coding_read_text_file,
+    "coding_propose_changes": coding_propose_changes,
     "coding_propose_text_file": coding_propose_text_file,
     "coding_list_proposals": coding_list_proposals,
     "coding_get_proposal": coding_get_proposal,
@@ -763,6 +770,8 @@ available_functions = {
     "coding_discard_proposal": coding_discard_proposal,
     "coding_git_status": coding_git_status,
     "coding_git_diff": coding_git_diff,
+    "coding_detect_validation_command": coding_detect_validation_command,
+    "coding_update_validation_command": coding_update_validation_command,
     "coding_run_validation": coding_run_validation,
     "list_files": list_files,
     "read_text_file": read_text_file,
@@ -835,9 +844,12 @@ ACTION_PROOF_TOOL_NAMES = {
     "create_memory_backup",
     "import_memory_backup",
     "coding_set_workspace",
+    "coding_propose_changes",
     "coding_propose_text_file",
     "coding_apply_proposal",
     "coding_discard_proposal",
+    "coding_detect_validation_command",
+    "coding_update_validation_command",
     "coding_run_validation",
     "write_text_file",
     "restore_checkpoint",
@@ -1284,9 +1296,9 @@ Reglas:
 - Antes de razonar sobre tu propio codigo con detalle, usa `self_overview`, `list_files` o `read_text_file` segun haga falta.
 - Antes de editar archivos de codigo, lee primero el archivo actual con `read_text_file`.
 - `write_text_file` crea un checkpoint automatico y devuelve un diff. Puede trabajar fuera del workspace; manten los cambios pequenos, enfocados y bien entendidos.
-- Para tareas de coding en un repositorio local, usa las tools `coding_*`: configura el workspace con `coding_set_workspace`, inspecciona con `coding_workspace_overview`, `coding_list_files`, `coding_read_text_file`, revisa Git con `coding_git_status`/`coding_git_diff` y genera cambios con `coding_propose_text_file`.
-- El modo de coding por defecto es `propose_first`: no modifiques archivos del workspace de codigo activo con `write_text_file`; crea propuestas y espera aprobacion explicita del usuario antes de llamar `coding_apply_proposal`.
-- Cuando el usuario apruebe una propuesta concreta o diga que la apliques identificando el cambio, usa `coding_apply_proposal`; despues ejecuta `coding_run_validation` o una validacion apropiada y reporta evidencia.
+- Para tareas de coding en un repositorio local, usa las tools `coding_*`: configura el workspace con `coding_set_workspace`, inspecciona con `coding_workspace_overview`, `coding_list_files`, `coding_read_text_file`, revisa Git con `coding_git_status`/`coding_git_diff` y genera cambios preferentemente con `coding_propose_changes`.
+- El modo de coding por defecto es `propose_first`: no modifiques archivos del workspace de codigo activo con `write_text_file`; crea una propuesta multiarchivo con titulo, resumen, motivo y diffs, y espera aprobacion explicita del usuario antes de llamar `coding_apply_proposal`.
+- Usa `coding_detect_validation_command` o `coding_update_validation_command` para preparar validacion del repo. Cuando el usuario apruebe una propuesta concreta o diga que la apliques identificando el cambio, usa `coding_apply_proposal`; despues ejecuta `coding_run_validation(proposal_id=...)` y reporta evidencia.
 - Si una propuesta queda obsoleta o el usuario la rechaza, usa `coding_discard_proposal`.
 - Usa `run_system_command` para comandos arbitrarios del sistema cuando una tarea lo necesite. Usa `open_system_target`, `compose_email` y `create_calendar_event` para integraciones locales con apps del sistema.
 - Despues de modificar codigo o tests, ejecuta `run_project_tests`; antes de cerrar cambios grandes, usa `run_project_check` para tests Python y build .NET.

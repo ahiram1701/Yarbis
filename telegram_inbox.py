@@ -41,6 +41,13 @@ from power import (
 )
 from session import (
     SessionOperationBusy,
+    coding_apply_proposal_text,
+    coding_discard_proposal_text,
+    coding_get_proposal_text,
+    coding_list_proposals_text,
+    coding_run_validation_text,
+    coding_set_workspace_text,
+    coding_workspace_overview_text,
     get_default_model_provider,
     get_ollama_settings,
     get_openrouter_settings,
@@ -75,6 +82,7 @@ TELEGRAM_OPERATION_LABELS = {
     "Respuesta diferida",
     "Timeout",
     "Voz",
+    "Coding",
 }
 _poller_thread = None
 _poller_stop_event = threading.Event()
@@ -395,9 +403,19 @@ def _help_text() -> str:
         "/voz off - desactivar entrada y respuestas de voz\n"
         "/voz status - ver configuracion de voz\n"
         "/voz voces - listar voces del sistema\n"
+        "/voz catalogo [es|en|all] - listar voces Piper descargables\n"
+        "/voz proveedor piper|sistema - elegir motor TTS\n"
+        "/voz descargar ID - descargar voz Piper\n"
         "/voz usar NUMERO - elegir voz del sistema/Telegram\n"
         "/voz velocidad NUMERO - cambiar velocidad de voz\n"
         "/voz callar - no enviar mas respuestas habladas por Telegram\n"
+        "/coding - ver workspace y propuestas\n"
+        "/coding propuestas - listar propuestas\n"
+        "/coding ver ID - ver una propuesta\n"
+        "/coding aplicar ID - aplicar una propuesta aprobada\n"
+        "/coding descartar ID - descartar una propuesta\n"
+        "/coding validar [ID] - ejecutar validacion del workspace/propuesta\n"
+        "/coding workspace RUTA - cambiar workspace de codigo\n"
         "/notas - listar notas\n"
         "/nota crear Titulo | contenido | categoria - guardar una nota\n"
         "/nota ID - ver una nota\n"
@@ -532,7 +550,9 @@ def _voice_status_text() -> str:
         f"- idioma: {settings.get('language', 'es')}\n"
         f"- STT: {settings.get('stt_model', 'base')} ({settings.get('stt_compute_type', 'int8')})\n"
         f"- max audio: {settings.get('max_audio_seconds', 120)}s\n"
+        f"- proveedor TTS: {settings.get('tts_provider', 'system')}\n"
         f"- voz sistema: {settings.get('tts_voice_id') or 'predeterminada'}\n"
+        f"- voz Piper: {settings.get('piper_voice_id') or 'sin elegir'}\n"
         f"- velocidad sistema: {settings.get('tts_rate', 175)}\n"
         f"- Telegram voz: {settings.get('telegram_reply_mode', 'auto')}"
     )
@@ -546,28 +566,22 @@ def _voice_list_text() -> str:
     for item in voices[:30]:
         languages = item.get("languages", [])
         language_text = f" ({', '.join(languages)})" if isinstance(languages, list) and languages else ""
-        lines.append(f"{item.get('index')}. {item.get('name')}{language_text}\n   {item.get('id')}")
+        provider = str(item.get("provider", "system"))
+        status = str(item.get("status", ""))
+        lines.append(f"{item.get('index')}. [{provider}/{status}] {item.get('name')}{language_text}\n   {item.get('id')}")
     return "\n".join(lines)
 
 
-def _voice_id_for_selection(selection: str) -> str:
+def _voice_for_selection(selection: str) -> dict:
     target = str(selection or "").strip()
     if not target:
-        return ""
-    voices = yarbis_voice.list_tts_voices(load_state())
+        return {}
+    voice = yarbis_voice.find_tts_voice(target, include_downloadable=True)
+    if voice:
+        return voice
     if target.isdigit():
-        index = int(target)
-        for item in voices:
-            if int(item.get("index", 0) or 0) == index:
-                return str(item.get("id", "")).strip()
         raise ValueError("No encontre una voz con ese numero.")
-    normalized_target = target.lower()
-    for item in voices:
-        voice_id = str(item.get("id", "")).strip()
-        name = str(item.get("name", "")).strip()
-        if normalized_target in {voice_id.lower(), name.lower()}:
-            return voice_id
-    return target
+    return {"provider": "system", "id": target, "voice_id": target, "status": "manual"}
 
 
 def _dispatch_voice_command(argument_text: str) -> str:
@@ -576,6 +590,19 @@ def _dispatch_voice_command(argument_text: str) -> str:
         return _voice_status_text()
     if argument in {"voces", "voices", "listar"}:
         return _voice_list_text()
+    if argument.startswith("catalogo") or argument.startswith("catálogo"):
+        parts = argument_text.strip().split(maxsplit=1)
+        language = parts[1].strip() if len(parts) > 1 else "es"
+        return yarbis_voice.piper_catalog_text(language or "es")
+    if argument.startswith("proveedor "):
+        provider = argument_text.strip().split(maxsplit=1)[1].strip().lower()
+        if provider == "sistema":
+            provider = "system"
+        return yarbis_voice.update_voice_settings_text(tts_provider=provider)
+    if argument.startswith("descargar "):
+        voice_id = argument_text.strip().split(maxsplit=1)[1].strip()
+        voice = yarbis_voice.download_piper_voice(voice_id)
+        return f"Voz Piper descargada: {voice.get('name')} ({voice.get('id')})."
     if argument in {"callar", "silencio", "mute"}:
         return yarbis_voice.update_voice_settings_text(telegram_reply_mode="off")
 
@@ -594,16 +621,22 @@ def _dispatch_voice_command(argument_text: str) -> str:
     if argument.startswith("usar "):
         selection = argument_text.strip()[len("usar "):].strip()
         try:
-            voice_id = _voice_id_for_selection(selection)
+            voice = _voice_for_selection(selection)
         except ValueError as exc:
             return str(exc)
-        return yarbis_voice.update_voice_settings_text(tts_voice_id=voice_id)
+        provider = str(voice.get("provider", "system"))
+        voice_id = str(voice.get("id", voice.get("voice_id", ""))).strip()
+        if provider == "piper":
+            if not voice.get("installed"):
+                yarbis_voice.download_piper_voice(voice_id)
+            return yarbis_voice.update_voice_settings_text(tts_provider="piper", piper_voice_id=voice_id)
+        return yarbis_voice.update_voice_settings_text(tts_provider="system", tts_voice_id=voice_id)
 
     if argument.startswith("velocidad "):
         rate = argument_text.strip()[len("velocidad "):].strip()
         return yarbis_voice.update_voice_settings_text(tts_rate=rate)
 
-    return "Uso: /voz auto, /voz on, /voz off, /voz status, /voz voces, /voz usar NUMERO, /voz velocidad NUMERO o /voz callar"
+    return "Uso: /voz auto, /voz on, /voz off, /voz status, /voz voces, /voz catalogo, /voz proveedor piper|sistema, /voz descargar ID, /voz usar NUMERO, /voz velocidad NUMERO o /voz callar"
 
 
 def _send_optional_telegram_voice_reply(text: str, chat_id: str, source_was_voice: bool) -> bool:
@@ -1308,6 +1341,8 @@ def _job_label_for_message(text: str) -> str:
         return "Timeout"
     if command in {"/voz", "/voice"}:
         return "Voz"
+    if command == "/coding":
+        return "Coding"
     if command in {"/goal", "/objetivo"}:
         return "Objetivo"
     if command in {"/notas", "/nota", "/crear_nota", "/guardar_nota", "/borrar_nota", "/eliminar_nota", "/ver_nota"}:
@@ -1324,6 +1359,42 @@ def _job_label_for_message(text: str) -> str:
         return "Cancelar apagado/reinicio"
 
     return ""
+
+
+def _dispatch_coding_command(argument_text: str) -> str:
+    argument = str(argument_text).strip()
+    if not argument:
+        return coding_workspace_overview_text()
+
+    parts = argument.split(maxsplit=1)
+    action = parts[0].strip().lower()
+    value = parts[1].strip() if len(parts) > 1 else ""
+
+    if action in {"propuestas", "proposals", "listar", "list"}:
+        return coding_list_proposals_text(status="pending", limit=20)
+    if action in {"ver", "get"}:
+        if not value:
+            return "Uso: /coding ver ID"
+        return coding_get_proposal_text(value)
+    if action in {"aplicar", "apply"}:
+        if not value:
+            return "Uso: /coding aplicar ID"
+        return coding_apply_proposal_text(value)
+    if action in {"descartar", "discard"}:
+        if not value:
+            return "Uso: /coding descartar ID"
+        return coding_discard_proposal_text(value)
+    if action in {"validar", "validate"}:
+        return coding_run_validation_text(proposal_id=value)
+    if action == "workspace":
+        if not value:
+            return "Uso: /coding workspace RUTA"
+        return coding_set_workspace_text(value)
+
+    return (
+        "Uso: /coding, /coding propuestas, /coding ver ID, /coding aplicar ID, "
+        "/coding descartar ID, /coding validar [ID] o /coding workspace RUTA"
+    )
 
 
 def _dispatch_command(command_text: str, chat_id: str = "") -> str:
@@ -1353,6 +1424,9 @@ def _dispatch_command(command_text: str, chat_id: str = "") -> str:
 
     if command in {"/voz", "/voice"}:
         return _dispatch_voice_command(argument_text)
+
+    if command == "/coding":
+        return _dispatch_coding_command(argument_text)
 
     if command == "/ollama":
         return _dispatch_ollama_command(argument_text)

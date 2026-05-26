@@ -116,10 +116,15 @@ DEFAULT_VOICE_STT_COMPUTE_TYPE = "int8"
 DEFAULT_VOICE_MAX_AUDIO_SECONDS = 120
 DEFAULT_VOICE_TTS_RATE = 175
 DEFAULT_VOICE_TTS_VOICE_ID = ""
+DEFAULT_VOICE_TTS_PROVIDER = "system"
+DEFAULT_VOICE_PIPER_VOICE_ID = ""
+DEFAULT_VOICE_PIPER_SPEAKER_ID = 0
+DEFAULT_VOICE_PIPER_CATALOG_UPDATED_AT = ""
 DEFAULT_VOICE_BROWSER_VOICE_NAME = ""
 DEFAULT_VOICE_BROWSER_TTS_RATE = 1.0
 DEFAULT_VOICE_BROWSER_TTS_PITCH = 1.0
 DEFAULT_VOICE_TELEGRAM_REPLY_MODE = "auto"
+VALID_VOICE_TTS_PROVIDERS = {"system", "piper"}
 VALID_VOICE_TELEGRAM_REPLY_MODES = {"off", "auto", "always"}
 VALID_VOICE_STT_COMPUTE_TYPES = {"default", "int8", "int8_float16", "int16", "float16", "float32"}
 MIN_VOICE_MAX_AUDIO_SECONDS = 1
@@ -134,6 +139,9 @@ MAX_VOICE_LANGUAGE_CHARS = 16
 MAX_VOICE_STT_MODEL_CHARS = 80
 MAX_VOICE_STT_COMPUTE_TYPE_CHARS = 24
 MAX_VOICE_TTS_VOICE_ID_CHARS = 240
+MAX_VOICE_TTS_PROVIDER_CHARS = 20
+MAX_VOICE_PIPER_VOICE_ID_CHARS = 160
+MAX_VOICE_PIPER_CATALOG_TIMESTAMP_CHARS = 80
 MAX_VOICE_BROWSER_VOICE_NAME_CHARS = 160
 DEFAULT_INTERNET_MODE = "auto"
 VALID_INTERNET_MODES = {"off", "auto"}
@@ -182,6 +190,9 @@ VALID_CODING_MODES = {DEFAULT_CODING_MODE}
 MAX_CODING_WORKSPACE_PATH_CHARS = 1_000
 MAX_CODING_PROPOSAL_IDS = 80
 MAX_CODING_PROPOSAL_ID_CHARS = 80
+MAX_CODING_VALIDATION_COMMAND_CHARS = 1_000
+MAX_CODING_VALIDATION_OUTPUT_CHARS = 6_000
+MAX_CODING_VALIDATION_TIMESTAMP_CHARS = 80
 DEFAULT_MEMORY_PROTECTION_ENABLED = True
 DEFAULT_MEMORY_PROTECTION_BACKUP_ON_EVERY_CHANGE = True
 DEFAULT_MEMORY_PROTECTION_INCLUDE_SECRETS = False
@@ -271,6 +282,14 @@ def default_state():
             "workspace_path": "",
             "mode": DEFAULT_CODING_MODE,
             "pending_proposal_ids": [],
+            "validation_command": "",
+            "last_validation": {
+                "command": "",
+                "proposal_id": "",
+                "exit_code": None,
+                "output": "",
+                "ran_at": "",
+            },
         },
         "memory_protection": {
             "enabled": DEFAULT_MEMORY_PROTECTION_ENABLED,
@@ -411,6 +430,10 @@ def default_state():
             "max_audio_seconds": DEFAULT_VOICE_MAX_AUDIO_SECONDS,
             "tts_rate": DEFAULT_VOICE_TTS_RATE,
             "tts_voice_id": DEFAULT_VOICE_TTS_VOICE_ID,
+            "tts_provider": DEFAULT_VOICE_TTS_PROVIDER,
+            "piper_voice_id": DEFAULT_VOICE_PIPER_VOICE_ID,
+            "piper_speaker_id": DEFAULT_VOICE_PIPER_SPEAKER_ID,
+            "piper_catalog_updated_at": DEFAULT_VOICE_PIPER_CATALOG_UPDATED_AT,
             "browser_voice_name": DEFAULT_VOICE_BROWSER_VOICE_NAME,
             "browser_tts_rate": DEFAULT_VOICE_BROWSER_TTS_RATE,
             "browser_tts_pitch": DEFAULT_VOICE_BROWSER_TTS_PITCH,
@@ -706,10 +729,47 @@ def _normalize_coding(coding):
         if len(pending_proposal_ids) >= MAX_CODING_PROPOSAL_IDS:
             break
 
+    validation_command = _coerce_text(
+        coding.get("validation_command", defaults["validation_command"]),
+        MAX_CODING_VALIDATION_COMMAND_CHARS,
+    ).strip()
+
+    raw_last_validation = coding.get("last_validation", defaults["last_validation"])
+    if not isinstance(raw_last_validation, dict):
+        raw_last_validation = {}
+
+    try:
+        raw_exit_code = raw_last_validation.get("exit_code", defaults["last_validation"]["exit_code"])
+        exit_code = None if raw_exit_code is None or raw_exit_code == "" else int(raw_exit_code)
+    except (TypeError, ValueError):
+        exit_code = defaults["last_validation"]["exit_code"]
+
+    last_validation = {
+        "command": _coerce_text(
+            raw_last_validation.get("command", defaults["last_validation"]["command"]),
+            MAX_CODING_VALIDATION_COMMAND_CHARS,
+        ).strip(),
+        "proposal_id": _coerce_text(
+            raw_last_validation.get("proposal_id", defaults["last_validation"]["proposal_id"]),
+            MAX_CODING_PROPOSAL_ID_CHARS,
+        ).strip(),
+        "exit_code": exit_code,
+        "output": _coerce_text(
+            raw_last_validation.get("output", defaults["last_validation"]["output"]),
+            MAX_CODING_VALIDATION_OUTPUT_CHARS,
+        ),
+        "ran_at": _coerce_text(
+            raw_last_validation.get("ran_at", defaults["last_validation"]["ran_at"]),
+            MAX_CODING_VALIDATION_TIMESTAMP_CHARS,
+        ).strip(),
+    }
+
     return {
         "workspace_path": workspace_path,
         "mode": mode,
         "pending_proposal_ids": pending_proposal_ids,
+        "validation_command": validation_command,
+        "last_validation": last_validation,
     }
 
 
@@ -1495,6 +1555,15 @@ def _normalize_voice_settings(voice):
     if reply_mode not in VALID_VOICE_TELEGRAM_REPLY_MODES:
         reply_mode = defaults["telegram_reply_mode"]
 
+    tts_provider = _coerce_text(
+        voice.get("tts_provider", defaults["tts_provider"]),
+        MAX_VOICE_TTS_PROVIDER_CHARS,
+    ).strip().lower()[:MAX_VOICE_TTS_PROVIDER_CHARS]
+    if tts_provider == "sistema":
+        tts_provider = "system"
+    if tts_provider not in VALID_VOICE_TTS_PROVIDERS:
+        tts_provider = defaults["tts_provider"]
+
     try:
         max_audio_seconds = int(voice.get("max_audio_seconds", defaults["max_audio_seconds"]))
     except (TypeError, ValueError):
@@ -1509,6 +1578,12 @@ def _normalize_voice_settings(voice):
     except (TypeError, ValueError):
         tts_rate = defaults["tts_rate"]
     tts_rate = max(MIN_VOICE_TTS_RATE, min(MAX_VOICE_TTS_RATE, tts_rate))
+
+    try:
+        piper_speaker_id = int(voice.get("piper_speaker_id", defaults["piper_speaker_id"]))
+    except (TypeError, ValueError):
+        piper_speaker_id = defaults["piper_speaker_id"]
+    piper_speaker_id = max(0, min(9999, piper_speaker_id))
 
     try:
         browser_tts_rate = float(voice.get("browser_tts_rate", defaults["browser_tts_rate"]))
@@ -1536,6 +1611,16 @@ def _normalize_voice_settings(voice):
             voice.get("tts_voice_id", defaults["tts_voice_id"]),
             MAX_VOICE_TTS_VOICE_ID_CHARS,
         ).strip()[:MAX_VOICE_TTS_VOICE_ID_CHARS],
+        "tts_provider": tts_provider,
+        "piper_voice_id": _coerce_text(
+            voice.get("piper_voice_id", defaults["piper_voice_id"]),
+            MAX_VOICE_PIPER_VOICE_ID_CHARS,
+        ).strip()[:MAX_VOICE_PIPER_VOICE_ID_CHARS],
+        "piper_speaker_id": piper_speaker_id,
+        "piper_catalog_updated_at": _coerce_text(
+            voice.get("piper_catalog_updated_at", defaults["piper_catalog_updated_at"]),
+            MAX_VOICE_PIPER_CATALOG_TIMESTAMP_CHARS,
+        ).strip()[:MAX_VOICE_PIPER_CATALOG_TIMESTAMP_CHARS],
         "browser_voice_name": _coerce_text(
             voice.get("browser_voice_name", defaults["browser_voice_name"]),
             MAX_VOICE_BROWSER_VOICE_NAME_CHARS,
@@ -1870,7 +1955,8 @@ def render_state_summary(
             "Coding: "
             f"workspace={normalized['coding']['workspace_path'] or '-'}, "
             f"modo={normalized['coding']['mode']}, "
-            f"propuestas_pendientes={len(normalized['coding']['pending_proposal_ids'])}"
+            f"propuestas_pendientes={len(normalized['coding']['pending_proposal_ids'])}, "
+            f"validacion={normalized['coding']['validation_command'] or '-'}"
         ),
         (
             "Proveedor de modelo: "
@@ -1916,6 +2002,7 @@ def render_state_summary(
         f"{'activa' if voice_settings['enabled'] else 'desactivada'}, "
         f"idioma={voice_settings['language']}, "
         f"stt={voice_settings['stt_model']} ({voice_settings['stt_compute_type']}), "
+        f"tts={voice_settings.get('tts_provider', DEFAULT_VOICE_TTS_PROVIDER)}, "
         f"telegram={voice_settings['telegram_reply_mode']}"
     )
 

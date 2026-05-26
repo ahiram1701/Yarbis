@@ -39,6 +39,7 @@ from session import (
     coding_discard_proposal_text,
     coding_get_proposal_text,
     coding_list_proposals_text,
+    coding_run_validation_text,
     coding_set_workspace_text,
     create_memory_backup_text,
     get_local_context_settings,
@@ -610,6 +611,8 @@ class YarbisDesktop(tk.Tk):
                 {"text": "Notificaciones", "command": self._edit_notifications},
                 {"text": "Probar notificacion", "command": self._send_test_notification},
                 {"text": "Voz", "command": self._edit_voice_settings},
+                {"text": "Actualizar voces", "command": self._refresh_voice_catalog},
+                {"text": "Probar voz", "command": self._test_voice},
                 {
                     "text": "Leer ultimo resultado",
                     "command": self._speak_last_result,
@@ -1274,7 +1277,8 @@ class YarbisDesktop(tk.Tk):
             self.coding_var.set(
                 f"{coding_workspace} "
                 f"(modo={coding_settings.get('mode', 'propose_first')}, "
-                f"propuestas={len(coding_pending)})"
+                f"propuestas={len(coding_pending)}, "
+                f"validacion={coding_settings.get('validation_command') or '-'})"
             )
         else:
             self.coding_var.set("Sin workspace de codigo.")
@@ -1802,7 +1806,7 @@ class YarbisDesktop(tk.Tk):
 
     def _edit_voice_settings(self):
         try:
-            voices = yarbis_voice.list_tts_voices(load_state())
+            voices = yarbis_voice.list_tts_voices(load_state(), include_downloadable=True, language="all")
         except Exception as exc:
             voices = []
             self._append_activity("Voz", f"No pude listar voces del sistema: {exc}")
@@ -1816,13 +1820,37 @@ class YarbisDesktop(tk.Tk):
             return
 
         try:
+            if dialog.result.get("tts_provider") == "piper" and dialog.result.get("piper_voice_id"):
+                yarbis_voice.download_piper_voice(dialog.result["piper_voice_id"])
             result = yarbis_voice.update_voice_settings_text(**dialog.result)
         except ValueError as exc:
+            messagebox.showwarning("Yarbis", str(exc), parent=self)
+            return
+        except Exception as exc:
             messagebox.showwarning("Yarbis", str(exc), parent=self)
             return
 
         self._append_activity("Voz", result)
         self.refresh_state_view()
+
+    def _refresh_voice_catalog(self):
+        try:
+            catalog = yarbis_voice.refresh_piper_catalog()
+        except Exception as exc:
+            messagebox.showwarning("Yarbis", str(exc), parent=self)
+            return
+        self._append_activity("Voz", f"Catalogo Piper actualizado: {len(catalog)} voces.")
+
+    def _test_voice(self):
+        def worker():
+            try:
+                yarbis_voice.speak_text("Hola, soy Yarbis probando esta voz local.", settings=load_state(), cancellable=True)
+                self._result_queue.put(("event", "Voz", "Prueba de voz finalizada."))
+            except Exception as exc:
+                self._result_queue.put(("voice_error", "Voz", str(exc)))
+
+        threading.Thread(target=worker, daemon=True).start()
+        self.status_var.set("Probando voz...")
 
     def _edit_notifications(self):
         dialog = NotificationsDialog(self, initial_settings=get_notification_settings())
@@ -2210,6 +2238,7 @@ class YarbisDesktop(tk.Tk):
             discard_callback=coding_discard_proposal_text,
             detail_callback=coding_get_proposal_text,
             list_callback=coding_list_proposals_text,
+            validate_callback=coding_run_validation_text,
         )
         if dialog.result:
             self._append_activity("Propuestas de coding", dialog.result)

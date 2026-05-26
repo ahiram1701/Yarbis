@@ -62,11 +62,14 @@ from self_knowledge import get_cached_source_signature, render_self_knowledge_su
 from tools import (
     add_task,
     coding_apply_proposal,
+    coding_detect_validation_command,
     coding_discard_proposal,
     coding_git_status,
     coding_get_proposal,
     coding_list_proposals,
+    coding_run_validation,
     coding_set_workspace,
+    coding_update_validation_command,
     coding_workspace_overview,
     create_memory_backup,
     delete_note,
@@ -1423,6 +1426,25 @@ def coding_discard_proposal_text(proposal_id: str) -> str:
 def coding_git_status_text() -> str:
     with SESSION_LOCK:
         return coding_git_status()
+
+
+def coding_detect_validation_command_text() -> str:
+    with SESSION_LOCK:
+        return coding_detect_validation_command()
+
+
+def coding_update_validation_command_text(command: str = "") -> str:
+    with SESSION_LOCK:
+        return coding_update_validation_command(command=command)
+
+
+def coding_run_validation_text(command: str = "", proposal_id: str = "", timeout_seconds: int = 120) -> str:
+    with SESSION_LOCK:
+        return coding_run_validation(
+            command=command,
+            proposal_id=proposal_id,
+            timeout_seconds=timeout_seconds,
+        )
 
 
 def social_accounts_overview_text() -> str:

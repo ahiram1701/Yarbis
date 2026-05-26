@@ -50,7 +50,10 @@ from session import (
     coding_apply_proposal_text,
     coding_discard_proposal_text,
     coding_get_proposal_text,
+    coding_list_proposals_text,
+    coding_run_validation_text,
     coding_set_workspace_text,
+    coding_update_validation_command_text,
     create_memory_backup_text,
     factory_reset_yarbis,
     get_notification_settings,
@@ -863,16 +866,19 @@ def _mobile_social_accounts_text(state: dict) -> str:
 
 
 def _mobile_coding_proposals_text(state: dict) -> str:
-    coding = state.get("coding", {}) if isinstance(state, dict) else {}
-    if not isinstance(coding, dict):
-        coding = {}
-    pending_ids = coding.get("pending_proposal_ids", [])
-    if not isinstance(pending_ids, list):
-        pending_ids = []
-    cleaned_ids = [str(item).strip() for item in pending_ids if str(item).strip()]
-    if not cleaned_ids:
-        return "No hay propuestas de coding pendientes."
-    return "Propuestas pendientes:\n" + "\n".join(f"- {proposal_id}" for proposal_id in cleaned_ids[:20])
+    try:
+        return coding_list_proposals_text(status="pending", limit=20)
+    except Exception:
+        coding = state.get("coding", {}) if isinstance(state, dict) else {}
+        if not isinstance(coding, dict):
+            coding = {}
+        pending_ids = coding.get("pending_proposal_ids", [])
+        if not isinstance(pending_ids, list):
+            pending_ids = []
+        cleaned_ids = [str(item).strip() for item in pending_ids if str(item).strip()]
+        if not cleaned_ids:
+            return "No hay propuestas de coding pendientes."
+        return "Propuestas pendientes:\n" + "\n".join(f"- {proposal_id}" for proposal_id in cleaned_ids[:20])
 
 
 def _mobile_activity_history(state: dict) -> str:
@@ -1027,15 +1033,33 @@ def _transcribe_mobile_voice(payload: dict) -> str:
     )
 
 
-def _public_voice_payload() -> dict:
+def _public_voice_payload(*, include_downloadable: bool = False, refresh_catalog: bool = False) -> dict:
     try:
-        voices = yarbis_voice.list_tts_voices(load_state())
+        voices = yarbis_voice.list_tts_voices(
+            load_state(),
+            include_downloadable=include_downloadable,
+            language="all" if include_downloadable else None,
+            refresh_catalog=refresh_catalog,
+        )
     except Exception:
         voices = []
     return {
         "voices": voices,
         "settings": load_state().get("voice", {}),
     }
+
+
+def _synthesize_mobile_speech(payload: dict) -> tuple[str, str]:
+    text = _payload_text(payload, "text")
+    if not text:
+        raise ValueError("No hay texto para escuchar.")
+    audio_path = None
+    try:
+        audio_path = yarbis_voice.synthesize_speech_file(text, settings=load_state())
+        raw_audio = audio_path.read_bytes()
+        return base64.b64encode(raw_audio).decode("ascii"), "audio/ogg"
+    finally:
+        yarbis_voice.cleanup_voice_file(audio_path)
 
 
 def _execute_action(action: str, payload: dict | None = None) -> dict:
@@ -1093,6 +1117,13 @@ def _execute_action(action: str, payload: dict | None = None) -> dict:
         return {"result": coding_apply_proposal_text(_payload_text(payload, "proposal_id"))}
     if action == "coding_discard":
         return {"result": coding_discard_proposal_text(_payload_text(payload, "proposal_id"))}
+    if action == "coding_validate":
+        return {"result": coding_run_validation_text(
+            proposal_id=_payload_text(payload, "proposal_id"),
+            command=_payload_text(payload, "command"),
+        )}
+    if action == "coding_validation":
+        return {"result": coding_update_validation_command_text(_payload_text(payload, "command"))}
     if action == "update_model":
         provider = _payload_text(payload, "provider", MODEL_PROVIDER_OLLAMA).lower()
         if provider == MODEL_PROVIDER_OPENROUTER:
@@ -1172,10 +1203,17 @@ def _execute_action(action: str, payload: dict | None = None) -> dict:
             pin=str(payload.get("pin", "")),
         )}
     if action == "voice_settings":
+        tts_provider = _payload_text(payload, "tts_provider", "system") or "system"
+        piper_voice_id = _payload_text(payload, "piper_voice_id")
+        if tts_provider == "piper" and piper_voice_id:
+            yarbis_voice.download_piper_voice(piper_voice_id)
         return {"result": yarbis_voice.update_voice_settings_text(
             enabled=bool(payload.get("enabled", True)),
+            tts_provider=tts_provider,
             tts_voice_id=_payload_text(payload, "tts_voice_id"),
             tts_rate=payload.get("tts_rate"),
+            piper_voice_id=piper_voice_id,
+            piper_speaker_id=payload.get("piper_speaker_id"),
             browser_voice_name=_payload_text(payload, "browser_voice_name"),
             browser_tts_rate=payload.get("browser_tts_rate"),
             browser_tts_pitch=payload.get("browser_tts_pitch"),
@@ -1537,6 +1575,7 @@ let voiceStopTimer = null;
 let localTtsVoices = [];
 let browserVoices = [];
 let voiceOptionsLoaded = false;
+let localSpeechAudio = null;
 const $ = (id) => document.getElementById(id);
 
 function escapeHtml(value) {
@@ -1553,11 +1592,42 @@ function toast(message) {
   window._toastTimer = window.setTimeout(() => node.style.display = "none", 4200);
 }
 
-function speakText(text) {
+function base64ToBlob(base64Text, mimeType) {
+  const binary = atob(base64Text || "");
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
+  return new Blob([bytes], { type: mimeType || "audio/ogg" });
+}
+
+async function speakText(text) {
   const clean = String(text || "").trim();
   if (!clean) {
     toast("No hay texto para escuchar");
     return;
+  }
+  const voiceSettings = (appState && appState.voice) || {};
+  if (voiceSettings.tts_provider === "piper") {
+    try {
+      stopSpeech(false);
+      toast("Generando voz local...");
+      const data = await api("/api/voice/speak", {
+        method: "POST",
+        headers: { "X-CSRF-Token": csrfToken },
+        body: { csrf: csrfToken, text: clean }
+      });
+      csrfToken = data.csrf || csrfToken;
+      const blob = base64ToBlob(data.audio_b64, data.mime_type);
+      localSpeechAudio = new Audio(URL.createObjectURL(blob));
+      localSpeechAudio.onended = () => {
+        if (localSpeechAudio && localSpeechAudio.src) URL.revokeObjectURL(localSpeechAudio.src);
+        localSpeechAudio = null;
+      };
+      await localSpeechAudio.play();
+      toast("Voz local reproduciendo");
+      return;
+    } catch (error) {
+      toast(`${error.message}; usando voz del navegador`);
+    }
   }
   if (!("speechSynthesis" in window)) {
     toast("Este navegador no tiene lectura de voz");
@@ -1565,7 +1635,6 @@ function speakText(text) {
   }
   window.speechSynthesis.cancel();
   const utterance = new SpeechSynthesisUtterance(clean);
-  const voiceSettings = (appState && appState.voice) || {};
   const browserVoiceName = voiceSettings.browser_voice_name || window.localStorage.getItem("yarbis_browser_voice_name") || "";
   const selectedVoice = browserVoices.find(voice => voice.name === browserVoiceName);
   if (selectedVoice) utterance.voice = selectedVoice;
@@ -1575,9 +1644,15 @@ function speakText(text) {
   window.speechSynthesis.speak(utterance);
 }
 
-function stopSpeech() {
+function stopSpeech(showToast = true) {
   if ("speechSynthesis" in window) window.speechSynthesis.cancel();
-  toast("Voz detenida");
+  if (localSpeechAudio) {
+    localSpeechAudio.pause();
+    localSpeechAudio.currentTime = 0;
+    if (localSpeechAudio.src) URL.revokeObjectURL(localSpeechAudio.src);
+    localSpeechAudio = null;
+  }
+  if (showToast) toast("Voz detenida");
 }
 
 function refreshBrowserVoices() {
@@ -1691,10 +1766,11 @@ async function toggleReplyRecording() {
   }
 }
 
-async function loadVoiceOptions(force = false) {
+async function loadVoiceOptions(force = false, includeCatalog = false, refreshCatalog = false) {
   if (voiceOptionsLoaded && !force) return;
   try {
-    const data = await api("/api/voice/voices");
+    const query = includeCatalog ? `?catalog=1${refreshCatalog ? "&refresh=1" : ""}` : "";
+    const data = await api(`/api/voice/voices${query}`);
     csrfToken = data.csrf || csrfToken;
     localTtsVoices = data.voices || [];
     if (!appState) appState = {};
@@ -1964,6 +2040,17 @@ function renderContext() {
         <input id="codingPath" value="${escapeHtml((appState.coding || {}).workspace_path || "")}" placeholder="Ruta del repositorio">
         <button data-action="save-coding-workspace">Guardar workspace</button>
       </div>
+      <div class="form-grid">
+        <input id="codingValidation" value="${escapeHtml((appState.coding || {}).validation_command || "")}" placeholder="Comando de validacion">
+        <button data-action="save-coding-validation">Guardar validacion</button>
+      </div>
+      <div class="form-grid">
+        <input id="codingProposalId" placeholder="Id de propuesta">
+        <button data-action="coding-get">Ver</button>
+        <button data-action="coding-validate">Validar</button>
+        <button data-action="coding-apply">Aplicar</button>
+        <button data-action="coding-discard">Descartar</button>
+      </div>
       <div class="panel"><pre>${escapeHtml((appState.coding || {}).proposals_text || "")}</pre></div>
     </section>`;
 }
@@ -1985,9 +2072,14 @@ function renderSettings() {
   const internet = appState.internet || {};
   const voice = appState.voice || {};
   refreshBrowserVoices();
-  if (!voiceOptionsLoaded) window.setTimeout(() => loadVoiceOptions(), 0);
-  const systemVoiceOptions = localTtsVoices.map(item => {
+  if (!voiceOptionsLoaded) window.setTimeout(() => loadVoiceOptions(false, true), 0);
+  const systemVoiceOptions = localTtsVoices.filter(item => (item.provider || "system") === "system").map(item => {
     const label = `${item.index}. ${item.name}${item.languages && item.languages.length ? " - " + item.languages.join(", ") : ""}`;
+    return `<option value="${escapeHtml(item.id || "")}">${escapeHtml(label)}</option>`;
+  }).join("");
+  const piperVoiceOptions = localTtsVoices.filter(item => item.provider === "piper").map(item => {
+    const status = item.installed ? "instalada" : "descargable";
+    const label = `${item.index}. ${item.name} - ${status}`;
     return `<option value="${escapeHtml(item.id || "")}">${escapeHtml(label)}</option>`;
   }).join("");
   const browserVoiceOptions = browserVoices.map(item => (
@@ -2021,12 +2113,17 @@ function renderSettings() {
       <h2>Voz</h2>
       <div class="form-grid wide">
         <label><input id="voiceEnabled" type="checkbox" ${voice.enabled === false ? "" : "checked"}> Activa</label>
+        <div><label>Motor TTS</label><select id="voiceProvider"><option value="system">Sistema</option><option value="piper">Piper local</option></select></div>
         <div><label>Voz sistema/Telegram</label><select id="ttsVoiceId"><option value="">predeterminada</option>${systemVoiceOptions}</select></div>
+        <div><label>Voz Piper</label><select id="piperVoiceId"><option value="">elige voz Piper</option>${piperVoiceOptions}</select></div>
+        <div><label>Speaker Piper</label><input id="piperSpeakerId" type="number" min="0" value="${escapeHtml(voice.piper_speaker_id || 0)}"></div>
         <div><label>Velocidad sistema</label><input id="ttsRate" type="number" min="80" max="320" value="${escapeHtml(voice.tts_rate || 175)}"></div>
         <div><label>Voz navegador</label><select id="browserVoiceName"><option value="">predeterminada</option>${browserVoiceOptions}</select></div>
         <div><label>Velocidad navegador</label><input id="browserTtsRate" type="number" min="0.5" max="2" step="0.1" value="${escapeHtml(voice.browser_tts_rate || 1)}"></div>
         <div><label>Tono navegador</label><input id="browserTtsPitch" type="number" min="0" max="2" step="0.1" value="${escapeHtml(voice.browser_tts_pitch || 1)}"></div>
         <div><label>Telegram voz</label><select id="telegramVoiceMode"><option value="off">off</option><option value="auto">auto</option><option value="always">always</option></select></div>
+        <button data-action="refresh-voice-catalog">Actualizar catalogo</button>
+        <button data-action="test-voice">Probar voz</button>
         <button data-action="save-voice">Guardar voz</button>
         <button data-action="stop-speaking">Detener habla</button>
       </div>
@@ -2115,6 +2212,10 @@ function renderSettings() {
   if (internetMode) internetMode.value = internet.mode || "auto";
   const ttsVoiceId = $("ttsVoiceId");
   if (ttsVoiceId) ttsVoiceId.value = voice.tts_voice_id || "";
+  const voiceProvider = $("voiceProvider");
+  if (voiceProvider) voiceProvider.value = voice.tts_provider || "system";
+  const piperVoiceId = $("piperVoiceId");
+  if (piperVoiceId) piperVoiceId.value = voice.piper_voice_id || "";
   const browserVoiceName = $("browserVoiceName");
   if (browserVoiceName) browserVoiceName.value = voice.browser_voice_name || window.localStorage.getItem("yarbis_browser_voice_name") || "";
   const telegramVoiceMode = $("telegramVoiceMode");
@@ -2158,7 +2259,11 @@ document.addEventListener("click", async (event) => {
   const button = event.target.closest("button");
   if (!button) return;
   if (button.dataset.speak !== undefined) {
-    speakText(button.dataset.speak);
+    try {
+      await speakText(button.dataset.speak);
+    } catch (error) {
+      toast(error.message);
+    }
     return;
   }
   if (button.dataset.tab) {
@@ -2206,6 +2311,16 @@ document.addEventListener("click", async (event) => {
       await action("add_task", { title: $("taskTitle").value, details: $("taskDetails").value, priority: $("taskPriority").value });
     } else if (name === "save-coding-workspace") {
       await action("coding_workspace", { path: $("codingPath").value });
+    } else if (name === "save-coding-validation") {
+      await action("coding_validation", { command: $("codingValidation").value });
+    } else if (name === "coding-get") {
+      await action("coding_get", { proposal_id: $("codingProposalId").value });
+    } else if (name === "coding-validate") {
+      await action("coding_validate", { proposal_id: $("codingProposalId").value });
+    } else if (name === "coding-apply") {
+      await action("coding_apply", { proposal_id: $("codingProposalId").value });
+    } else if (name === "coding-discard") {
+      await action("coding_discard", { proposal_id: $("codingProposalId").value });
     } else if (name === "save-model") {
       await action("update_model", {
         provider: $("modelProvider").value,
@@ -2217,14 +2332,23 @@ document.addEventListener("click", async (event) => {
       });
     } else if (name === "save-mobile") {
       await action("mobile_ui", { enabled: $("mobileEnabled").checked, port: $("mobilePort").value, job_timeout_seconds: $("mobileJobTimeout").value, pin: $("mobilePin").value });
+    } else if (name === "refresh-voice-catalog") {
+      toast("Actualizando catalogo de voces...");
+      await loadVoiceOptions(true, true, true);
+      toast("Catalogo actualizado");
+    } else if (name === "test-voice") {
+      await speakText("Hola, soy Yarbis probando esta voz local.");
     } else if (name === "save-voice") {
       window.localStorage.setItem("yarbis_browser_voice_name", $("browserVoiceName").value);
       window.localStorage.setItem("yarbis_browser_tts_rate", $("browserTtsRate").value);
       window.localStorage.setItem("yarbis_browser_tts_pitch", $("browserTtsPitch").value);
       await action("voice_settings", {
         enabled: $("voiceEnabled").checked,
+        tts_provider: $("voiceProvider").value,
         tts_voice_id: $("ttsVoiceId").value,
         tts_rate: $("ttsRate").value,
+        piper_voice_id: $("piperVoiceId").value,
+        piper_speaker_id: $("piperSpeakerId").value,
         browser_voice_name: $("browserVoiceName").value,
         browser_tts_rate: $("browserTtsRate").value,
         browser_tts_pitch: $("browserTtsPitch").value,
@@ -2456,10 +2580,14 @@ class MobileRequestHandler(BaseHTTPRequestHandler):
         if parsed.path == "/api/voice/voices":
             try:
                 _settings, session = self._require_session({})
+                query = parse_qs(parsed.query)
                 self._send_json(HTTPStatus.OK, {
                     "ok": True,
                     "csrf": session["csrf"],
-                    **_public_voice_payload(),
+                    **_public_voice_payload(
+                        include_downloadable=query.get("catalog", ["0"])[0] == "1",
+                        refresh_catalog=query.get("refresh", ["0"])[0] == "1",
+                    ),
                 })
             except PermissionError as exc:
                 self._send_json(HTTPStatus.UNAUTHORIZED, {"ok": False, "error": str(exc)})
@@ -2504,6 +2632,15 @@ class MobileRequestHandler(BaseHTTPRequestHandler):
                 text = _transcribe_mobile_voice(payload)
                 activity.append_activity("UI movil voz", text)
                 self._send_json(HTTPStatus.OK, {"ok": True, "csrf": session["csrf"], "text": text})
+                return
+            if self.path == "/api/voice/speak":
+                audio_b64, mime_type = _synthesize_mobile_speech(payload)
+                self._send_json(HTTPStatus.OK, {
+                    "ok": True,
+                    "csrf": session["csrf"],
+                    "audio_b64": audio_b64,
+                    "mime_type": mime_type,
+                })
                 return
             self._send_json(HTTPStatus.NOT_FOUND, {"ok": False, "error": "Ruta no encontrada."})
         except PermissionError as exc:

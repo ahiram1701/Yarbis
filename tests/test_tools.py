@@ -163,9 +163,93 @@ class ToolsTestCase(unittest.TestCase):
         self.assertIn("-print('old')", result)
         self.assertIn("+print('new')", result)
         self.assertEqual(file_path.read_text(encoding="utf-8"), "print('old')\n")
-        self.assertEqual(proposal["relative_path"], "app.py")
+        self.assertEqual(proposal["schema_version"], 2)
+        self.assertEqual(proposal["files"][0]["path"], "app.py")
         self.assertEqual(proposal["status"], "pending")
         self.assertEqual(state["coding"]["pending_proposal_ids"], [proposal["id"]])
+
+    def test_coding_propose_changes_creates_multi_file_proposal(self):
+        first_path = self.external_dir / "app.py"
+        first_path.write_text("print('old')\n", encoding="utf-8")
+
+        files_json = json.dumps([
+            {"path": "app.py", "operation": "write", "content": "print('new')\n"},
+            {"path": "new_module.py", "operation": "write", "content": "VALUE = 1\n"},
+        ])
+
+        with patch.object(memory, "STATE_FILE", self.state_path):
+            with patch.object(tools, "CODING_PROPOSALS_DIR", self.proposals_dir):
+                tools.coding_set_workspace(str(self.external_dir))
+                result = tools.coding_propose_changes(
+                    title="Actualizar app",
+                    files_json=files_json,
+                    summary="Cambia app y agrega modulo.",
+                    reason="demo",
+                )
+
+        proposal_id = next(line.split(":", 1)[1].strip() for line in result.splitlines() if line.startswith("Id:"))
+        proposal = json.loads((self.proposals_dir / f"{proposal_id}.json").read_text(encoding="utf-8"))
+        self.assertIn("Archivos: 2", result)
+        self.assertEqual([item["path"] for item in proposal["files"]], ["app.py", "new_module.py"])
+        self.assertFalse((self.external_dir / "new_module.py").exists())
+
+    def test_coding_apply_proposal_handles_multiple_files_and_delete(self):
+        keep_path = self.external_dir / "app.py"
+        delete_path = self.external_dir / "old.py"
+        keep_path.write_text("print('old')\n", encoding="utf-8")
+        delete_path.write_text("OLD = True\n", encoding="utf-8")
+        files_json = json.dumps([
+            {"path": "app.py", "operation": "write", "content": "print('new')\n"},
+            {"path": "old.py", "operation": "delete"},
+            {"path": "created.py", "operation": "write", "content": "CREATED = True\n"},
+        ])
+
+        with patch.object(memory, "STATE_FILE", self.state_path):
+            with patch.object(tools, "CODING_PROPOSALS_DIR", self.proposals_dir):
+                with patch.object(tools, "CHECKPOINTS_DIR", self.checkpoints_dir):
+                    tools.coding_set_workspace(str(self.external_dir))
+                    propose_result = tools.coding_propose_changes("Trabajo multi", files_json)
+                    proposal_id = next(
+                        line.split(":", 1)[1].strip()
+                        for line in propose_result.splitlines()
+                        if line.startswith("Id:")
+                    )
+                    apply_result = tools.coding_apply_proposal(proposal_id)
+
+        self.assertIn("Archivos aplicados", apply_result)
+        self.assertEqual(keep_path.read_text(encoding="utf-8"), "print('new')\n")
+        self.assertFalse(delete_path.exists())
+        self.assertEqual((self.external_dir / "created.py").read_text(encoding="utf-8"), "CREATED = True\n")
+        checkpoint_dirs = [item for item in self.checkpoints_dir.iterdir() if item.is_dir()]
+        self.assertEqual(len(checkpoint_dirs), 3)
+
+    def test_coding_apply_proposal_preflight_blocks_if_any_file_changed(self):
+        first_path = self.external_dir / "app.py"
+        second_path = self.external_dir / "other.py"
+        first_path.write_text("old app\n", encoding="utf-8")
+        second_path.write_text("old other\n", encoding="utf-8")
+        files_json = json.dumps([
+            {"path": "app.py", "operation": "write", "content": "new app\n"},
+            {"path": "other.py", "operation": "write", "content": "new other\n"},
+        ])
+
+        with patch.object(memory, "STATE_FILE", self.state_path):
+            with patch.object(tools, "CODING_PROPOSALS_DIR", self.proposals_dir):
+                with patch.object(tools, "CHECKPOINTS_DIR", self.checkpoints_dir):
+                    tools.coding_set_workspace(str(self.external_dir))
+                    propose_result = tools.coding_propose_changes("Trabajo multi", files_json)
+                    proposal_id = next(
+                        line.split(":", 1)[1].strip()
+                        for line in propose_result.splitlines()
+                        if line.startswith("Id:")
+                    )
+                    second_path.write_text("changed by user\n", encoding="utf-8")
+                    apply_result = tools.coding_apply_proposal(proposal_id)
+
+        self.assertIn("El archivo cambio", apply_result)
+        self.assertEqual(first_path.read_text(encoding="utf-8"), "old app\n")
+        self.assertEqual(second_path.read_text(encoding="utf-8"), "changed by user\n")
+        self.assertFalse(self.checkpoints_dir.exists())
 
     def test_coding_apply_proposal_writes_file_with_checkpoint(self):
         file_path = self.external_dir / "app.py"
@@ -259,6 +343,50 @@ class ToolsTestCase(unittest.TestCase):
         self.assertIn("OK", result)
         self.assertEqual(run_mock.call_args.kwargs["cwd"], str(self.external_dir.resolve()))
         self.assertTrue(run_mock.call_args.kwargs["shell"])
+
+    def test_coding_detect_validation_command_saves_detected_command(self):
+        scripts_dir = self.external_dir / "scripts"
+        scripts_dir.mkdir(parents=True, exist_ok=True)
+        (scripts_dir / "check.ps1").write_text("Write-Output OK\n", encoding="utf-8")
+
+        with patch.object(memory, "STATE_FILE", self.state_path):
+            with patch.object(tools, "CODING_PROPOSALS_DIR", self.proposals_dir):
+                tools.coding_set_workspace(str(self.external_dir))
+                result = tools.coding_detect_validation_command()
+                state = memory.load_state()
+
+        self.assertIn("detectado y guardado", result)
+        self.assertIn("scripts\\check.ps1", state["coding"]["validation_command"])
+
+    def test_coding_run_validation_uses_saved_command_and_associates_proposal(self):
+        file_path = self.external_dir / "app.py"
+        file_path.write_text("print('old')\n", encoding="utf-8")
+        fake_result = subprocess.CompletedProcess(
+            args="pytest",
+            returncode=0,
+            stdout="OK",
+            stderr="",
+        )
+
+        with patch.object(memory, "STATE_FILE", self.state_path):
+            with patch.object(tools, "CODING_PROPOSALS_DIR", self.proposals_dir):
+                tools.coding_set_workspace(str(self.external_dir))
+                tools.coding_update_validation_command("pytest")
+                propose_result = tools.coding_propose_text_file("app.py", "print('new')\n")
+                proposal_id = next(
+                    line.split(":", 1)[1].strip()
+                    for line in propose_result.splitlines()
+                    if line.startswith("Id:")
+                )
+                with patch.object(tools.subprocess, "run", return_value=fake_result):
+                    result = tools.coding_run_validation(proposal_id=proposal_id)
+                state = memory.load_state()
+
+        proposal = json.loads((self.proposals_dir / f"{proposal_id}.json").read_text(encoding="utf-8"))
+        self.assertIn("Validacion OK.", result)
+        self.assertEqual(state["coding"]["last_validation"]["command"], "pytest")
+        self.assertEqual(proposal["validation"]["command"], "pytest")
+        self.assertEqual(proposal["validation"]["exit_code"], 0)
 
     def test_restore_checkpoint_recovers_previous_content(self):
         file_path = self.runtime_dir / "recover_me.py"
