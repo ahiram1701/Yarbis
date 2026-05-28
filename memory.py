@@ -1,6 +1,7 @@
 import contextlib
 import json
 import os
+import queue
 import re
 import threading
 import time
@@ -30,7 +31,11 @@ STATE_LOCK = threading.RLock()
 _STATE_TRANSACTION_LOCAL = threading.local()
 _MEMORY_PROTECTION_MAINTENANCE_LOCK = threading.Lock()
 _MEMORY_PROTECTION_MAINTENANCE_THREAD = None
+_MEMORY_PROTECTION_BACKUP_QUEUE = queue.Queue()
+_MEMORY_PROTECTION_BACKUP_THREAD_LOCK = threading.Lock()
+_MEMORY_PROTECTION_BACKUP_THREAD = None
 MEMORY_PROTECTION_MAINTENANCE_ASYNC = True
+MEMORY_PROTECTION_AUTO_BACKUP_ASYNC = True
 _STATE_LOCK_POLL_SECONDS = 0.05
 DEFAULT_STATE_LOCK_TIMEOUT_SECONDS = 60.0
 _STATE_LOCK_TIMEOUT_SECONDS = DEFAULT_STATE_LOCK_TIMEOUT_SECONDS
@@ -117,14 +122,12 @@ DEFAULT_VOICE_MAX_AUDIO_SECONDS = 120
 DEFAULT_VOICE_TTS_RATE = 175
 DEFAULT_VOICE_TTS_VOICE_ID = ""
 DEFAULT_VOICE_TTS_PROVIDER = "system"
-DEFAULT_VOICE_PIPER_VOICE_ID = ""
-DEFAULT_VOICE_PIPER_SPEAKER_ID = 0
-DEFAULT_VOICE_PIPER_CATALOG_UPDATED_AT = ""
+DEFAULT_VOICE_KOKORO_VOICE_ID = "ef_dora"
 DEFAULT_VOICE_BROWSER_VOICE_NAME = ""
 DEFAULT_VOICE_BROWSER_TTS_RATE = 1.0
 DEFAULT_VOICE_BROWSER_TTS_PITCH = 1.0
 DEFAULT_VOICE_TELEGRAM_REPLY_MODE = "auto"
-VALID_VOICE_TTS_PROVIDERS = {"system", "piper"}
+VALID_VOICE_TTS_PROVIDERS = {"system", "kokoro"}
 VALID_VOICE_TELEGRAM_REPLY_MODES = {"off", "auto", "always"}
 VALID_VOICE_STT_COMPUTE_TYPES = {"default", "int8", "int8_float16", "int16", "float16", "float32"}
 MIN_VOICE_MAX_AUDIO_SECONDS = 1
@@ -140,8 +143,7 @@ MAX_VOICE_STT_MODEL_CHARS = 80
 MAX_VOICE_STT_COMPUTE_TYPE_CHARS = 24
 MAX_VOICE_TTS_VOICE_ID_CHARS = 240
 MAX_VOICE_TTS_PROVIDER_CHARS = 20
-MAX_VOICE_PIPER_VOICE_ID_CHARS = 160
-MAX_VOICE_PIPER_CATALOG_TIMESTAMP_CHARS = 80
+MAX_VOICE_KOKORO_VOICE_ID_CHARS = 80
 MAX_VOICE_BROWSER_VOICE_NAME_CHARS = 160
 DEFAULT_INTERNET_MODE = "auto"
 VALID_INTERNET_MODES = {"off", "auto"}
@@ -431,9 +433,7 @@ def default_state():
             "tts_rate": DEFAULT_VOICE_TTS_RATE,
             "tts_voice_id": DEFAULT_VOICE_TTS_VOICE_ID,
             "tts_provider": DEFAULT_VOICE_TTS_PROVIDER,
-            "piper_voice_id": DEFAULT_VOICE_PIPER_VOICE_ID,
-            "piper_speaker_id": DEFAULT_VOICE_PIPER_SPEAKER_ID,
-            "piper_catalog_updated_at": DEFAULT_VOICE_PIPER_CATALOG_UPDATED_AT,
+            "kokoro_voice_id": DEFAULT_VOICE_KOKORO_VOICE_ID,
             "browser_voice_name": DEFAULT_VOICE_BROWSER_VOICE_NAME,
             "browser_tts_rate": DEFAULT_VOICE_BROWSER_TTS_RATE,
             "browser_tts_pitch": DEFAULT_VOICE_BROWSER_TTS_PITCH,
@@ -1561,6 +1561,8 @@ def _normalize_voice_settings(voice):
     ).strip().lower()[:MAX_VOICE_TTS_PROVIDER_CHARS]
     if tts_provider == "sistema":
         tts_provider = "system"
+    if tts_provider == "piper":
+        tts_provider = "kokoro"
     if tts_provider not in VALID_VOICE_TTS_PROVIDERS:
         tts_provider = defaults["tts_provider"]
 
@@ -1578,12 +1580,6 @@ def _normalize_voice_settings(voice):
     except (TypeError, ValueError):
         tts_rate = defaults["tts_rate"]
     tts_rate = max(MIN_VOICE_TTS_RATE, min(MAX_VOICE_TTS_RATE, tts_rate))
-
-    try:
-        piper_speaker_id = int(voice.get("piper_speaker_id", defaults["piper_speaker_id"]))
-    except (TypeError, ValueError):
-        piper_speaker_id = defaults["piper_speaker_id"]
-    piper_speaker_id = max(0, min(9999, piper_speaker_id))
 
     try:
         browser_tts_rate = float(voice.get("browser_tts_rate", defaults["browser_tts_rate"]))
@@ -1612,15 +1608,10 @@ def _normalize_voice_settings(voice):
             MAX_VOICE_TTS_VOICE_ID_CHARS,
         ).strip()[:MAX_VOICE_TTS_VOICE_ID_CHARS],
         "tts_provider": tts_provider,
-        "piper_voice_id": _coerce_text(
-            voice.get("piper_voice_id", defaults["piper_voice_id"]),
-            MAX_VOICE_PIPER_VOICE_ID_CHARS,
-        ).strip()[:MAX_VOICE_PIPER_VOICE_ID_CHARS],
-        "piper_speaker_id": piper_speaker_id,
-        "piper_catalog_updated_at": _coerce_text(
-            voice.get("piper_catalog_updated_at", defaults["piper_catalog_updated_at"]),
-            MAX_VOICE_PIPER_CATALOG_TIMESTAMP_CHARS,
-        ).strip()[:MAX_VOICE_PIPER_CATALOG_TIMESTAMP_CHARS],
+        "kokoro_voice_id": _coerce_text(
+            voice.get("kokoro_voice_id", defaults["kokoro_voice_id"]),
+            MAX_VOICE_KOKORO_VOICE_ID_CHARS,
+        ).strip()[:MAX_VOICE_KOKORO_VOICE_ID_CHARS] or defaults["kokoro_voice_id"],
         "browser_voice_name": _coerce_text(
             voice.get("browser_voice_name", defaults["browser_voice_name"]),
             MAX_VOICE_BROWSER_VOICE_NAME_CHARS,
@@ -2360,6 +2351,15 @@ def _apply_memory_protection_after_save_unlocked(normalized: dict) -> dict:
     if not (settings["enabled"] and settings["backup_on_every_change"]):
         return protected_state
 
+    if MEMORY_PROTECTION_AUTO_BACKUP_ASYNC and MEMORY_PROTECTION_MAINTENANCE_ASYNC:
+        _schedule_memory_protection_auto_backup(protected_state)
+        return protected_state
+
+    return _run_memory_protection_auto_backup_sync(protected_state)
+
+
+def _create_memory_protection_auto_backup(protected_state: dict) -> tuple[dict | None, str, dict | None]:
+    settings = protected_state["memory_protection"]
     backup_result = None
     last_error = ""
     maintenance_job = None
@@ -2381,6 +2381,13 @@ def _apply_memory_protection_after_save_unlocked(normalized: dict) -> dict:
     except memory_backup.MemoryBackupError as exc:
         last_error = str(exc)
 
+    return backup_result, last_error, maintenance_job
+
+
+def _run_memory_protection_auto_backup_sync(protected_state: dict) -> dict:
+    protected_state = normalize_state(protected_state)
+    backup_result, last_error, maintenance_job = _create_memory_protection_auto_backup(protected_state)
+
     if backup_result or last_error:
         protected_state["memory_protection"]["last_error"] = last_error[:MAX_MEMORY_PROTECTION_ERROR_CHARS]
         if backup_result:
@@ -2395,6 +2402,70 @@ def _apply_memory_protection_after_save_unlocked(normalized: dict) -> dict:
         _schedule_memory_protection_maintenance(**maintenance_job)
 
     return protected_state
+
+
+def _record_memory_protection_auto_backup_result(backup_result: dict | None = None, last_error: str = "") -> None:
+    if not backup_result and not str(last_error).strip():
+        return
+
+    rendered_error = str(last_error).strip()[:MAX_MEMORY_PROTECTION_ERROR_CHARS]
+    backup_created_at = str((backup_result or {}).get("created_at", "")).strip()
+
+    try:
+        def mutate(state):
+            memory_protection = state.setdefault("memory_protection", {})
+            memory_protection["last_error"] = rendered_error
+            if backup_created_at:
+                memory_protection["last_backup_at"] = backup_created_at
+
+        state_transaction("memory_protection_auto_backup_result", mutate, create_backup=False)
+    except Exception:
+        pass
+
+
+def _run_memory_protection_auto_backup_job(job: dict) -> None:
+    protected_state = normalize_state(job.get("state", {}))
+    backup_result, last_error, maintenance_job = _create_memory_protection_auto_backup(protected_state)
+    _record_memory_protection_auto_backup_result(backup_result=backup_result, last_error=last_error)
+    if maintenance_job:
+        _schedule_memory_protection_maintenance(**maintenance_job)
+
+
+def _memory_protection_auto_backup_worker() -> None:
+    global _MEMORY_PROTECTION_BACKUP_THREAD
+
+    while True:
+        try:
+            job = _MEMORY_PROTECTION_BACKUP_QUEUE.get(timeout=0.1)
+        except queue.Empty:
+            with _MEMORY_PROTECTION_BACKUP_THREAD_LOCK:
+                if _MEMORY_PROTECTION_BACKUP_QUEUE.empty():
+                    _MEMORY_PROTECTION_BACKUP_THREAD = None
+                    return
+            continue
+
+        try:
+            _run_memory_protection_auto_backup_job(job)
+        finally:
+            _MEMORY_PROTECTION_BACKUP_QUEUE.task_done()
+
+
+def _schedule_memory_protection_auto_backup(protected_state: dict) -> None:
+    global _MEMORY_PROTECTION_BACKUP_THREAD
+
+    _MEMORY_PROTECTION_BACKUP_QUEUE.put({"state": normalize_state(protected_state)})
+
+    with _MEMORY_PROTECTION_BACKUP_THREAD_LOCK:
+        if _MEMORY_PROTECTION_BACKUP_THREAD is not None and _MEMORY_PROTECTION_BACKUP_THREAD.is_alive():
+            return
+
+        thread = threading.Thread(
+            target=_memory_protection_auto_backup_worker,
+            name="yarbis-memory-protection-auto-backup",
+            daemon=True,
+        )
+        _MEMORY_PROTECTION_BACKUP_THREAD = thread
+        thread.start()
 
 
 def _record_memory_protection_maintenance_error(error_text: str) -> None:
@@ -2484,11 +2555,21 @@ def _schedule_memory_protection_maintenance(
 
 
 def wait_for_memory_protection_maintenance(timeout_seconds: float = 5.0) -> bool:
-    thread = _MEMORY_PROTECTION_MAINTENANCE_THREAD
-    if thread is None:
-        return True
-    thread.join(timeout=max(0.0, float(timeout_seconds)))
-    return not thread.is_alive()
+    deadline = time.monotonic() + max(0.0, float(timeout_seconds))
+
+    for thread_getter in (
+        lambda: _MEMORY_PROTECTION_BACKUP_THREAD,
+        lambda: _MEMORY_PROTECTION_MAINTENANCE_THREAD,
+    ):
+        thread = thread_getter()
+        if thread is None:
+            continue
+        remaining = max(0.0, deadline - time.monotonic())
+        thread.join(timeout=remaining)
+        if thread.is_alive():
+            return False
+
+    return _MEMORY_PROTECTION_BACKUP_QUEUE.empty()
 
 
 def _save_state_unlocked(state, create_backup: bool = True):

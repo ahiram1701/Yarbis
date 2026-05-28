@@ -180,7 +180,7 @@ def _show_already_running_message():
 
 _STATE_SYNC_INTERVAL_MS = 1000
 _EVENT_SYNC_INTERVAL_MS = 500
-_HEAVY_STATE_SYNC_INTERVAL_MS = 5000
+_STATUS_REFRESH_INTERVAL_MS = 15000
 _CONTEXT_HELPER_SYNC_MS = 10000
 _SERVICE_RUNTIME_EVENT_LABELS = {"pulso proactivo"}
 _WORKSPACE_ROOT = Path(__file__).resolve().parent
@@ -419,10 +419,15 @@ class YarbisDesktop(tk.Tk):
         self._last_activity_text = ""
         self._last_activity_signature = None
         self._runtime_events_position = self._initial_runtime_events_position()
-        self._last_heavy_state_refresh_at = 0.0
+        self._last_status_refresh_at = 0.0
+        self._status_refresh_in_flight = False
+        self._status_refresh_pending_force = False
+        self._status_refresh_pending_context_helper = False
+        self._status_refresh_pending_context_task = False
         self._cached_health_status = None
         self._cached_readiness_status = None
         self._cached_context_helper_status = None
+        self._last_state_signature = None
         self._local_telegram_polling = False
         self._closing = False
         self._first_run_checked = False
@@ -611,7 +616,7 @@ class YarbisDesktop(tk.Tk):
                 {"text": "Notificaciones", "command": self._edit_notifications},
                 {"text": "Probar notificacion", "command": self._send_test_notification},
                 {"text": "Voz", "command": self._edit_voice_settings},
-                {"text": "Actualizar voces", "command": self._refresh_voice_catalog},
+                {"text": "Voces Kokoro", "command": self._choose_kokoro_voice},
                 {"text": "Probar voz", "command": self._test_voice},
                 {
                     "text": "Leer ultimo resultado",
@@ -1247,8 +1252,199 @@ class YarbisDesktop(tk.Tk):
             parent=self,
         )
 
+    def _status_refresh_due(
+        self,
+        force: bool = False,
+        ensure_context_helper: bool = False,
+        ensure_context_task: bool = False,
+    ) -> bool:
+        if force or ensure_context_helper or ensure_context_task:
+            return True
+        if self._cached_health_status is None or self._cached_readiness_status is None:
+            return True
+        return time.monotonic() - self._last_status_refresh_at >= (_STATUS_REFRESH_INTERVAL_MS / 1000)
+
+    def _request_status_refresh(
+        self,
+        force: bool = False,
+        ensure_context_helper: bool = False,
+        ensure_context_task: bool = False,
+    ) -> bool:
+        if self._closing or not self._status_refresh_due(
+            force=force,
+            ensure_context_helper=ensure_context_helper,
+            ensure_context_task=ensure_context_task,
+        ):
+            return False
+
+        if self._status_refresh_in_flight:
+            self._status_refresh_pending_force = self._status_refresh_pending_force or force
+            self._status_refresh_pending_context_helper = (
+                self._status_refresh_pending_context_helper or ensure_context_helper
+            )
+            self._status_refresh_pending_context_task = self._status_refresh_pending_context_task or ensure_context_task
+            return False
+
+        self._status_refresh_in_flight = True
+        if self._cached_health_status is None:
+            self.health_var.set("Consultando...")
+            self.readiness_var.set("Consultando...")
+
+        def worker():
+            try:
+                snapshot = self._build_status_snapshot(
+                    force=force,
+                    ensure_context_helper=ensure_context_helper,
+                    ensure_context_task=ensure_context_task,
+                )
+                self._result_queue.put(("status_snapshot", "Estado", snapshot))
+            except Exception as exc:  # pragma: no cover - respaldo visual
+                self._result_queue.put(("status_error", "Estado", str(exc)))
+
+        threading.Thread(
+            target=worker,
+            name="yarbis-desktop-status-refresh",
+            daemon=True,
+        ).start()
+        return True
+
+    def _build_status_snapshot(
+        self,
+        force: bool = False,
+        ensure_context_helper: bool = False,
+        ensure_context_task: bool = False,
+    ) -> dict:
+        health = health_status(force_service=force)
+        readiness = readiness_status(force=force)
+        helper_status = get_context_helper_status()
+
+        try:
+            state = load_state()
+        except Exception:
+            state = {}
+
+        service_status = health.get("service", {}) if isinstance(health, dict) else {}
+        service_running = bool(service_status.get("running")) if isinstance(service_status, dict) else False
+        events = []
+
+        self._ensure_telegram_polling_matches_service(service_running)
+
+        if ensure_context_helper or ensure_context_task:
+            for message in self._sync_context_helper_background(
+                ensure_task=ensure_context_task,
+                service_status=service_status if isinstance(service_status, dict) else None,
+                local_context_settings=state.get("local_context", {}) if isinstance(state, dict) else {},
+            ):
+                events.append(("Contexto local", message))
+            helper_status = get_context_helper_status()
+
+        return {
+            "health": health,
+            "readiness": readiness,
+            "context_helper": helper_status,
+            "events": events,
+        }
+
+    def _sync_context_helper_background(
+        self,
+        ensure_task: bool = False,
+        service_status: dict | None = None,
+        local_context_settings: dict | None = None,
+    ) -> list[str]:
+        try:
+            settings = local_context_settings if isinstance(local_context_settings, dict) else get_local_context_settings()
+            service = service_status if isinstance(service_status, dict) else get_service_status()
+        except Exception:
+            return []
+
+        if not (service.get("running") and local_context_enabled(settings)):
+            return []
+
+        try:
+            messages = []
+            if ensure_task:
+                messages.append(ensure_context_task())
+            if not get_context_helper_status().get("running"):
+                messages.append(start_context_helper())
+            return [message for message in messages if str(message).strip()]
+        except Exception as exc:
+            return [f"No pude iniciar el helper local: {exc}"]
+
+    def _apply_status_snapshot(self, snapshot: dict):
+        if not isinstance(snapshot, dict):
+            return
+
+        self._cached_health_status = snapshot.get("health") if isinstance(snapshot.get("health"), dict) else None
+        self._cached_readiness_status = (
+            snapshot.get("readiness") if isinstance(snapshot.get("readiness"), dict) else None
+        )
+        self._cached_context_helper_status = (
+            snapshot.get("context_helper") if isinstance(snapshot.get("context_helper"), dict) else None
+        )
+        self._last_status_refresh_at = time.monotonic()
+
+        for event in snapshot.get("events", []):
+            if not isinstance(event, (list, tuple)) or len(event) != 2:
+                continue
+            title, body = event
+            if str(body).strip():
+                self._append_activity(str(title), str(body))
+
+        self.refresh_state_view(force_heavy=False)
+
+    def _finish_status_refresh(self):
+        pending_force = self._status_refresh_pending_force
+        pending_context_helper = self._status_refresh_pending_context_helper
+        pending_context_task = self._status_refresh_pending_context_task
+        self._status_refresh_in_flight = False
+        self._status_refresh_pending_force = False
+        self._status_refresh_pending_context_helper = False
+        self._status_refresh_pending_context_task = False
+        if pending_force or pending_context_helper or pending_context_task:
+            self._request_status_refresh(
+                force=pending_force,
+                ensure_context_helper=pending_context_helper,
+                ensure_context_task=pending_context_task,
+            )
+
+    def _cached_service_status(self) -> dict | None:
+        health = self._cached_health_status
+        if not isinstance(health, dict):
+            return None
+        service_status = health.get("service")
+        return service_status if isinstance(service_status, dict) else None
+
+    def _require_cached_service_status(self) -> dict | None:
+        service_status = self._cached_service_status()
+        if service_status is not None:
+            return service_status
+
+        self.status_var.set("Consultando servicio...")
+        self._request_status_refresh(force=True)
+        messagebox.showinfo(
+            "Yarbis",
+            "Estoy consultando el estado del servicio. Intenta de nuevo en un momento.",
+            parent=self,
+        )
+        return None
+
+    def _set_service_controls_state(self, service_status: dict | None):
+        disabled = self._busy or service_status is None
+        toggle_state = "disabled" if disabled else "normal"
+        installed = bool(service_status and service_status.get("installed"))
+        installed_state = "normal" if installed and not self._busy else "disabled"
+
+        if hasattr(self, "service_toggle_button"):
+            self.service_toggle_button.configure(state=toggle_state)
+        if hasattr(self, "remove_service_button"):
+            self.remove_service_button.configure(state=installed_state)
+        if hasattr(self, "service_autostart_check"):
+            self.service_autostart_check.configure(state=installed_state)
+            self._style_service_autostart_toggle()
+
     def refresh_state_view(self, force_heavy: bool = True):
         state = load_state()
+        self._request_status_refresh(force=force_heavy)
         self.goal_var.set(state["goal"])
         self.cycles_var.set(str(state["cycle_count"]))
         model_provider = state.get("model_provider", {})
@@ -1283,28 +1479,6 @@ class YarbisDesktop(tk.Tk):
         else:
             self.coding_var.set("Sin workspace de codigo.")
 
-        now = time.monotonic()
-        refresh_heavy = (
-            force_heavy
-            or self._cached_health_status is None
-            or now - self._last_heavy_state_refresh_at >= (_HEAVY_STATE_SYNC_INTERVAL_MS / 1000)
-        )
-        if refresh_heavy:
-            health = health_status()
-            readiness = readiness_status()
-            helper_status = get_context_helper_status()
-            self._cached_health_status = health
-            self._cached_readiness_status = readiness
-            self._cached_context_helper_status = helper_status
-            self._last_heavy_state_refresh_at = now
-        else:
-            health = self._cached_health_status
-            readiness = self._cached_readiness_status
-            helper_status = self._cached_context_helper_status
-
-        self.health_var.set(format_health_status(health))
-        self.readiness_var.set(format_readiness_status(readiness))
-        service_status = health["service"]
         proactive_settings = state["service"]["proactive"]
         pulse_status = "activo" if proactive_settings["enabled"] else "desactivado"
         pulse_model = str(proactive_settings.get("model", "")).strip()
@@ -1316,7 +1490,25 @@ class YarbisDesktop(tk.Tk):
         )
         local_context_settings = state.get("local_context", {})
         local_context_status = "activo" if local_context_enabled(local_context_settings) else "desactivado"
-        helper_text = format_context_helper_status(helper_status)
+        health = self._cached_health_status
+        readiness = self._cached_readiness_status
+        helper_status = self._cached_context_helper_status
+        service_status = self._cached_service_status()
+
+        if health is None:
+            self.health_var.set("Consultando...")
+        else:
+            self.health_var.set(format_health_status(health))
+        if readiness is None:
+            self.readiness_var.set("Consultando...")
+        else:
+            self.readiness_var.set(format_readiness_status(readiness))
+
+        helper_text = (
+            format_context_helper_status(helper_status)
+            if helper_status is not None
+            else "contexto consultando"
+        )
         local_context_text = (
             f"Contexto local {local_context_status} "
             f"(modo={local_context_settings.get('mode', 'safe')}, {helper_text})."
@@ -1328,9 +1520,18 @@ class YarbisDesktop(tk.Tk):
             mobile_text = f"UI movil activa ({mobile_url}, timeout={mobile_timeout}s)."
         else:
             mobile_text = "UI movil desactivada."
-        if not service_status["installed"]:
+        if service_status is None:
+            self.service_var.set(f"Consultando servicio SCM. {pulse_text} {local_context_text} {mobile_text}")
+            self.service_button_text.set("Consultando...")
+            self.service_autostart_var.set(False)
+            self.service_autostart_text.set("Iniciar con Windows: consultando")
+            self._set_service_controls_state(None)
+        elif not service_status["installed"]:
             self.service_var.set(f"No instalado en SCM. {pulse_text} {local_context_text} {mobile_text}")
             self.service_button_text.set("Instalar e iniciar")
+            self.service_autostart_var.set(False)
+            self.service_autostart_text.set("Iniciar con Windows: NO")
+            self._set_service_controls_state(service_status)
         elif service_status["running"]:
             account_text = (
                 f", cuenta={service_status['account_name']}"
@@ -1343,6 +1544,12 @@ class YarbisDesktop(tk.Tk):
                 f"{pulse_text} {local_context_text} {mobile_text}"
             )
             self.service_button_text.set("Detener servicio")
+            autostart_enabled = bool(service_status["autostart_enabled"])
+            self.service_autostart_var.set(autostart_enabled)
+            self.service_autostart_text.set(
+                "Iniciar con Windows: SI" if autostart_enabled else "Iniciar con Windows: NO"
+            )
+            self._set_service_controls_state(service_status)
         else:
             account_text = (
                 f", cuenta={service_status['account_name']}"
@@ -1355,18 +1562,12 @@ class YarbisDesktop(tk.Tk):
                 f"{pulse_text} {local_context_text} {mobile_text}"
             )
             self.service_button_text.set("Iniciar servicio")
-        autostart_enabled = bool(service_status["autostart_enabled"])
-        self.service_autostart_var.set(autostart_enabled)
-        self.service_autostart_text.set(
-            "Iniciar con Windows: SI" if autostart_enabled else "Iniciar con Windows: NO"
-        )
-        if service_status["installed"]:
-            self.service_autostart_check.configure(state="normal")
-        else:
-            self.service_autostart_check.configure(state="disabled")
-        self._style_service_autostart_toggle()
-        if refresh_heavy:
-            self._ensure_telegram_polling_matches_service(service_status["running"])
+            autostart_enabled = bool(service_status["autostart_enabled"])
+            self.service_autostart_var.set(autostart_enabled)
+            self.service_autostart_text.set(
+                "Iniciar con Windows: SI" if autostart_enabled else "Iniciar con Windows: NO"
+            )
+            self._set_service_controls_state(service_status)
 
         self._sync_runtime_thinking(state)
 
@@ -1383,7 +1584,15 @@ class YarbisDesktop(tk.Tk):
                 self.status_var.set("Listo.")
             self.send_button.configure(text="Enviar y ejecutar")
 
-        summary_text = render_state_summary(state)
+        self._last_state_signature = (
+            state.get("goal", ""),
+            state.get("cycle_count", 0),
+            self._view_has_pending_question,
+            state.get("runtime", {}).get("thinking", {}).get("active", False),
+            len(state.get("tasks", [])) if isinstance(state.get("tasks"), list) else 0,
+            len(state.get("notes", [])) if isinstance(state.get("notes"), list) else 0,
+        )
+        summary_text = render_state_summary(state, include_last_result=False)
         if summary_text != self._last_summary_text:
             self._set_text(self.summary_text, summary_text)
             self._last_summary_text = summary_text
@@ -1443,7 +1652,6 @@ class YarbisDesktop(tk.Tk):
             return
 
         self._append_activity("Primer uso", "\n\n".join(line for line in activity_lines if line))
-        readiness_status(force=True)
         self.refresh_state_view()
 
         if settings.get("open_notifications"):
@@ -1526,7 +1734,11 @@ class YarbisDesktop(tk.Tk):
 
     def _ensure_telegram_polling_matches_service(self, service_running: bool | None = None):
         if service_running is None:
-            service_running = get_service_status()["running"]
+            service_status = self._cached_service_status()
+            if service_status is None:
+                self._request_status_refresh(force=True)
+                return
+            service_running = bool(service_status.get("running"))
 
         if service_running:
             if self._local_telegram_polling:
@@ -1540,25 +1752,21 @@ class YarbisDesktop(tk.Tk):
 
     def _sync_context_helper_once(self, ensure_task: bool = False):
         try:
-            settings = get_local_context_settings()
-            service_status = get_service_status()
+            local_context_settings = load_state().get("local_context", {})
         except Exception:
+            local_context_settings = {}
+        if not local_context_enabled(local_context_settings):
             return
 
-        if not (service_status.get("running") and local_context_enabled(settings)):
+        service_status = self._cached_service_status()
+        if service_status is not None and not service_status.get("running"):
             return
 
-        try:
-            messages = []
-            if ensure_task:
-                messages.append(ensure_context_task())
-            if not get_context_helper_status().get("running"):
-                messages.append(start_context_helper())
-            rendered = "\n".join(message for message in messages if str(message).strip())
-            if rendered:
-                self._append_activity("Contexto local", rendered)
-        except Exception as exc:
-            self._append_activity("Contexto local", f"No pude iniciar el helper local: {exc}")
+        self._request_status_refresh(
+            force=False,
+            ensure_context_helper=True,
+            ensure_context_task=ensure_task,
+        )
 
     def _ensure_context_helper(self):
         if self._closing:
@@ -1577,6 +1785,7 @@ class YarbisDesktop(tk.Tk):
         state = "disabled" if self._busy else "normal"
         for button in self._action_buttons:
             button.configure(state=state)
+        self._set_service_controls_state(self._cached_service_status())
         self.reply_text.configure(state=state)
         if status_text:
             self.status_var.set(status_text)
@@ -1612,7 +1821,18 @@ class YarbisDesktop(tk.Tk):
         try:
             while True:
                 kind, label, payload = self._result_queue.get_nowait()
-                if kind == "success":
+                if kind == "status_snapshot":
+                    try:
+                        self._apply_status_snapshot(payload)
+                    finally:
+                        self._finish_status_refresh()
+                elif kind == "status_error":
+                    self.health_var.set("No pude consultar estado.")
+                    self.readiness_var.set("No pude consultar preparacion.")
+                    if not self._busy:
+                        self.status_var.set(f"No pude refrescar estado: {payload}")
+                    self._finish_status_refresh()
+                elif kind == "success":
                     self._set_busy(False, source="local")
                     self._append_activity(label, str(payload))
                     self.refresh_state_view()
@@ -1801,10 +2021,9 @@ class YarbisDesktop(tk.Tk):
             return
 
         self._append_activity("Modelo", result)
-        readiness_status(force=True)
         self.refresh_state_view()
 
-    def _edit_voice_settings(self):
+    def _edit_voice_settings(self, prefer_kokoro: bool = False):
         try:
             voices = yarbis_voice.list_tts_voices(load_state(), include_downloadable=True, language="all")
         except Exception as exc:
@@ -1815,13 +2034,12 @@ class YarbisDesktop(tk.Tk):
             self,
             initial_settings=load_state().get("voice", {}),
             voices=voices,
+            prefer_kokoro=prefer_kokoro,
         )
         if dialog.result is None:
             return
 
         try:
-            if dialog.result.get("tts_provider") == "piper" and dialog.result.get("piper_voice_id"):
-                yarbis_voice.download_piper_voice(dialog.result["piper_voice_id"])
             result = yarbis_voice.update_voice_settings_text(**dialog.result)
         except ValueError as exc:
             messagebox.showwarning("Yarbis", str(exc), parent=self)
@@ -1833,13 +2051,8 @@ class YarbisDesktop(tk.Tk):
         self._append_activity("Voz", result)
         self.refresh_state_view()
 
-    def _refresh_voice_catalog(self):
-        try:
-            catalog = yarbis_voice.refresh_piper_catalog()
-        except Exception as exc:
-            messagebox.showwarning("Yarbis", str(exc), parent=self)
-            return
-        self._append_activity("Voz", f"Catalogo Piper actualizado: {len(catalog)} voces.")
+    def _choose_kokoro_voice(self):
+        self._edit_voice_settings(prefer_kokoro=True)
 
     def _test_voice(self):
         def worker():
@@ -1864,7 +2077,6 @@ class YarbisDesktop(tk.Tk):
             return
 
         self._append_activity("Notificaciones", result)
-        readiness_status(force=True)
         self.refresh_state_view()
         if (
             dialog.result.get("telegram_enabled")
@@ -2053,7 +2265,9 @@ class YarbisDesktop(tk.Tk):
         self.refresh_state_view()
 
     def _toggle_service(self):
-        service_status = get_service_status(force=True)
+        service_status = self._require_cached_service_status()
+        if service_status is None:
+            return
         if service_status["running"]:
             self._start_background_job("Servicio", stop_service)
             return
@@ -2096,7 +2310,9 @@ class YarbisDesktop(tk.Tk):
         self._start_background_job("Servicio", self._start_service_with_context_helper)
 
     def _toggle_service_autostart(self):
-        service_status = get_service_status(force=True)
+        service_status = self._require_cached_service_status()
+        if service_status is None:
+            return
         if not service_status["installed"]:
             messagebox.showinfo(
                 "Yarbis",
@@ -2111,18 +2327,12 @@ class YarbisDesktop(tk.Tk):
             "Iniciar con Windows: SI" if enabled else "Iniciar con Windows: NO"
         )
         self._style_service_autostart_toggle()
-        try:
-            result = set_autostart_enabled(enabled)
-        except Exception as exc:
-            messagebox.showwarning("Yarbis", str(exc), parent=self)
-            self.refresh_state_view()
-            return
-
-        self._append_activity("Servicio", result)
-        self.refresh_state_view()
+        self._start_background_job("Servicio", set_autostart_enabled, enabled)
 
     def _remove_service(self):
-        service_status = get_service_status(force=True)
+        service_status = self._require_cached_service_status()
+        if service_status is None:
+            return
         if not service_status["installed"]:
             self._append_activity("Servicio", "El servicio de Yarbis no esta instalado en SCM.")
             self.refresh_state_view()
@@ -2153,10 +2363,8 @@ class YarbisDesktop(tk.Tk):
             messagebox.showinfo("Yarbis", "Ya hay una accion en curso. Espera a que termine.", parent=self)
             return
 
-        try:
-            service_status = get_service_status(force=True)
-        except Exception as exc:
-            messagebox.showwarning("Yarbis", f"No pude revisar el servicio: {exc}", parent=self)
+        service_status = self._require_cached_service_status()
+        if service_status is None:
             return
 
         needs_admin = bool(service_status.get("installed"))
@@ -2213,7 +2421,6 @@ class YarbisDesktop(tk.Tk):
             return
 
         self._append_activity("Objetivo actualizado", result)
-        readiness_status(force=True)
         self.refresh_state_view()
 
     def _choose_coding_workspace(self):
@@ -2483,7 +2690,6 @@ class YarbisDesktop(tk.Tk):
         self.reply_text.delete("1.0", "end")
         self._set_text(self.activity_text, "")
         self._apply_theme(get_ui_theme())
-        readiness_status(force=True)
         self.refresh_state_view()
         self.status_var.set("Yarbis reiniciado de fabrica.")
         messagebox.showinfo("Yarbis", result, parent=self)

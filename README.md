@@ -54,7 +54,7 @@ Dependencias Python declaradas:
 - `pyttsx3>=2.99,<3`
 - `sounddevice>=0.5,<1`
 - `imageio-ffmpeg>=0.6,<1`
-- `piper-tts>=1.4,<2`
+- `pykokoro>=0.6,<1`
 
 ## Instalacion
 
@@ -411,9 +411,8 @@ Comandos disponibles por Telegram:
 - `/voz off`: desactiva entrada y respuestas de voz
 - `/voz status`: muestra configuracion de voz
 - `/voz voces`: lista voces locales disponibles para TTS
-- `/voz catalogo [es|en|all]`: lista voces Piper descargables
-- `/voz proveedor piper|sistema`: cambia entre voces del sistema y Piper local
-- `/voz descargar ID`: descarga una voz Piper
+- `/voz catalogo [es|en|all]`: lista voces Kokoro disponibles
+- `/voz proveedor kokoro|sistema`: cambia entre voces del sistema y Kokoro local
 - `/voz usar NUMERO`: cambia la voz del sistema/Telegram por numero o ID
 - `/voz velocidad 190`: cambia la velocidad de lectura local
 - `/voz callar`: desactiva futuras respuestas habladas por Telegram
@@ -446,30 +445,30 @@ o contexto libre cuando no coinciden con una accion remota explicita.
 
 Yarbis puede entender voz sin APIs pagadas ni subir audio a terceros. Usa `faster-whisper`
 en CPU para transcribir, `pyttsx3` para leer respuestas con la voz del sistema y
-`piper-tts` para voces neuronales locales descargables. `imageio-ffmpeg` convierte audio
+`pykokoro` para voces neuronales locales. `imageio-ffmpeg` convierte audio
 cuando Telegram necesita una nota de voz.
 
 El primer uso de transcripcion puede descargar el modelo local `base`. La configuracion
 por defecto queda en `state.json` bajo `voice`: idioma `es`, `stt_model=base`,
 `stt_compute_type=int8`, maximo 120 segundos, proveedor TTS `system`, velocidad `175`,
-voz Piper opcional, voz del navegador opcional y respuestas de Telegram en modo `auto`.
-Las voces Piper se guardan bajo `.yarbis_runtime/voice/piper/voices/` y se descargan de una
-en una cuando las eliges.
+voz Kokoro opcional, voz del navegador opcional y respuestas de Telegram en modo `auto`.
+Kokoro descarga sus pesos locales la primera vez que se usa una voz. Las voces visibles incluyen
+espanol (`ef_dora`, `em_alex`, `em_santa`), ingles, frances, portugues, italiano, japones y mandarin.
 
 Superficies disponibles:
 
 - Telegram entiende `voice` y `audio`; siempre responde con texto y, en modo `auto`,
   tambien envia nota de voz cuando la respuesta es corta. Usa `/voz catalogo es`,
-  `/voz descargar ID`, `/voz proveedor piper`, `/voz usar NUMERO`,
+  `/voz proveedor kokoro`, `/voz usar NUMERO`,
   `/voz velocidad NUMERO` y `/voz callar` para ajustar o silenciar.
 - La UI movil permite grabar en el compositor y transcribe en Yarbis mediante
   `/api/voice/transcribe`; tambien puede leer resultados con `speechSynthesis` del navegador,
-  elegir motor `Sistema/Piper`, descargar voces Piper, probar voz, elegir voz/rate/pitch
+  elegir motor `Sistema/Kokoro`, probar voz, elegir voz/rate/pitch
   en `Config` -> `Voz` y detener habla activa con `Detener habla`.
   Si iPhone/Safari bloquea el microfono por HTTP o por origen no seguro, usa `Grabar archivo`:
   abre la captura/subida de audio del sistema y reutiliza la misma transcripcion local.
 - La app de escritorio tiene `Dictar` en el compositor, `Voz` para elegir motor, voz del sistema
-  o Piper, velocidad y modo Telegram, `Actualizar voces`, `Probar voz`,
+  o Kokoro, velocidad y modo Telegram, `Voces Kokoro`, `Probar voz`,
   `Leer ultimo resultado` y `Detener voz`.
 
 Por seguridad, puedes pedir apagado o reinicio por voz, pero la confirmacion final

@@ -1,4 +1,5 @@
 import json
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -7,6 +8,49 @@ import memory
 import yarbis_desktop
 
 TEST_RUNTIME_DIR = Path.cwd() / "tests_runtime"
+
+
+class _FakeVar:
+    def __init__(self, value=None):
+        self.value = value
+
+    def set(self, value):
+        self.value = value
+
+    def get(self):
+        return self.value
+
+
+class _FakeWidget:
+    def __init__(self):
+        self.options = {}
+        self.content = ""
+
+    def configure(self, **kwargs):
+        self.options.update(kwargs)
+
+    config = configure
+
+    def cget(self, key):
+        return self.options.get(key, "normal")
+
+    def delete(self, *_args):
+        self.content = ""
+
+    def insert(self, _index, content):
+        self.content += str(content)
+
+    def yview(self):
+        return (0.0, 1.0)
+
+    def see(self, *_args):
+        pass
+
+    def yview_moveto(self, *_args):
+        pass
+
+    def focus_set(self):
+        pass
 
 
 class _DesktopStub:
@@ -28,6 +72,68 @@ class _DesktopStub:
 
     def _start_background_job(self, *_args, **_kwargs):
         raise AssertionError("No debe ejecutar ciclo en esta prueba.")
+
+
+def _service_status(**overrides):
+    status = {
+        "installed": False,
+        "running": False,
+        "autostart_enabled": False,
+        "start_type": "not_installed",
+        "pid": None,
+        "account_name": "",
+    }
+    status.update(overrides)
+    return status
+
+
+def _desktop_app_stub(service_status=None):
+    app = object.__new__(yarbis_desktop.YarbisDesktop)
+    app.goal_var = _FakeVar()
+    app.cycles_var = _FakeVar()
+    app.pending_var = _FakeVar()
+    app.thinking_var = _FakeVar()
+    app.theme_var = _FakeVar()
+    app.ollama_var = _FakeVar()
+    app.coding_var = _FakeVar()
+    app.health_var = _FakeVar()
+    app.readiness_var = _FakeVar()
+    app.status_var = _FakeVar()
+    app.service_var = _FakeVar()
+    app.service_button_text = _FakeVar()
+    app.service_autostart_var = _FakeVar(False)
+    app.service_autostart_text = _FakeVar()
+    app.send_button = _FakeWidget()
+    app.summary_text = _FakeWidget()
+    app.activity_text = _FakeWidget()
+    app.reply_text = _FakeWidget()
+    app.service_toggle_button = _FakeWidget()
+    app.service_autostart_check = _FakeWidget()
+    app.remove_service_button = _FakeWidget()
+    app._result_queue = yarbis_desktop.queue.Queue()
+    app._busy = False
+    app._busy_sources = set()
+    app._action_buttons = []
+    app._view_has_pending_question = False
+    app._last_summary_text = ""
+    app._last_activity_text = ""
+    app._last_activity_signature = None
+    app._last_status_refresh_at = time.monotonic()
+    app._status_refresh_in_flight = False
+    app._status_refresh_pending_force = False
+    app._status_refresh_pending_context_helper = False
+    app._status_refresh_pending_context_task = False
+    app._cached_health_status = {"service": service_status or _service_status()}
+    app._cached_readiness_status = {"items": []}
+    app._cached_context_helper_status = {"state": "desactivado"}
+    app._last_state_signature = None
+    app._local_telegram_polling = False
+    app._closing = False
+    app._style_service_autostart_toggle = lambda: None
+    app._sync_runtime_thinking = lambda _state=None: False
+    app._refresh_activity_view = lambda *args, **kwargs: None
+    app._set_text = lambda widget, content: widget.configure(content=content)
+    return app
 
 
 class YarbisDesktopTestCase(unittest.TestCase):
@@ -168,6 +274,90 @@ class YarbisDesktopTestCase(unittest.TestCase):
         self.assertIn("run_auto_with_output(cycles=payload.get(\"cycles\"))", script)
         self.assertIn("submit_user_reply(str(payload.get(\"reply_text\", \"\")))", script)
         self.assertNotIn("emit_notifications=False", script)
+
+    def test_refresh_state_view_uses_cached_status_without_blocking_checks(self):
+        app = _desktop_app_stub()
+        state = memory.default_state()
+        state["goal"] = "Responder rapido"
+
+        with patch.object(yarbis_desktop, "load_state", return_value=state):
+            with patch.object(yarbis_desktop, "health_status", side_effect=AssertionError("bloqueante")):
+                with patch.object(yarbis_desktop, "readiness_status", side_effect=AssertionError("bloqueante")):
+                    with patch.object(
+                        yarbis_desktop,
+                        "get_context_helper_status",
+                        side_effect=AssertionError("bloqueante"),
+                    ):
+                        yarbis_desktop.YarbisDesktop.refresh_state_view(app, force_heavy=False)
+
+        self.assertEqual(app.goal_var.get(), "Responder rapido")
+        self.assertEqual(app.service_button_text.get(), "Instalar e iniciar")
+
+    def test_status_refresh_does_not_start_overlapping_workers(self):
+        app = _desktop_app_stub()
+        app._cached_health_status = None
+        app._cached_readiness_status = None
+        created_threads = []
+
+        class FakeThread:
+            def __init__(self, *args, **kwargs):
+                self.target = kwargs["target"]
+                created_threads.append(self)
+
+            def start(self):
+                pass
+
+        with patch.object(yarbis_desktop.threading, "Thread", FakeThread):
+            self.assertTrue(yarbis_desktop.YarbisDesktop._request_status_refresh(app, force=True))
+            self.assertFalse(yarbis_desktop.YarbisDesktop._request_status_refresh(app, force=True))
+
+        self.assertEqual(len(created_threads), 1)
+        self.assertTrue(app._status_refresh_in_flight)
+        self.assertTrue(app._status_refresh_pending_force)
+
+    def test_apply_status_snapshot_updates_cache_and_refreshes_view(self):
+        app = _desktop_app_stub()
+        refreshed = []
+        activities = []
+        app.refresh_state_view = lambda force_heavy=True: refreshed.append(force_heavy)
+        app._append_activity = lambda title, body: activities.append((title, body))
+        snapshot = {
+            "health": {"service": _service_status(installed=True, running=True)},
+            "readiness": {"items": []},
+            "context_helper": {"state": "activo"},
+            "events": [("Contexto local", "Helper iniciado.")],
+        }
+
+        yarbis_desktop.YarbisDesktop._apply_status_snapshot(app, snapshot)
+
+        self.assertTrue(app._cached_health_status["service"]["running"])
+        self.assertEqual(app._cached_context_helper_status["state"], "activo")
+        self.assertEqual(activities, [("Contexto local", "Helper iniciado.")])
+        self.assertEqual(refreshed, [False])
+
+    def test_service_toggle_uses_cached_status_and_background_job(self):
+        app = _desktop_app_stub(_service_status(installed=True, running=True))
+        started = []
+        app._start_background_job = lambda *args: started.append(args)
+
+        with patch.object(yarbis_desktop, "get_service_status", side_effect=AssertionError("bloqueante")):
+            yarbis_desktop.YarbisDesktop._toggle_service(app)
+
+        self.assertEqual(started[0][0], "Servicio")
+        self.assertIs(started[0][1], yarbis_desktop.stop_service)
+
+    def test_service_autostart_runs_as_background_job(self):
+        app = _desktop_app_stub(_service_status(installed=True, running=False))
+        app.service_autostart_var.set(True)
+        started = []
+        app._start_background_job = lambda *args: started.append(args)
+
+        with patch.object(yarbis_desktop, "get_service_status", side_effect=AssertionError("bloqueante")):
+            yarbis_desktop.YarbisDesktop._toggle_service_autostart(app)
+
+        self.assertEqual(started[0][0], "Servicio")
+        self.assertIs(started[0][1], yarbis_desktop.set_autostart_enabled)
+        self.assertTrue(started[0][2])
 
 
 if __name__ == "__main__":

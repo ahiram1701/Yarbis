@@ -686,9 +686,11 @@ class SessionTestCase(unittest.TestCase):
         with patch.object(memory, "STATE_FILE", state_path):
             with patch.object(memory, "STATE_LOCK_FILE", lock_path):
                 memory.save_state(seeded_state)
+                self.assertTrue(memory.wait_for_memory_protection_maintenance(timeout_seconds=10))
                 initial_count = len(list(backups_dir.glob("*.json")))
                 with patch.object(session, "cancel_active_ollama_request", return_value=True):
                     session.request_stop_current_operation(source="telegram")
+                self.assertTrue(memory.wait_for_memory_protection_maintenance(timeout_seconds=10))
                 after_count = len(list(backups_dir.glob("*.json")))
 
         self.assertEqual(after_count, initial_count)

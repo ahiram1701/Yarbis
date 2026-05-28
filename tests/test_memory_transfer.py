@@ -213,6 +213,7 @@ class MemoryTransferTestCase(unittest.TestCase):
         with patch.object(memory, "STATE_FILE", state_path):
             with patch.object(memory_transfer, "BACKUPS_DIR", backups_dir):
                 memory.save_state(self._seeded_state("Destino"))
+                self.assertTrue(memory.wait_for_memory_protection_maintenance(timeout_seconds=2))
                 before = memory.load_state()
                 with self.assertRaises(memory_transfer.MemoryTransferError):
                     memory_transfer.import_backup(str(invalid_path), mode="replace")

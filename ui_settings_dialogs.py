@@ -1025,11 +1025,18 @@ class MemoryProtectionDialog(ThemedDialog):
 
 
 class VoiceSettingsDialog(ThemedDialog):
-    def __init__(self, parent, initial_settings: dict, voices: list[dict] | None = None):
+    def __init__(
+        self,
+        parent,
+        initial_settings: dict,
+        voices: list[dict] | None = None,
+        prefer_kokoro: bool = False,
+    ):
         self.initial_settings = initial_settings if isinstance(initial_settings, dict) else {}
         self.voices = voices if isinstance(voices, list) else []
+        self.prefer_kokoro = bool(prefer_kokoro)
         self._system_label_to_id = {}
-        self._piper_label_to_id = {}
+        self._kokoro_label_to_id = {}
         super().__init__(parent, "Voz")
 
     def body(self, master):
@@ -1038,9 +1045,9 @@ class VoiceSettingsDialog(ThemedDialog):
         master.columnconfigure(1, weight=1)
 
         self.enabled_var = tk.BooleanVar(value=bool(self.initial_settings.get("enabled", True)))
-        self.provider_var = tk.StringVar(value=str(self.initial_settings.get("tts_provider", "system") or "system"))
+        provider_value = "kokoro" if self.prefer_kokoro else str(self.initial_settings.get("tts_provider", "system") or "system")
+        self.provider_var = tk.StringVar(value=provider_value)
         self.rate_var = tk.StringVar(value=str(self.initial_settings.get("tts_rate", DEFAULT_VOICE_TTS_RATE)))
-        self.piper_speaker_var = tk.StringVar(value=str(self.initial_settings.get("piper_speaker_id", 0)))
         self.telegram_mode_var = tk.StringVar(
             value=str(self.initial_settings.get("telegram_reply_mode", "auto") or "auto")
         )
@@ -1055,7 +1062,7 @@ class VoiceSettingsDialog(ThemedDialog):
         self.provider_combo = ttk.Combobox(
             master,
             textvariable=self.provider_var,
-            values=("system", "piper"),
+            values=("system", "kokoro"),
             state="readonly",
             width=16,
         )
@@ -1083,25 +1090,26 @@ class VoiceSettingsDialog(ThemedDialog):
         self.voice_combo.grid(row=2, column=1, sticky="ew", padx=6)
         self.voice_combo.set(selected_system_label)
 
-        ttk.Label(master, text="Voz Piper").grid(row=3, column=0, columnspan=2, sticky="w", padx=6, pady=(10, 2))
-        piper_values = ["sin elegir"]
-        self._piper_label_to_id = {"sin elegir": ""}
-        current_piper_id = str(self.initial_settings.get("piper_voice_id", "")).strip()
-        selected_piper_label = "sin elegir"
+        ttk.Label(master, text="Voz Kokoro").grid(row=3, column=0, columnspan=2, sticky="w", padx=6, pady=(10, 2))
+        kokoro_values = ["sin elegir"]
+        self._kokoro_label_to_id = {"sin elegir": ""}
+        current_kokoro_id = str(self.initial_settings.get("kokoro_voice_id", "")).strip()
+        selected_kokoro_label = "sin elegir"
         for item in self.voices:
-            if str(item.get("provider", "")) != "piper":
+            if str(item.get("provider", "")) != "kokoro":
                 continue
             voice_id = str(item.get("id", "")).strip()
-            status = "instalada" if item.get("installed") else "descargable"
-            label = f"{item.get('index', len(piper_values))}. {item.get('name', voice_id or 'Piper')} - {status}"
-            self._piper_label_to_id[label] = voice_id
-            piper_values.append(label)
-            if voice_id and voice_id == current_piper_id:
-                selected_piper_label = label
+            label = f"{item.get('index', len(kokoro_values))}. {item.get('name', voice_id or 'Kokoro')}"
+            self._kokoro_label_to_id[label] = voice_id
+            kokoro_values.append(label)
+            if voice_id and voice_id == current_kokoro_id:
+                selected_kokoro_label = label
+            elif self.prefer_kokoro and selected_kokoro_label == "sin elegir":
+                selected_kokoro_label = label
 
-        self.piper_combo = ttk.Combobox(master, values=piper_values, state="readonly", width=56)
-        self.piper_combo.grid(row=4, column=0, columnspan=2, sticky="ew", padx=6)
-        self.piper_combo.set(selected_piper_label)
+        self.kokoro_combo = ttk.Combobox(master, values=kokoro_values, state="readonly", width=56)
+        self.kokoro_combo.grid(row=4, column=0, columnspan=2, sticky="ew", padx=6)
+        self.kokoro_combo.set(selected_kokoro_label)
 
         ttk.Label(master, text="Velocidad").grid(row=5, column=0, sticky="w", padx=6, pady=(10, 2))
         self.rate_spin = ttk.Spinbox(
@@ -1114,18 +1122,6 @@ class VoiceSettingsDialog(ThemedDialog):
             style="Yarbis.TSpinbox",
         )
         self.rate_spin.grid(row=6, column=0, sticky="w", padx=6)
-
-        ttk.Label(master, text="Speaker Piper").grid(row=5, column=1, sticky="w", padx=6, pady=(10, 2))
-        self.piper_speaker_spin = ttk.Spinbox(
-            master,
-            from_=0,
-            to=9999,
-            increment=1,
-            width=10,
-            textvariable=self.piper_speaker_var,
-            style="Yarbis.TSpinbox",
-        )
-        self.piper_speaker_spin.grid(row=6, column=1, sticky="w", padx=6)
 
         ttk.Label(master, text="Respuesta hablada en Telegram").grid(
             row=7,
@@ -1164,25 +1160,20 @@ class VoiceSettingsDialog(ThemedDialog):
                 parent=self,
             )
             return False
-        try:
-            speaker_id = int(self.piper_speaker_var.get())
-        except (TypeError, ValueError):
-            messagebox.showwarning("Yarbis", "El speaker Piper debe ser numerico.", parent=self)
-            return False
-        if speaker_id < 0:
-            messagebox.showwarning("Yarbis", "El speaker Piper no puede ser negativo.", parent=self)
+        kokoro_label = self.kokoro_combo.get().strip() or "sin elegir"
+        if self.provider_var.get().strip() == "kokoro" and not self._kokoro_label_to_id.get(kokoro_label, ""):
+            messagebox.showwarning("Yarbis", "Elige una voz Kokoro.", parent=self)
             return False
         return True
 
     def apply(self):
         system_label = self.voice_combo.get().strip() or "predeterminada"
-        piper_label = self.piper_combo.get().strip() or "sin elegir"
+        kokoro_label = self.kokoro_combo.get().strip() or "sin elegir"
         self.result = {
             "enabled": self.enabled_var.get(),
             "tts_provider": self.provider_var.get().strip() or "system",
             "tts_voice_id": self._system_label_to_id.get(system_label, ""),
-            "piper_voice_id": self._piper_label_to_id.get(piper_label, ""),
-            "piper_speaker_id": self.piper_speaker_var.get().strip(),
+            "kokoro_voice_id": self._kokoro_label_to_id.get(kokoro_label, ""),
             "tts_rate": self.rate_var.get().strip(),
             "telegram_reply_mode": self.telegram_mode_var.get().strip() or "auto",
         }

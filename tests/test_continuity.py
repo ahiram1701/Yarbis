@@ -13,6 +13,8 @@ TEST_RUNTIME_DIR = Path.cwd() / "tests_runtime"
 class SharedMemoryContinuityTestCase(unittest.TestCase):
     def test_interface_telegram_and_proactive_pulse_share_memory(self):
         state_path = TEST_RUNTIME_DIR / "shared_memory_channels_state.json"
+        state_lock_path = TEST_RUNTIME_DIR / "shared_memory_channels_state.lock"
+        operation_lock_path = TEST_RUNTIME_DIR / "shared_memory_channels_session.lock"
         state_path.parent.mkdir(parents=True, exist_ok=True)
 
         seeded_state = memory.normalize_state({
@@ -43,29 +45,31 @@ class SharedMemoryContinuityTestCase(unittest.TestCase):
         }
 
         with patch.object(memory, "STATE_FILE", state_path):
-            memory.save_state(seeded_state)
-            session.update_profile_text(
-                name="Ahiram",
-                preferences="local first",
-                constraints="mantener contexto compartido",
-            )
+            with patch.object(memory, "STATE_LOCK_FILE", state_lock_path):
+                with patch.object(session, "OPERATION_LOCK_FILE", operation_lock_path):
+                    memory.save_state(seeded_state)
+                    session.update_profile_text(
+                        name="Ahiram",
+                        preferences="local first",
+                        constraints="mantener contexto compartido",
+                    )
 
-            with patch.object(telegram_inbox, "send_telegram_message", return_value=True):
-                telegram_inbox.process_telegram_update(telegram_update)
+                    with patch.object(telegram_inbox, "send_telegram_message", return_value=True):
+                        telegram_inbox.process_telegram_update(telegram_update)
 
-            with patch.dict(yarbis_service.os.environ, {}, clear=True):
-                with patch.object(
-                    yarbis_service,
-                    "run_auto_with_output",
-                    return_value="Modo autonomo ejecutado por 1 ciclo(s).",
-                ) as auto_mock:
-                    with patch.object(yarbis_service, "send_telegram_message", return_value=True):
-                        result = yarbis_service._run_proactive_pulse_inline(
-                            {"cycles": 1},
-                            "2026-05-06T12:00:00+00:00",
-                        )
+                    with patch.dict(yarbis_service.os.environ, {}, clear=True):
+                        with patch.object(
+                            yarbis_service,
+                            "run_auto_with_output",
+                            return_value="Modo autonomo ejecutado por 1 ciclo(s).",
+                        ) as auto_mock:
+                            with patch.object(yarbis_service, "send_telegram_message", return_value=True):
+                                result = yarbis_service._run_proactive_pulse_inline(
+                                    {"cycles": 1},
+                                    "2026-05-06T12:00:00+00:00",
+                                )
 
-            state = memory.load_state()
+                    state = memory.load_state()
 
         self.assertIn("Modo autonomo ejecutado", result)
         auto_mock.assert_called_once_with(cycles=1, emit_notifications=False)

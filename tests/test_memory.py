@@ -164,6 +164,7 @@ class MemoryTestCase(unittest.TestCase):
         with patch.object(memory, "STATE_FILE", state_path):
             with patch.object(memory, "STATE_LOCK_FILE", lock_path):
                 memory.save_state(memory.default_state())
+                self.assertTrue(memory.wait_for_memory_protection_maintenance(timeout_seconds=2))
                 initial_count = len(list(backups_dir.glob("*.json")))
 
                 def mark_thinking(state):
@@ -182,6 +183,7 @@ class MemoryTestCase(unittest.TestCase):
                         "category": "general",
                     }),
                 )
+                self.assertTrue(memory.wait_for_memory_protection_maintenance(timeout_seconds=2))
                 after_durable_count = len(list(backups_dir.glob("*.json")))
 
         self.assertEqual(after_volatile_count, initial_count)
@@ -311,6 +313,34 @@ class MemoryTestCase(unittest.TestCase):
 
         self.assertEqual(state["goal"], "memoria sin bloqueo")
 
+    def test_auto_backup_write_runs_without_holding_state_lock(self):
+        base, state_path, lock_path = self._memory_protection_paths("async-backup-write")
+        backup_started = threading.Event()
+        release_backup = threading.Event()
+        original_write_backup = memory.memory_backup.write_backup_package
+
+        seeded_state = memory.normalize_state({
+            "goal": "backup en segundo plano",
+        })
+
+        def slow_backup(*args, **kwargs):
+            backup_started.set()
+            release_backup.wait(timeout=2)
+            return original_write_backup(*args, **kwargs)
+
+        with patch.object(memory, "STATE_FILE", state_path):
+            with patch.object(memory, "STATE_LOCK_FILE", lock_path):
+                self.assertTrue(memory.wait_for_memory_protection_maintenance(timeout_seconds=2))
+                with patch.object(memory.memory_backup, "write_backup_package", side_effect=slow_backup):
+                    memory.save_state(seeded_state)
+                    self.assertTrue(backup_started.wait(timeout=2))
+                    state = memory.load_state()
+                    release_backup.set()
+                    self.assertTrue(memory.wait_for_memory_protection_maintenance(timeout_seconds=2))
+
+        self.assertEqual(state["goal"], "backup en segundo plano")
+        self.assertEqual(len(list((base / ".yarbis_memory_backups").glob("*.json"))), 1)
+
     def test_load_state_restores_corrupt_state_from_local_backup(self):
         base, state_path, lock_path = self._memory_protection_paths("restore-local")
         seeded_state = memory.normalize_state({"goal": "restaurar local"})
@@ -318,6 +348,7 @@ class MemoryTestCase(unittest.TestCase):
         with patch.object(memory, "STATE_FILE", state_path):
             with patch.object(memory, "STATE_LOCK_FILE", lock_path):
                 memory.save_state(seeded_state)
+                self.assertTrue(memory.wait_for_memory_protection_maintenance(timeout_seconds=2))
                 state_path.write_text("{", encoding="utf-8")
                 restored = memory.load_state()
 
@@ -786,10 +817,8 @@ class MemoryTestCase(unittest.TestCase):
                 "max_audio_seconds": 9999,
                 "tts_rate": 5,
                 "tts_voice_id": "voice-1",
-                "tts_provider": "invalid",
-                "piper_voice_id": "es_MX-claude-high" * 20,
-                "piper_speaker_id": -4,
-                "piper_catalog_updated_at": "2026-05-26T00:00:00+00:00" * 10,
+                "tts_provider": "piper",
+                "kokoro_voice_id": "em_alex",
                 "browser_voice_name": "Samantha" * 50,
                 "browser_tts_rate": 9,
                 "browser_tts_pitch": -4,
@@ -806,10 +835,8 @@ class MemoryTestCase(unittest.TestCase):
         self.assertEqual(settings["max_audio_seconds"], memory.MAX_VOICE_MAX_AUDIO_SECONDS)
         self.assertEqual(settings["tts_rate"], memory.MIN_VOICE_TTS_RATE)
         self.assertEqual(settings["tts_voice_id"], "voice-1")
-        self.assertEqual(settings["tts_provider"], memory.DEFAULT_VOICE_TTS_PROVIDER)
-        self.assertEqual(len(settings["piper_voice_id"]), memory.MAX_VOICE_PIPER_VOICE_ID_CHARS)
-        self.assertEqual(settings["piper_speaker_id"], 0)
-        self.assertEqual(len(settings["piper_catalog_updated_at"]), memory.MAX_VOICE_PIPER_CATALOG_TIMESTAMP_CHARS)
+        self.assertEqual(settings["tts_provider"], "kokoro")
+        self.assertEqual(settings["kokoro_voice_id"], "em_alex")
         self.assertEqual(len(settings["browser_voice_name"]), memory.MAX_VOICE_BROWSER_VOICE_NAME_CHARS)
         self.assertEqual(settings["browser_tts_rate"], memory.MAX_VOICE_BROWSER_TTS_RATE)
         self.assertEqual(settings["browser_tts_pitch"], memory.MIN_VOICE_BROWSER_TTS_PITCH)

@@ -317,14 +317,14 @@ class YarbisMobileTestCase(unittest.TestCase):
                 with patch.object(
                     yarbis_mobile.yarbis_voice,
                     "list_tts_voices",
-                    return_value=[{"index": 2, "id": "es_MX-claude-high", "provider": "piper"}],
+                    return_value=[{"index": 2, "id": "ef_dora", "provider": "kokoro"}],
                 ) as voices_mock:
                     conn.request("GET", "/api/voice/voices?catalog=1&refresh=1", headers={"Cookie": cookie})
                     response = conn.getresponse()
                     payload = json.loads(response.read().decode("utf-8"))
 
                 self.assertEqual(response.status, 200)
-                self.assertEqual(payload["voices"][0]["provider"], "piper")
+                self.assertEqual(payload["voices"][0]["provider"], "kokoro")
                 self.assertTrue(voices_mock.call_args.kwargs["include_downloadable"])
                 self.assertTrue(voices_mock.call_args.kwargs["refresh_catalog"])
 
@@ -345,6 +345,7 @@ class YarbisMobileTestCase(unittest.TestCase):
                 self.assertEqual(base64.b64decode(speak_payload["audio_b64"]), b"ogg")
                 self.assertEqual(speak_payload["mime_type"], "audio/ogg")
                 cleanup_mock.assert_called_once_with(audio_path)
+
             finally:
                 server.shutdown()
                 server.server_close()
@@ -376,27 +377,24 @@ class YarbisMobileTestCase(unittest.TestCase):
         self.assertEqual(state["voice"]["browser_tts_pitch"], 0.8)
         self.assertEqual(state["voice"]["telegram_reply_mode"], "always")
 
-    def test_mobile_voice_settings_action_updates_piper_state(self):
-        state_path = TEST_RUNTIME_DIR / "mobile_voice_piper_settings_state.json"
+    def test_mobile_voice_settings_action_updates_kokoro_state(self):
+        state_path = TEST_RUNTIME_DIR / "mobile_voice_kokoro_settings_state.json"
         state_path.parent.mkdir(parents=True, exist_ok=True)
 
         with patch.object(memory, "STATE_FILE", state_path):
             memory.save_state(memory.default_state())
-            with patch.object(yarbis_mobile.yarbis_voice, "download_piper_voice", return_value={"id": "es_MX-claude-high"}):
-                result = yarbis_mobile._execute_action("voice_settings", {
-                    "enabled": True,
-                    "tts_provider": "piper",
-                    "piper_voice_id": "es_MX-claude-high",
-                    "piper_speaker_id": 2,
-                    "tts_rate": 200,
-                    "telegram_reply_mode": "auto",
-                })
+            result = yarbis_mobile._execute_action("voice_settings", {
+                "enabled": True,
+                "tts_provider": "kokoro",
+                "kokoro_voice_id": "em_alex",
+                "tts_rate": 200,
+                "telegram_reply_mode": "auto",
+            })
             state = memory.load_state()
 
         self.assertIn("Voz actualizada", result["result"])
-        self.assertEqual(state["voice"]["tts_provider"], "piper")
-        self.assertEqual(state["voice"]["piper_voice_id"], "es_MX-claude-high")
-        self.assertEqual(state["voice"]["piper_speaker_id"], 2)
+        self.assertEqual(state["voice"]["tts_provider"], "kokoro")
+        self.assertEqual(state["voice"]["kokoro_voice_id"], "em_alex")
 
     def test_public_state_default_is_lightweight_and_loads_state_once(self):
         seeded_state = memory.default_state()
@@ -502,8 +500,11 @@ class YarbisMobileTestCase(unittest.TestCase):
         self.assertIn("Detener habla", html)
         self.assertIn("speechSynthesis.cancel", html)
         self.assertIn("/api/voice/speak", html)
-        self.assertIn("Actualizar catalogo", html)
+        self.assertIn("Catalogo Kokoro", html)
+        self.assertIn("Kokoro local", html)
+        self.assertIn("Usar seleccionada", html)
         self.assertIn("Probar voz", html)
+        self.assertIn("kokoroVoiceFilter", html)
         self.assertIn("Guardar validacion", html)
         self.assertIn("coding_validate", html)
 
@@ -563,21 +564,31 @@ class YarbisMobileTestCase(unittest.TestCase):
     def test_voice_settings_dialog_apply_preserves_provider_choices(self):
         dialog = object.__new__(VoiceSettingsDialog)
         dialog.enabled_var = SimpleNamespace(get=lambda: True)
-        dialog.provider_var = SimpleNamespace(get=lambda: "piper")
+        dialog.provider_var = SimpleNamespace(get=lambda: "kokoro")
         dialog.voice_combo = SimpleNamespace(get=lambda: "Sistema Uno")
-        dialog.piper_combo = SimpleNamespace(get=lambda: "Piper Uno")
-        dialog.piper_speaker_var = SimpleNamespace(get=lambda: "3")
+        dialog.kokoro_combo = SimpleNamespace(get=lambda: "Kokoro Uno")
         dialog.rate_var = SimpleNamespace(get=lambda: "195")
         dialog.telegram_mode_var = SimpleNamespace(get=lambda: "always")
         dialog._system_label_to_id = {"Sistema Uno": "system-voice"}
-        dialog._piper_label_to_id = {"Piper Uno": "es_MX-claude-high"}
+        dialog._kokoro_label_to_id = {"Kokoro Uno": "em_alex"}
 
         VoiceSettingsDialog.apply(dialog)
 
-        self.assertEqual(dialog.result["tts_provider"], "piper")
+        self.assertEqual(dialog.result["tts_provider"], "kokoro")
         self.assertEqual(dialog.result["tts_voice_id"], "system-voice")
-        self.assertEqual(dialog.result["piper_voice_id"], "es_MX-claude-high")
-        self.assertEqual(dialog.result["piper_speaker_id"], "3")
+        self.assertEqual(dialog.result["kokoro_voice_id"], "em_alex")
+
+    def test_voice_settings_dialog_requires_kokoro_voice_for_kokoro_provider(self):
+        dialog = object.__new__(VoiceSettingsDialog)
+        dialog.provider_var = SimpleNamespace(get=lambda: "kokoro")
+        dialog.kokoro_combo = SimpleNamespace(get=lambda: "sin elegir")
+        dialog.rate_var = SimpleNamespace(get=lambda: "175")
+        dialog._kokoro_label_to_id = {"sin elegir": ""}
+
+        with patch("ui_settings_dialogs.messagebox.showwarning") as warning_mock:
+            self.assertFalse(VoiceSettingsDialog.validate(dialog))
+
+        warning_mock.assert_called_once()
 
 
 if __name__ == "__main__":

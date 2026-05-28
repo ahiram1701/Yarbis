@@ -304,8 +304,8 @@ class TelegramInboxTestCase(unittest.TestCase):
         self.assertEqual(state["voice"]["tts_rate"], 190)
         self.assertEqual(state["voice"]["telegram_reply_mode"], "off")
 
-    def test_telegram_voice_piper_catalog_provider_download_and_select(self):
-        state_path = TEST_RUNTIME_DIR / "telegram_voice_piper_commands_state.json"
+    def test_telegram_voice_kokoro_catalog_provider_and_select(self):
+        state_path = TEST_RUNTIME_DIR / "telegram_voice_kokoro_commands_state.json"
         state_path.parent.mkdir(parents=True, exist_ok=True)
 
         seeded_state = memory.normalize_state({
@@ -321,40 +321,32 @@ class TelegramInboxTestCase(unittest.TestCase):
 
         updates = [
             {"update_id": 213, "message": {"chat": {"id": 123, "type": "private"}, "text": "/voz catalogo es"}},
-            {"update_id": 214, "message": {"chat": {"id": 123, "type": "private"}, "text": "/voz proveedor piper"}},
-            {"update_id": 215, "message": {"chat": {"id": 123, "type": "private"}, "text": "/voz descargar es_MX-claude-high"}},
-            {"update_id": 216, "message": {"chat": {"id": 123, "type": "private"}, "text": "/voz usar es_MX-claude-high"}},
+            {"update_id": 214, "message": {"chat": {"id": 123, "type": "private"}, "text": "/voz proveedor kokoro"}},
+            {"update_id": 215, "message": {"chat": {"id": 123, "type": "private"}, "text": "/voz usar em_alex"}},
         ]
 
         with patch.object(memory, "STATE_FILE", state_path):
             memory.save_state(seeded_state)
-            with patch.object(telegram_inbox.yarbis_voice, "piper_catalog_text", return_value="Catalogo Piper"):
+            with patch.object(telegram_inbox.yarbis_voice, "kokoro_catalog_text", return_value="Catalogo Kokoro"):
                 with patch.object(
                     telegram_inbox.yarbis_voice,
-                    "download_piper_voice",
-                    return_value={"id": "es_MX-claude-high", "name": "es_MX claude high"},
-                ) as download_mock:
-                    with patch.object(
-                        telegram_inbox.yarbis_voice,
-                        "find_tts_voice",
-                        return_value={
-                            "provider": "piper",
-                            "id": "es_MX-claude-high",
-                            "name": "es_MX claude high",
-                            "installed": False,
-                        },
-                    ):
-                        with patch.object(telegram_inbox, "send_telegram_message", return_value=True) as send_mock:
-                            for update in updates:
-                                telegram_inbox.process_telegram_update(update)
+                    "find_tts_voice",
+                    return_value={
+                        "provider": "kokoro",
+                        "id": "em_alex",
+                        "name": "Alex",
+                        "installed": True,
+                    },
+                ):
+                    with patch.object(telegram_inbox, "send_telegram_message", return_value=True) as send_mock:
+                        for update in updates:
+                            telegram_inbox.process_telegram_update(update)
             state = memory.load_state()
 
         sent_text = "\n".join(call.args[0] for call in send_mock.call_args_list)
-        self.assertIn("Catalogo Piper", sent_text)
-        self.assertIn("Voz Piper descargada", sent_text)
-        self.assertEqual(download_mock.call_count, 2)
-        self.assertEqual(state["voice"]["tts_provider"], "piper")
-        self.assertEqual(state["voice"]["piper_voice_id"], "es_MX-claude-high")
+        self.assertIn("Catalogo Kokoro", sent_text)
+        self.assertEqual(state["voice"]["tts_provider"], "kokoro")
+        self.assertEqual(state["voice"]["kokoro_voice_id"], "em_alex")
 
     def test_process_telegram_update_stops_current_operation(self):
         state_path = TEST_RUNTIME_DIR / "telegram_stop_state.json"

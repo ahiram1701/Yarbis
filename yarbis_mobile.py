@@ -1204,16 +1204,12 @@ def _execute_action(action: str, payload: dict | None = None) -> dict:
         )}
     if action == "voice_settings":
         tts_provider = _payload_text(payload, "tts_provider", "system") or "system"
-        piper_voice_id = _payload_text(payload, "piper_voice_id")
-        if tts_provider == "piper" and piper_voice_id:
-            yarbis_voice.download_piper_voice(piper_voice_id)
         return {"result": yarbis_voice.update_voice_settings_text(
             enabled=bool(payload.get("enabled", True)),
             tts_provider=tts_provider,
             tts_voice_id=_payload_text(payload, "tts_voice_id"),
             tts_rate=payload.get("tts_rate"),
-            piper_voice_id=piper_voice_id,
-            piper_speaker_id=payload.get("piper_speaker_id"),
+            kokoro_voice_id=_payload_text(payload, "kokoro_voice_id"),
             browser_voice_name=_payload_text(payload, "browser_voice_name"),
             browser_tts_rate=payload.get("browser_tts_rate"),
             browser_tts_pitch=payload.get("browser_tts_pitch"),
@@ -1576,6 +1572,7 @@ let localTtsVoices = [];
 let browserVoices = [];
 let voiceOptionsLoaded = false;
 let localSpeechAudio = null;
+let kokoroVoiceFilter = "";
 const $ = (id) => document.getElementById(id);
 
 function escapeHtml(value) {
@@ -1606,7 +1603,7 @@ async function speakText(text) {
     return;
   }
   const voiceSettings = (appState && appState.voice) || {};
-  if (voiceSettings.tts_provider === "piper") {
+  if (voiceSettings.tts_provider === "kokoro") {
     try {
       stopSpeech(false);
       toast("Generando voz local...");
@@ -1780,6 +1777,40 @@ async function loadVoiceOptions(force = false, includeCatalog = false, refreshCa
   } catch (error) {
     toast(error.message);
   }
+}
+
+function selectedKokoroVoiceId() {
+  const selected = $("kokoroVoiceId") ? $("kokoroVoiceId").value : "";
+  if (selected) return selected;
+  const candidates = localTtsVoices.filter(item => item.provider === "kokoro");
+  const filtered = candidates.filter(item => {
+    const needle = kokoroVoiceFilter.trim().toLowerCase();
+    if (!needle) return true;
+    return `${item.id || ""} ${item.name || ""} ${(item.languages || []).join(" ")}`.toLowerCase().includes(needle);
+  });
+  const first = (filtered[0] || candidates[0] || {});
+  return first.id || "";
+}
+
+async function saveVoiceSettings(providerOverride = null, kokoroVoiceOverride = null) {
+  const provider = providerOverride || $("voiceProvider").value;
+  const kokoroVoiceId = kokoroVoiceOverride || $("kokoroVoiceId").value;
+  window.localStorage.setItem("yarbis_browser_voice_name", $("browserVoiceName").value);
+  window.localStorage.setItem("yarbis_browser_tts_rate", $("browserTtsRate").value);
+  window.localStorage.setItem("yarbis_browser_tts_pitch", $("browserTtsPitch").value);
+  const data = await action("voice_settings", {
+    enabled: $("voiceEnabled").checked,
+    tts_provider: provider,
+    tts_voice_id: $("ttsVoiceId").value,
+    tts_rate: $("ttsRate").value,
+    kokoro_voice_id: kokoroVoiceId,
+    browser_voice_name: $("browserVoiceName").value,
+    browser_tts_rate: $("browserTtsRate").value,
+    browser_tts_pitch: $("browserTtsPitch").value,
+    telegram_reply_mode: $("telegramVoiceMode").value
+  });
+  voiceOptionsLoaded = false;
+  return data;
 }
 
 async function api(path, options = {}) {
@@ -2077,9 +2108,12 @@ function renderSettings() {
     const label = `${item.index}. ${item.name}${item.languages && item.languages.length ? " - " + item.languages.join(", ") : ""}`;
     return `<option value="${escapeHtml(item.id || "")}">${escapeHtml(label)}</option>`;
   }).join("");
-  const piperVoiceOptions = localTtsVoices.filter(item => item.provider === "piper").map(item => {
-    const status = item.installed ? "instalada" : "descargable";
-    const label = `${item.index}. ${item.name} - ${status}`;
+  const kokoroNeedle = kokoroVoiceFilter.trim().toLowerCase();
+  const kokoroVoiceOptions = localTtsVoices.filter(item => item.provider === "kokoro").filter(item => {
+    if (!kokoroNeedle) return true;
+    return `${item.id || ""} ${item.name || ""} ${(item.languages || []).join(" ")}`.toLowerCase().includes(kokoroNeedle);
+  }).map(item => {
+    const label = `${item.index}. ${item.name}`;
     return `<option value="${escapeHtml(item.id || "")}">${escapeHtml(label)}</option>`;
   }).join("");
   const browserVoiceOptions = browserVoices.map(item => (
@@ -2113,16 +2147,17 @@ function renderSettings() {
       <h2>Voz</h2>
       <div class="form-grid wide">
         <label><input id="voiceEnabled" type="checkbox" ${voice.enabled === false ? "" : "checked"}> Activa</label>
-        <div><label>Motor TTS</label><select id="voiceProvider"><option value="system">Sistema</option><option value="piper">Piper local</option></select></div>
+        <div><label>Motor TTS</label><select id="voiceProvider"><option value="system">Sistema</option><option value="kokoro">Kokoro local</option></select></div>
         <div><label>Voz sistema/Telegram</label><select id="ttsVoiceId"><option value="">predeterminada</option>${systemVoiceOptions}</select></div>
-        <div><label>Voz Piper</label><select id="piperVoiceId"><option value="">elige voz Piper</option>${piperVoiceOptions}</select></div>
-        <div><label>Speaker Piper</label><input id="piperSpeakerId" type="number" min="0" value="${escapeHtml(voice.piper_speaker_id || 0)}"></div>
+        <div><label>Buscar Kokoro</label><input id="kokoroVoiceFilter" value="${escapeHtml(kokoroVoiceFilter)}" placeholder="es, dora, alex, english"></div>
+        <div><label>Voz Kokoro</label><select id="kokoroVoiceId"><option value="">elige voz Kokoro</option>${kokoroVoiceOptions}</select></div>
         <div><label>Velocidad sistema</label><input id="ttsRate" type="number" min="80" max="320" value="${escapeHtml(voice.tts_rate || 175)}"></div>
         <div><label>Voz navegador</label><select id="browserVoiceName"><option value="">predeterminada</option>${browserVoiceOptions}</select></div>
         <div><label>Velocidad navegador</label><input id="browserTtsRate" type="number" min="0.5" max="2" step="0.1" value="${escapeHtml(voice.browser_tts_rate || 1)}"></div>
         <div><label>Tono navegador</label><input id="browserTtsPitch" type="number" min="0" max="2" step="0.1" value="${escapeHtml(voice.browser_tts_pitch || 1)}"></div>
         <div><label>Telegram voz</label><select id="telegramVoiceMode"><option value="off">off</option><option value="auto">auto</option><option value="always">always</option></select></div>
-        <button data-action="refresh-voice-catalog">Actualizar catalogo</button>
+        <button data-action="refresh-voice-catalog">Catalogo Kokoro</button>
+        <button data-action="use-free-voice">Usar seleccionada</button>
         <button data-action="test-voice">Probar voz</button>
         <button data-action="save-voice">Guardar voz</button>
         <button data-action="stop-speaking">Detener habla</button>
@@ -2214,8 +2249,8 @@ function renderSettings() {
   if (ttsVoiceId) ttsVoiceId.value = voice.tts_voice_id || "";
   const voiceProvider = $("voiceProvider");
   if (voiceProvider) voiceProvider.value = voice.tts_provider || "system";
-  const piperVoiceId = $("piperVoiceId");
-  if (piperVoiceId) piperVoiceId.value = voice.piper_voice_id || "";
+  const kokoroVoiceId = $("kokoroVoiceId");
+  if (kokoroVoiceId) kokoroVoiceId.value = voice.kokoro_voice_id || "";
   const browserVoiceName = $("browserVoiceName");
   if (browserVoiceName) browserVoiceName.value = voice.browser_voice_name || window.localStorage.getItem("yarbis_browser_voice_name") || "";
   const telegramVoiceMode = $("telegramVoiceMode");
@@ -2333,28 +2368,24 @@ document.addEventListener("click", async (event) => {
     } else if (name === "save-mobile") {
       await action("mobile_ui", { enabled: $("mobileEnabled").checked, port: $("mobilePort").value, job_timeout_seconds: $("mobileJobTimeout").value, pin: $("mobilePin").value });
     } else if (name === "refresh-voice-catalog") {
-      toast("Actualizando catalogo de voces...");
+      toast("Cargando voces Kokoro...");
       await loadVoiceOptions(true, true, true);
-      toast("Catalogo actualizado");
+      toast("Voces Kokoro listas");
+    } else if (name === "use-free-voice") {
+      if (!localTtsVoices.some(item => item.provider === "kokoro")) {
+        toast("Cargando voces Kokoro...");
+        await loadVoiceOptions(true, true, true);
+      }
+      const kokoroVoiceId = selectedKokoroVoiceId();
+      if (!kokoroVoiceId) throw new Error("No encontre voces Kokoro.");
+      if ($("voiceProvider")) $("voiceProvider").value = "kokoro";
+      if ($("kokoroVoiceId")) $("kokoroVoiceId").value = kokoroVoiceId;
+      await saveVoiceSettings("kokoro", kokoroVoiceId);
+      await speakText("Hola, soy Yarbis con esta voz.");
     } else if (name === "test-voice") {
       await speakText("Hola, soy Yarbis probando esta voz local.");
     } else if (name === "save-voice") {
-      window.localStorage.setItem("yarbis_browser_voice_name", $("browserVoiceName").value);
-      window.localStorage.setItem("yarbis_browser_tts_rate", $("browserTtsRate").value);
-      window.localStorage.setItem("yarbis_browser_tts_pitch", $("browserTtsPitch").value);
-      await action("voice_settings", {
-        enabled: $("voiceEnabled").checked,
-        tts_provider: $("voiceProvider").value,
-        tts_voice_id: $("ttsVoiceId").value,
-        tts_rate: $("ttsRate").value,
-        piper_voice_id: $("piperVoiceId").value,
-        piper_speaker_id: $("piperSpeakerId").value,
-        browser_voice_name: $("browserVoiceName").value,
-        browser_tts_rate: $("browserTtsRate").value,
-        browser_tts_pitch: $("browserTtsPitch").value,
-        telegram_reply_mode: $("telegramVoiceMode").value
-      });
-      voiceOptionsLoaded = false;
+      await saveVoiceSettings();
     } else if (name === "save-pulse") {
       await action("service_proactive", {
         enabled: $("pulseEnabled").checked,
@@ -2423,6 +2454,11 @@ document.addEventListener("click", async (event) => {
 
 document.addEventListener("change", async (event) => {
   const input = event.target;
+  if (input && input.id === "kokoroVoiceFilter") {
+    kokoroVoiceFilter = input.value || "";
+    renderCurrent();
+    return;
+  }
   if (!input || input.id !== "voiceFileInput") return;
   const file = input.files && input.files[0];
   input.value = "";

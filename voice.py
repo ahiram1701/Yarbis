@@ -1,20 +1,16 @@
 import base64
 import contextlib
-import hashlib
-import json
-import os
 import tempfile
 import threading
 import time
-import urllib.request
 import wave
-from datetime import datetime, timezone
 from pathlib import Path
 
 from memory import (
     DEFAULT_VOICE_MAX_AUDIO_SECONDS,
     DEFAULT_VOICE_BROWSER_TTS_PITCH,
     DEFAULT_VOICE_BROWSER_TTS_RATE,
+    DEFAULT_VOICE_KOKORO_VOICE_ID,
     DEFAULT_VOICE_TELEGRAM_REPLY_MODE,
     DEFAULT_VOICE_TTS_RATE,
     DEFAULT_VOICE_TTS_PROVIDER,
@@ -33,15 +29,47 @@ from memory import (
 
 WORKSPACE_ROOT = Path(__file__).resolve().parent
 VOICE_RUNTIME_DIR = WORKSPACE_ROOT / ".yarbis_runtime" / "voice"
-PIPER_RUNTIME_DIR = VOICE_RUNTIME_DIR / "piper"
-PIPER_VOICES_DIR = PIPER_RUNTIME_DIR / "voices"
-PIPER_CATALOG_PATH = PIPER_RUNTIME_DIR / "voices.json"
-PIPER_CATALOG_URL = "https://huggingface.co/rhasspy/piper-voices/raw/main/voices.json"
-PIPER_DOWNLOAD_BASE_URL = "https://huggingface.co/rhasspy/piper-voices/resolve/main/"
+KOKORO_DOWNLOAD_PAGE_URL = "https://huggingface.co/hexgrad/Kokoro-82M"
+KOKORO_VOICES = (
+    ("ef_dora", "Dora - Espanol femenino", ("es",)),
+    ("em_alex", "Alex - Espanol masculino", ("es",)),
+    ("em_santa", "Santa - Espanol masculino", ("es",)),
+    ("af_heart", "Heart - Ingles US femenino", ("en-us",)),
+    ("af_bella", "Bella - Ingles US femenino", ("en-us",)),
+    ("af_nicole", "Nicole - Ingles US femenino", ("en-us",)),
+    ("am_michael", "Michael - Ingles US masculino", ("en-us",)),
+    ("bf_alice", "Alice - Ingles UK femenino", ("en-gb",)),
+    ("bm_george", "George - Ingles UK masculino", ("en-gb",)),
+    ("ff_siwis", "Siwis - Frances femenino", ("fr-fr",)),
+    ("pf_dora", "Dora - Portugues BR femenino", ("pt-br",)),
+    ("pm_alex", "Alex - Portugues BR masculino", ("pt-br",)),
+    ("if_sara", "Sara - Italiano femenino", ("it",)),
+    ("im_nicola", "Nicola - Italiano masculino", ("it",)),
+    ("jf_alpha", "Alpha - Japones femenino", ("ja",)),
+    ("jm_kumo", "Kumo - Japones masculino", ("ja",)),
+    ("zf_xiaoxiao", "Xiaoxiao - Mandarin femenino", ("cmn",)),
+    ("zm_yunxi", "Yunxi - Mandarin masculino", ("cmn",)),
+)
+KOKORO_LANG_BY_PREFIX = {
+    "af": "en-us",
+    "am": "en-us",
+    "bf": "en-gb",
+    "bm": "en-gb",
+    "ef": "es",
+    "em": "es",
+    "ff": "fr-fr",
+    "hf": "hi",
+    "hm": "hi",
+    "if": "it",
+    "im": "it",
+    "jf": "ja",
+    "jm": "ja",
+    "pf": "pt-br",
+    "pm": "pt-br",
+    "zf": "cmn",
+    "zm": "cmn",
+}
 MAX_VOICE_AUDIO_BYTES = 20 * 1024 * 1024
-MAX_PIPER_CATALOG_BYTES = 8 * 1024 * 1024
-MAX_PIPER_MODEL_BYTES = 512 * 1024 * 1024
-MAX_PIPER_CONFIG_BYTES = 4 * 1024 * 1024
 TELEGRAM_AUTO_VOICE_REPLY_MAX_CHARS = 800
 DEFAULT_TTS_VOLUME = 1.0
 DEFAULT_RECORD_SAMPLE_RATE = 16_000
@@ -50,8 +78,8 @@ _WHISPER_LOCK = threading.RLock()
 _WHISPER_MODELS = {}
 _TTS_LOCK = threading.RLock()
 _TTS_ENGINE = None
-_PIPER_LOCK = threading.RLock()
-_PIPER_VOICES = {}
+_KOKORO_LOCK = threading.RLock()
+_KOKORO_PIPELINES = {}
 
 
 class VoiceError(RuntimeError):
@@ -229,172 +257,52 @@ def _tts_engine(settings: dict):
     return engine
 
 
-def _utc_now_text() -> str:
-    return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+def _kokoro_voice_language(voice_id: str) -> str:
+    prefix = str(voice_id or "")[:2].lower()
+    return KOKORO_LANG_BY_PREFIX.get(prefix, "es")
 
 
-def _safe_piper_voice_id(value: str) -> str:
-    cleaned = str(value or "").strip()
-    if not cleaned or any(part in cleaned for part in ("..", "/", "\\")):
-        raise VoiceError("ID de voz Piper invalido.")
-    return cleaned
-
-
-def _piper_voice_dir(voice_id: str) -> Path:
-    return PIPER_VOICES_DIR / _safe_piper_voice_id(voice_id)
-
-
-def _load_json_file(path: Path) -> dict:
-    with path.open("r", encoding="utf-8") as file:
-        data = json.load(file)
-    return data if isinstance(data, dict) else {}
-
-
-def _download_to_file(url: str, target_path: Path, *, max_bytes: int, expected_md5: str = "") -> None:
-    target_path.parent.mkdir(parents=True, exist_ok=True)
-    temp_path = target_path.with_suffix(target_path.suffix + ".part")
-    if temp_path.exists():
-        temp_path.unlink()
-    digest = hashlib.md5() if expected_md5 else None
-    total = 0
-    try:
-        with urllib.request.urlopen(url, timeout=120) as response:
-            length = response.headers.get("Content-Length")
-            if length and int(length) > max_bytes:
-                raise VoiceError("La descarga de voz excede el limite permitido.")
-            with temp_path.open("wb") as file:
-                while True:
-                    chunk = response.read(1024 * 1024)
-                    if not chunk:
-                        break
-                    total += len(chunk)
-                    if total > max_bytes:
-                        raise VoiceError("La descarga de voz excede el limite permitido.")
-                    if digest is not None:
-                        digest.update(chunk)
-                    file.write(chunk)
-        if total <= 0:
-            raise VoiceError("La descarga de voz llego vacia.")
-        if digest is not None and digest.hexdigest().lower() != expected_md5.lower():
-            raise VoiceError("La descarga de voz no coincide con su checksum.")
-        os.replace(temp_path, target_path)
-    except Exception:
-        with contextlib.suppress(Exception):
-            temp_path.unlink()
-        raise
-
-
-def _download_piper_catalog() -> dict:
-    _download_to_file(
-        PIPER_CATALOG_URL,
-        PIPER_CATALOG_PATH,
-        max_bytes=MAX_PIPER_CATALOG_BYTES,
-    )
-    catalog = _load_json_file(PIPER_CATALOG_PATH)
-    timestamp = _utc_now_text()
-
-    def mutate(state):
-        voice = state.setdefault("voice", {})
-        voice["piper_catalog_updated_at"] = timestamp
-
-    state_transaction("update_piper_catalog_timestamp", mutate)
-    return catalog
-
-
-def _load_piper_catalog(*, refresh: bool = False, allow_download: bool = False) -> dict:
-    with _PIPER_LOCK:
-        if refresh or (allow_download and not PIPER_CATALOG_PATH.exists()):
-            return _download_piper_catalog()
-        if not PIPER_CATALOG_PATH.exists():
-            return {}
-        try:
-            return _load_json_file(PIPER_CATALOG_PATH)
-        except Exception as exc:
-            if allow_download:
-                return _download_piper_catalog()
-            raise VoiceError(f"No pude leer el catalogo Piper local: {exc}") from exc
-
-
-def refresh_piper_catalog() -> dict:
-    return _load_piper_catalog(refresh=True, allow_download=True)
-
-
-def _language_matches(entry: dict, language: str | None) -> bool:
+def _kokoro_language_matches(voice_id: str, language: str | None) -> bool:
     cleaned = str(language or "").strip().lower()
     if not cleaned or cleaned == "all":
         return True
-    info = entry.get("language", {}) if isinstance(entry.get("language"), dict) else {}
-    code = str(info.get("code", "")).strip().lower()
-    family = str(info.get("family", "")).strip().lower()
-    return cleaned in {code, family} or code.startswith(cleaned + "_")
+    voice_language = _kokoro_voice_language(voice_id)
+    return cleaned in {voice_language, voice_language.split("-", 1)[0]}
 
 
-def _piper_model_files(entry: dict) -> tuple[str, dict, str, dict]:
-    files = entry.get("files", {}) if isinstance(entry.get("files"), dict) else {}
-    model_path = ""
-    config_path = ""
-    for path in files:
-        if str(path).endswith(".onnx"):
-            model_path = str(path)
-        elif str(path).endswith(".onnx.json"):
-            config_path = str(path)
-    if not model_path or not config_path:
-        raise VoiceError("La voz Piper no tiene archivos .onnx completos.")
-    return model_path, files.get(model_path, {}), config_path, files.get(config_path, {})
+def _safe_kokoro_voice_id(value: str) -> str:
+    cleaned = str(value or "").strip()
+    known_ids = {voice_id for voice_id, _name, _languages in KOKORO_VOICES}
+    if not cleaned:
+        return DEFAULT_VOICE_KOKORO_VOICE_ID
+    if cleaned not in known_ids:
+        raise VoiceError("ID de voz Kokoro invalido.")
+    return cleaned
 
 
-def _piper_local_paths(voice_id: str, entry: dict | None = None) -> tuple[Path, Path]:
-    voice_dir = _piper_voice_dir(voice_id)
-    if entry:
-        model_path, _model_meta, config_path, _config_meta = _piper_model_files(entry)
-        return voice_dir / Path(model_path).name, voice_dir / Path(config_path).name
-    models = sorted(voice_dir.glob("*.onnx"))
-    configs = sorted(voice_dir.glob("*.onnx.json"))
-    if models and configs:
-        return models[0], configs[0]
-    return voice_dir / f"{voice_id}.onnx", voice_dir / f"{voice_id}.onnx.json"
-
-
-def _piper_voice_installed(voice_id: str, entry: dict | None = None) -> bool:
-    model_path, config_path = _piper_local_paths(voice_id, entry)
-    return model_path.exists() and config_path.exists() and model_path.stat().st_size > 0 and config_path.stat().st_size > 0
-
-
-def _installed_piper_voice_ids() -> set[str]:
-    if not PIPER_VOICES_DIR.exists():
-        return set()
-    return {
-        item.name
-        for item in PIPER_VOICES_DIR.iterdir()
-        if item.is_dir() and list(item.glob("*.onnx")) and list(item.glob("*.onnx.json"))
-    }
-
-
-def _piper_voice_label(entry: dict) -> str:
-    info = entry.get("language", {}) if isinstance(entry.get("language"), dict) else {}
-    language_code = str(info.get("code", "")).strip()
-    name = str(entry.get("name", "")).strip() or str(entry.get("key", "")).strip()
-    quality = str(entry.get("quality", "")).strip()
-    parts = [part for part in (language_code, name, quality) if part]
-    return " - ".join(parts) or str(entry.get("key", "Voz Piper"))
-
-
-def _render_piper_voice(voice_id: str, entry: dict | None, *, index: int, installed: bool) -> dict:
-    info = entry.get("language", {}) if isinstance(entry, dict) and isinstance(entry.get("language"), dict) else {}
-    languages = [str(info.get("code", "")).strip()] if info.get("code") else []
+def _render_kokoro_voice(voice_id: str, name: str, languages: tuple[str, ...], *, index: int) -> dict:
     return {
         "index": index,
         "id": voice_id,
         "voice_id": voice_id,
-        "name": _piper_voice_label(entry or {"key": voice_id}),
-        "languages": [item for item in languages if item],
-        "provider": "piper",
-        "status": "installed" if installed else "downloadable",
-        "installed": installed,
-        "downloadable": not installed,
-        "quality": str((entry or {}).get("quality", "") or "").strip(),
-        "num_speakers": int((entry or {}).get("num_speakers", 1) or 1),
+        "name": name,
+        "languages": list(languages),
+        "provider": "kokoro",
+        "status": "local",
+        "installed": True,
+        "downloadable": False,
     }
+
+
+def _list_kokoro_voices(*, language: str | None = None, start_index: int = 1) -> list[dict]:
+    rendered = []
+    next_index = start_index
+    for voice_id, name, languages in KOKORO_VOICES:
+        if not _kokoro_language_matches(voice_id, language):
+            continue
+        rendered.append(_render_kokoro_voice(voice_id, name, languages, index=next_index))
+        next_index += 1
+    return rendered
 
 
 def _list_system_voices(settings: dict | None = None) -> list[dict]:
@@ -444,28 +352,7 @@ def list_tts_voices(
     refresh_catalog: bool = False,
 ) -> list[dict]:
     rendered = _list_system_voices(settings)
-    installed_ids = _installed_piper_voice_ids()
-    catalog = _load_piper_catalog(
-        refresh=refresh_catalog,
-        allow_download=include_downloadable or refresh_catalog,
-    )
-
-    next_index = len(rendered) + 1
-    used_piper_ids = set()
-    for voice_id, entry in catalog.items():
-        if not isinstance(entry, dict) or not _language_matches(entry, language):
-            continue
-        installed = voice_id in installed_ids or _piper_voice_installed(voice_id, entry)
-        if not installed and not include_downloadable:
-            continue
-        rendered.append(_render_piper_voice(voice_id, entry, index=next_index, installed=installed))
-        next_index += 1
-        used_piper_ids.add(voice_id)
-
-    for voice_id in sorted(installed_ids - used_piper_ids):
-        rendered.append(_render_piper_voice(voice_id, None, index=next_index, installed=True))
-        next_index += 1
-
+    rendered.extend(_list_kokoro_voices(language=language, start_index=len(rendered) + 1))
     return rendered
 
 
@@ -492,56 +379,19 @@ def find_tts_voice(selection: str, *, include_downloadable: bool = True, languag
     return None
 
 
-def piper_catalog_text(language: str | None = "es", *, limit: int = 30) -> str:
+def kokoro_catalog_text(language: str | None = "es", *, limit: int = 30) -> str:
     voices = [
         item for item in list_tts_voices(include_downloadable=True, language=language)
-        if item.get("provider") == "piper"
+        if item.get("provider") == "kokoro"
     ]
     if not voices:
-        return "No encontre voces Piper en ese catalogo."
-    lines = [f"Catalogo Piper ({language or 'all'}):"]
+        return "No encontre voces Kokoro para ese idioma."
+    lines = [f"Voces Kokoro ({language or 'all'}):"]
     for item in voices[:limit]:
-        status = "instalada" if item.get("installed") else "descargable"
-        lines.append(f"{item.get('index')}. {item.get('name')} - {status}\n   {item.get('id')}")
+        lines.append(f"{item.get('index')}. {item.get('name')}\n   {item.get('id')}")
     if len(voices) > limit:
         lines.append(f"... y {len(voices) - limit} mas. Usa /voz catalogo all para ver mas idiomas.")
     return "\n".join(lines)
-
-
-def download_piper_voice(voice_id: str) -> dict:
-    voice_id = _safe_piper_voice_id(voice_id)
-    catalog = _load_piper_catalog(allow_download=True)
-    entry = catalog.get(voice_id)
-    if not isinstance(entry, dict):
-        raise VoiceError(f"No encontre la voz Piper '{voice_id}' en el catalogo.")
-
-    model_remote, model_meta, config_remote, config_meta = _piper_model_files(entry)
-    model_path, config_path = _piper_local_paths(voice_id, entry)
-    if _piper_voice_installed(voice_id, entry):
-        return _render_piper_voice(voice_id, entry, index=0, installed=True)
-
-    model_size = int(model_meta.get("size_bytes", 0) or 0)
-    config_size = int(config_meta.get("size_bytes", 0) or 0)
-    if model_size > MAX_PIPER_MODEL_BYTES or config_size > MAX_PIPER_CONFIG_BYTES:
-        raise VoiceError("La voz Piper excede el limite de descarga permitido.")
-
-    _download_to_file(
-        PIPER_DOWNLOAD_BASE_URL + model_remote,
-        model_path,
-        max_bytes=MAX_PIPER_MODEL_BYTES,
-        expected_md5=str(model_meta.get("md5_digest", "") or ""),
-    )
-    try:
-        _download_to_file(
-            PIPER_DOWNLOAD_BASE_URL + config_remote,
-            config_path,
-            max_bytes=MAX_PIPER_CONFIG_BYTES,
-            expected_md5=str(config_meta.get("md5_digest", "") or ""),
-        )
-    except Exception:
-        cleanup_voice_file(model_path)
-        raise
-    return _render_piper_voice(voice_id, entry, index=0, installed=True)
 
 
 def stop_speaking() -> bool:
@@ -556,7 +406,7 @@ def stop_speaking() -> bool:
     return True
 
 
-class _PiperPlayback:
+class _AudioPlayback:
     def __init__(self):
         self.stop_event = threading.Event()
 
@@ -570,6 +420,67 @@ class _PiperPlayback:
             pass
 
 
+def _kokoro_speed_from_rate(rate) -> float:
+    numeric_rate = max(MIN_VOICE_TTS_RATE, min(MAX_VOICE_TTS_RATE, _optional_int(rate, DEFAULT_VOICE_TTS_RATE)))
+    return max(0.5, min(2.0, numeric_rate / DEFAULT_VOICE_TTS_RATE))
+
+
+def _kokoro_voice_for_settings(settings: dict) -> str:
+    return _safe_kokoro_voice_id(str(settings.get("kokoro_voice_id", DEFAULT_VOICE_KOKORO_VOICE_ID)).strip())
+
+
+def _load_kokoro_pipeline(settings: dict):
+    voice_id = _kokoro_voice_for_settings(settings)
+    language = _kokoro_voice_language(voice_id)
+    speed = _kokoro_speed_from_rate(settings.get("tts_rate"))
+    key = (voice_id, language, speed)
+    with _KOKORO_LOCK:
+        cached = _KOKORO_PIPELINES.get(key)
+        if cached is not None:
+            return cached
+        try:
+            from pykokoro import GenerationConfig, KokoroPipeline, PipelineConfig
+        except Exception as exc:
+            raise VoiceError("Falta pykokoro. Instala dependencias con python -m pip install -r requirements.txt.") from exc
+        try:
+            pipeline = KokoroPipeline(
+                PipelineConfig(
+                    voice=voice_id,
+                    generation=GenerationConfig(lang=language, speed=speed),
+                )
+            )
+        except Exception as exc:
+            raise VoiceError(f"No pude cargar Kokoro con la voz '{voice_id}': {exc}") from exc
+        _KOKORO_PIPELINES.clear()
+        _KOKORO_PIPELINES[key] = pipeline
+        return pipeline
+
+
+def _write_float_audio_wav(audio, sample_rate: int, wav_path: Path) -> None:
+    try:
+        import numpy as np
+    except Exception as exc:
+        raise VoiceError("Falta numpy para guardar audio Kokoro.") from exc
+    samples = np.asarray(audio)
+    if samples.size <= 0:
+        raise VoiceError("Kokoro no genero audio.")
+    if samples.ndim == 1:
+        channels = 1
+    elif samples.ndim == 2:
+        channels = int(samples.shape[1])
+        samples = samples.reshape(-1)
+    else:
+        samples = samples.reshape(-1)
+        channels = 1
+    pcm = np.clip(samples, -1.0, 1.0)
+    pcm = (pcm * 32767.0).astype("<i2")
+    with wave.open(str(wav_path), "wb") as wav_file:
+        wav_file.setnchannels(max(1, channels))
+        wav_file.setsampwidth(2)
+        wav_file.setframerate(int(sample_rate) or 24000)
+        wav_file.writeframes(pcm.tobytes())
+
+
 def _settings_tts_provider(settings: dict) -> str:
     provider = str(settings.get("tts_provider", DEFAULT_VOICE_TTS_PROVIDER)).strip().lower()
     if provider == "sistema":
@@ -577,48 +488,6 @@ def _settings_tts_provider(settings: dict) -> str:
     if provider not in VALID_VOICE_TTS_PROVIDERS:
         provider = DEFAULT_VOICE_TTS_PROVIDER
     return provider
-
-
-def _load_piper_voice_for_settings(settings: dict):
-    voice_id = str(settings.get("piper_voice_id", "")).strip()
-    if not voice_id:
-        raise VoiceError("Elige una voz Piper antes de hablar con Piper.")
-    voice_id = _safe_piper_voice_id(voice_id)
-    catalog = _load_piper_catalog(allow_download=True)
-    entry = catalog.get(voice_id) if isinstance(catalog.get(voice_id), dict) else None
-    if not _piper_voice_installed(voice_id, entry):
-        download_piper_voice(voice_id)
-    model_path, config_path = _piper_local_paths(voice_id, entry)
-    key = (voice_id, str(model_path), model_path.stat().st_mtime_ns, config_path.stat().st_mtime_ns)
-    with _PIPER_LOCK:
-        cached = _PIPER_VOICES.get(key)
-        if cached is not None:
-            return cached
-        try:
-            from piper import PiperVoice
-        except Exception as exc:
-            raise VoiceError("Falta piper-tts. Instala dependencias con python -m pip install -r requirements.txt.") from exc
-        try:
-            loaded = PiperVoice.load(str(model_path), config_path=str(config_path))
-        except Exception as exc:
-            raise VoiceError(f"No pude cargar la voz Piper '{voice_id}': {exc}") from exc
-        _PIPER_VOICES.clear()
-        _PIPER_VOICES[key] = loaded
-        return loaded
-
-
-def _piper_syn_config(settings: dict):
-    try:
-        from piper import SynthesisConfig
-    except Exception as exc:
-        raise VoiceError("Falta piper-tts. Instala dependencias con python -m pip install -r requirements.txt.") from exc
-    rate = max(MIN_VOICE_TTS_RATE, min(MAX_VOICE_TTS_RATE, _optional_int(settings.get("tts_rate"), DEFAULT_VOICE_TTS_RATE)))
-    length_scale = max(0.5, min(2.0, DEFAULT_VOICE_TTS_RATE / max(rate, 1)))
-    return SynthesisConfig(
-        speaker_id=max(0, _optional_int(settings.get("piper_speaker_id"), 0)),
-        length_scale=length_scale,
-        volume=DEFAULT_TTS_VOLUME,
-    )
 
 
 def _synthesize_system_wav(cleaned_text: str, wav_path: Path, settings: dict) -> None:
@@ -631,22 +500,22 @@ def _synthesize_system_wav(cleaned_text: str, wav_path: Path, settings: dict) ->
         raise VoiceError(f"No pude sintetizar la voz: {exc}") from exc
 
 
-def _synthesize_piper_wav(cleaned_text: str, wav_path: Path, settings: dict) -> None:
-    piper_voice = _load_piper_voice_for_settings(settings)
+def _synthesize_kokoro_wav(cleaned_text: str, wav_path: Path, settings: dict) -> None:
+    pipeline = _load_kokoro_pipeline(settings)
     try:
-        with wave.open(str(wav_path), "wb") as wav_file:
-            piper_voice.synthesize_wav(cleaned_text, wav_file, syn_config=_piper_syn_config(settings))
+        result = pipeline.run(cleaned_text)
+        _write_float_audio_wav(result.audio, int(result.sample_rate), wav_path)
     except Exception as exc:
         cleanup_voice_file(wav_path)
-        raise VoiceError(f"No pude sintetizar la voz Piper: {exc}") from exc
+        raise VoiceError(f"No pude sintetizar la voz Kokoro: {exc}") from exc
 
 
 def _synthesize_wav_file(cleaned_text: str, settings: dict) -> Path:
     VOICE_RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
     token = f"{time.time_ns()}-{threading.get_ident()}"
     wav_path = VOICE_RUNTIME_DIR / f"tts-{token}.wav"
-    if _settings_tts_provider(settings) == "piper":
-        _synthesize_piper_wav(cleaned_text, wav_path, settings)
+    if _settings_tts_provider(settings) == "kokoro":
+        _synthesize_kokoro_wav(cleaned_text, wav_path, settings)
     else:
         _synthesize_system_wav(cleaned_text, wav_path, settings)
     if not wav_path.exists() or wav_path.stat().st_size <= 0:
@@ -670,8 +539,8 @@ def speak_text(text: str, settings: dict | None = None, cancellable: bool = True
     cleaned_text = str(text or "").strip()
     if not cleaned_text:
         raise VoiceError("No hay texto para leer.")
-    if _settings_tts_provider(voice_settings) == "piper":
-        playback = _PiperPlayback()
+    if _settings_tts_provider(voice_settings) == "kokoro":
+        playback = _AudioPlayback()
         wav_path = _synthesize_wav_file(cleaned_text, voice_settings)
         if cancellable:
             with _TTS_LOCK:
@@ -680,7 +549,7 @@ def speak_text(text: str, settings: dict | None = None, cancellable: bool = True
             try:
                 import winsound
             except Exception as exc:
-                raise VoiceError("No pude reproducir la voz Piper en este sistema.") from exc
+                raise VoiceError("No pude reproducir la voz Kokoro en este sistema.") from exc
             winsound.PlaySound(str(wav_path), winsound.SND_FILENAME | winsound.SND_ASYNC)
             deadline = time.monotonic() + max(0.1, _wav_duration_seconds(wav_path) + 0.25)
             while time.monotonic() < deadline and not playback.stop_event.wait(0.05):
@@ -736,8 +605,7 @@ def update_voice_settings_text(
     tts_provider: str | None = None,
     tts_voice_id: str | None = None,
     tts_rate=None,
-    piper_voice_id: str | None = None,
-    piper_speaker_id=None,
+    kokoro_voice_id: str | None = None,
     browser_voice_name: str | None = None,
     browser_tts_rate=None,
     browser_tts_pitch=None,
@@ -748,20 +616,15 @@ def update_voice_settings_text(
     if next_provider == "sistema":
         next_provider = "system"
     if next_provider not in VALID_VOICE_TTS_PROVIDERS:
-        raise ValueError("Proveedor de voz invalido. Usa system o piper.")
+        raise ValueError("Proveedor de voz invalido. Usa system o kokoro.")
     next_tts_rate = max(
         MIN_VOICE_TTS_RATE,
         min(MAX_VOICE_TTS_RATE, _optional_int(tts_rate, int(current.get("tts_rate", DEFAULT_VOICE_TTS_RATE)))),
     )
-    next_piper_voice_id = str(
-        piper_voice_id if piper_voice_id is not None else current.get("piper_voice_id", "")
+    next_kokoro_voice_id = str(
+        kokoro_voice_id if kokoro_voice_id is not None else current.get("kokoro_voice_id", DEFAULT_VOICE_KOKORO_VOICE_ID)
     ).strip()
-    if next_piper_voice_id:
-        _safe_piper_voice_id(next_piper_voice_id)
-    next_piper_speaker_id = max(
-        0,
-        min(9999, _optional_int(piper_speaker_id, int(current.get("piper_speaker_id", 0) or 0))),
-    )
+    next_kokoro_voice_id = _safe_kokoro_voice_id(next_kokoro_voice_id)
     next_browser_rate = max(
         MIN_VOICE_BROWSER_TTS_RATE,
         min(
@@ -789,8 +652,7 @@ def update_voice_settings_text(
         voice["tts_provider"] = next_provider
         if tts_voice_id is not None:
             voice["tts_voice_id"] = str(tts_voice_id).strip()
-        voice["piper_voice_id"] = next_piper_voice_id
-        voice["piper_speaker_id"] = next_piper_speaker_id
+        voice["kokoro_voice_id"] = next_kokoro_voice_id
         voice["tts_rate"] = next_tts_rate
         if browser_voice_name is not None:
             voice["browser_voice_name"] = str(browser_voice_name).strip()
@@ -804,7 +666,7 @@ def update_voice_settings_text(
         f"{'activa' if (bool(enabled) if enabled is not None else current.get('enabled', True)) else 'desactivada'}, "
         f"proveedor={next_provider}, "
         f"sistema={'predeterminada' if not str(tts_voice_id if tts_voice_id is not None else current.get('tts_voice_id', '')).strip() else 'personalizada'}, "
-        f"piper={next_piper_voice_id or 'sin voz'}, "
+        f"kokoro={next_kokoro_voice_id}, "
         f"velocidad={next_tts_rate}, navegador={next_browser_rate:g}/{next_browser_pitch:g}, "
         f"Telegram={next_reply_mode}."
     )
