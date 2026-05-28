@@ -1,4 +1,5 @@
 import json
+import os
 import shutil
 import threading
 import unittest
@@ -340,6 +341,24 @@ class MemoryTestCase(unittest.TestCase):
 
         self.assertEqual(state["goal"], "backup en segundo plano")
         self.assertEqual(len(list((base / ".yarbis_memory_backups").glob("*.json"))), 1)
+
+    def test_prune_stale_temp_files_removes_old_atomic_leftovers(self):
+        base, _state_path, _lock_path = self._memory_protection_paths("stale-temp-files")
+        stale = base / "state.json.tmp-deadbeef"
+        fresh = base / "state.json.tmp-fresh"
+        stale.write_text("viejo", encoding="utf-8")
+        fresh.write_text("nuevo", encoding="utf-8")
+        os.utime(stale, (1, 1))
+
+        result = memory.memory_backup.prune_stale_temp_files(
+            base,
+            max_age_seconds=60,
+            name_prefix="state.json.tmp-",
+        )
+
+        self.assertEqual(result["deleted"], 1)
+        self.assertFalse(stale.exists())
+        self.assertTrue(fresh.exists())
 
     def test_load_state_restores_corrupt_state_from_local_backup(self):
         base, state_path, lock_path = self._memory_protection_paths("restore-local")

@@ -11,6 +11,7 @@ from pathlib import Path
 from tkinter import filedialog, messagebox, simpledialog, ttk
 
 import activity
+import memory as memory_store
 import voice as yarbis_voice
 from memory import (
     DEFAULT_OLLAMA_MODEL,
@@ -53,7 +54,6 @@ from session import (
     import_memory_backup_text,
     inspect_memory_backup_text,
     list_social_publications_text,
-    memory_protection_status_text,
     open_assisted_social_post_text,
     request_stop_current_operation,
     run_startup_self_analysis,
@@ -428,6 +428,8 @@ class YarbisDesktop(tk.Tk):
         self._cached_readiness_status = None
         self._cached_context_helper_status = None
         self._last_state_signature = None
+        self._cached_state = None
+        self._last_state_file_signature = None
         self._local_telegram_polling = False
         self._closing = False
         self._first_run_checked = False
@@ -1195,6 +1197,31 @@ class YarbisDesktop(tk.Tk):
             self._append_activity_fallback(title, str(content))
 
     @staticmethod
+    def _state_file_signature() -> tuple[str, int, int]:
+        state_path = Path(memory_store.STATE_FILE)
+        if not state_path.is_absolute():
+            state_path = _WORKSPACE_ROOT / state_path
+        try:
+            stat = state_path.stat()
+        except OSError:
+            return (str(state_path), 0, 0)
+        return (str(state_path), int(stat.st_size), int(stat.st_mtime_ns))
+
+    def _load_state_for_view(self, force_reload: bool = True) -> dict:
+        signature = self._state_file_signature()
+        if (
+            not force_reload
+            and self._cached_state is not None
+            and signature == self._last_state_file_signature
+        ):
+            return self._cached_state
+
+        state = load_state()
+        self._cached_state = state
+        self._last_state_file_signature = signature
+        return state
+
+    @staticmethod
     def _thinking_status_text(label: str) -> str:
         safe_label = str(label).strip() or "Operacion"
         return f"Estoy pensando: {safe_label}..."
@@ -1390,7 +1417,7 @@ class YarbisDesktop(tk.Tk):
             if str(body).strip():
                 self._append_activity(str(title), str(body))
 
-        self.refresh_state_view(force_heavy=False)
+        self.refresh_state_view(force_heavy=False, force_state_reload=False)
 
     def _finish_status_refresh(self):
         pending_force = self._status_refresh_pending_force
@@ -1442,8 +1469,8 @@ class YarbisDesktop(tk.Tk):
             self.service_autostart_check.configure(state=installed_state)
             self._style_service_autostart_toggle()
 
-    def refresh_state_view(self, force_heavy: bool = True):
-        state = load_state()
+    def refresh_state_view(self, force_heavy: bool = True, force_state_reload: bool = True):
+        state = self._load_state_for_view(force_reload=force_state_reload)
         self._request_status_refresh(force=force_heavy)
         self.goal_var.set(state["goal"])
         self.cycles_var.set(str(state["cycle_count"]))
@@ -1665,7 +1692,7 @@ class YarbisDesktop(tk.Tk):
             self._start_background_job("Primer ciclo", _session_operation_subprocess, "run_cycle")
 
     def _sync_state_view(self):
-        self.refresh_state_view(force_heavy=False)
+        self.refresh_state_view(force_heavy=False, force_state_reload=False)
         self.after(_STATE_SYNC_INTERVAL_MS, self._sync_state_view)
 
     @staticmethod
@@ -1752,7 +1779,7 @@ class YarbisDesktop(tk.Tk):
 
     def _sync_context_helper_once(self, ensure_task: bool = False):
         try:
-            local_context_settings = load_state().get("local_context", {})
+            local_context_settings = self._load_state_for_view(force_reload=False).get("local_context", {})
         except Exception:
             local_context_settings = {}
         if not local_context_enabled(local_context_settings):
@@ -1793,7 +1820,7 @@ class YarbisDesktop(tk.Tk):
             self.status_var.set("Listo.")
 
     def _start_background_job(self, label: str, func, *args, **kwargs):
-        state = load_state()
+        state = self._load_state_for_view(force_reload=False)
         thinking_active, thinking_label, _started_at = self._runtime_thinking_from_state(state)
         if thinking_active:
             self._sync_runtime_thinking(state)
@@ -1874,6 +1901,10 @@ class YarbisDesktop(tk.Tk):
                     self._finish_voice_recording_ui()
                     self._append_activity(f"{label} (error)", str(payload))
                     self.status_var.set("No pude transcribir la voz.")
+                elif kind == "memory_import_ready":
+                    self._set_busy(False, source="local")
+                    source_path, summary = payload
+                    self._continue_memory_import(str(source_path), str(summary))
                 elif kind == "event":
                     self._append_activity(label, str(payload))
                     self.refresh_state_view()
@@ -2483,29 +2514,31 @@ class YarbisDesktop(tk.Tk):
             messagebox.showinfo("Yarbis", "Ya hay una accion en curso. Espera a que termine.", parent=self)
             return
 
-        state = load_state()
+        state = self._load_state_for_view(force_reload=False)
+        status_text = (
+            "Estado cargado desde cache. Usa Verificar respaldos para revisar todos "
+            "los archivos sin trabar la ventana."
+        )
         dialog = MemoryProtectionDialog(
             self,
             initial_settings=state.get("memory_protection", {}),
-            status_text=memory_protection_status_text(),
+            status_text=status_text,
         )
         if dialog.result is None:
             return
 
-        result = update_memory_protection_settings_text(**dialog.result)
-        self._append_activity("Proteccion de memoria", result)
-        self.refresh_state_view()
-        messagebox.showinfo("Yarbis", result, parent=self)
+        self._start_background_job(
+            "Proteccion de memoria",
+            update_memory_protection_settings_text,
+            **dialog.result,
+        )
 
     def _verify_memory_backups(self):
         if self._busy:
             messagebox.showinfo("Yarbis", "Ya hay una accion en curso. Espera a que termine.", parent=self)
             return
 
-        result = verify_memory_backups_text()
-        self._append_activity("Verificacion de memoria", result)
-        self.refresh_state_view()
-        messagebox.showinfo("Yarbis", result, parent=self)
+        self._start_background_job("Verificacion de memoria", verify_memory_backups_text)
 
     def _backup_memory(self):
         if self._busy:
@@ -2535,13 +2568,12 @@ class YarbisDesktop(tk.Tk):
             ),
             parent=self,
         )
-        result = create_memory_backup_text(
+        self._start_background_job(
+            "Respaldo de memoria",
+            create_memory_backup_text,
             path=target_path,
             include_secrets=include_secrets,
         )
-        self._append_activity("Respaldo de memoria", result)
-        self.refresh_state_view()
-        messagebox.showinfo("Yarbis", result, parent=self)
 
     def _import_memory(self):
         if self._busy:
@@ -2562,7 +2594,19 @@ class YarbisDesktop(tk.Tk):
         if not source_path:
             return
 
-        summary = inspect_memory_backup_text(source_path)
+        self._set_busy(True, self._thinking_status_text("Inspeccion de memoria"))
+        self._append_activity("Trasplante de memoria iniciado", "Revisando respaldo antes de importar.")
+
+        def worker():
+            try:
+                summary = inspect_memory_backup_text(source_path)
+                self._result_queue.put(("memory_import_ready", "Trasplante de memoria", (source_path, summary)))
+            except Exception as exc:
+                self._result_queue.put(("error", "Trasplante de memoria", str(exc)))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _continue_memory_import(self, source_path: str, summary: str):
         if not summary.startswith("Respaldo de memoria."):
             messagebox.showwarning("Yarbis", summary, parent=self)
             return
@@ -2584,10 +2628,12 @@ class YarbisDesktop(tk.Tk):
             if not should_import:
                 return
 
-        result = import_memory_backup_text(source_path, mode=mode)
-        self._append_activity("Trasplante de memoria", result)
-        self.refresh_state_view()
-        messagebox.showinfo("Yarbis", result, parent=self)
+        self._start_background_job(
+            "Trasplante de memoria",
+            import_memory_backup_text,
+            source_path,
+            mode=mode,
+        )
 
     def _create_task(self):
         dialog = TaskDialog(self, "Crear tarea")

@@ -127,6 +127,8 @@ def _desktop_app_stub(service_status=None):
     app._cached_readiness_status = {"items": []}
     app._cached_context_helper_status = {"state": "desactivado"}
     app._last_state_signature = None
+    app._cached_state = None
+    app._last_state_file_signature = None
     app._local_telegram_polling = False
     app._closing = False
     app._style_service_autostart_toggle = lambda: None
@@ -315,11 +317,32 @@ class YarbisDesktopTestCase(unittest.TestCase):
         self.assertTrue(app._status_refresh_in_flight)
         self.assertTrue(app._status_refresh_pending_force)
 
+    def test_refresh_state_view_reuses_cached_state_when_file_unchanged(self):
+        app = _desktop_app_stub()
+        state = memory.default_state()
+        state["goal"] = "cache rapido"
+        app._cached_state = state
+        app._last_state_file_signature = ("state.json", 123, 456)
+
+        with patch.object(
+            yarbis_desktop.YarbisDesktop,
+            "_state_file_signature",
+            return_value=("state.json", 123, 456),
+        ):
+            with patch.object(yarbis_desktop, "load_state", side_effect=AssertionError("no debe recargar")):
+                yarbis_desktop.YarbisDesktop.refresh_state_view(
+                    app,
+                    force_heavy=False,
+                    force_state_reload=False,
+                )
+
+        self.assertEqual(app.goal_var.get(), "cache rapido")
+
     def test_apply_status_snapshot_updates_cache_and_refreshes_view(self):
         app = _desktop_app_stub()
         refreshed = []
         activities = []
-        app.refresh_state_view = lambda force_heavy=True: refreshed.append(force_heavy)
+        app.refresh_state_view = lambda force_heavy=True, **_kwargs: refreshed.append(force_heavy)
         app._append_activity = lambda title, body: activities.append((title, body))
         snapshot = {
             "health": {"service": _service_status(installed=True, running=True)},

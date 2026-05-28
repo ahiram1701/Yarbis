@@ -537,3 +537,44 @@ def prune_auto_backups(
         "kept": len(keep_paths),
         "deleted": len(deleted),
     }
+
+
+def prune_stale_temp_files(
+    directory: Path | str,
+    *,
+    max_age_seconds: float = 60 * 60,
+    name_prefix: str = "",
+) -> dict:
+    resolved_dir = Path(directory)
+    try:
+        cutoff = utc_now().timestamp() - max(0.0, float(max_age_seconds))
+    except (TypeError, ValueError):
+        cutoff = utc_now().timestamp() - (60 * 60)
+
+    deleted = 0
+    deleted_bytes = 0
+    if not resolved_dir.exists():
+        return {"deleted": deleted, "bytes": deleted_bytes}
+
+    prefix = str(name_prefix)
+    for candidate in resolved_dir.iterdir():
+        if not candidate.is_file():
+            continue
+        if ".tmp-" not in candidate.name:
+            continue
+        if prefix and not candidate.name.startswith(prefix):
+            continue
+        try:
+            stat = candidate.stat()
+        except OSError:
+            continue
+        if stat.st_mtime > cutoff:
+            continue
+        try:
+            candidate.unlink()
+        except OSError:
+            continue
+        deleted += 1
+        deleted_bytes += stat.st_size
+
+    return {"deleted": deleted, "bytes": deleted_bytes}

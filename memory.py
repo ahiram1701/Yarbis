@@ -198,10 +198,10 @@ MAX_CODING_VALIDATION_TIMESTAMP_CHARS = 80
 DEFAULT_MEMORY_PROTECTION_ENABLED = True
 DEFAULT_MEMORY_PROTECTION_BACKUP_ON_EVERY_CHANGE = True
 DEFAULT_MEMORY_PROTECTION_INCLUDE_SECRETS = False
-DEFAULT_MEMORY_PROTECTION_VERIFY_AFTER_WRITE = True
+DEFAULT_MEMORY_PROTECTION_VERIFY_AFTER_WRITE = False
 DEFAULT_MEMORY_PROTECTION_AUTO_RESTORE = True
-DEFAULT_MEMORY_PROTECTION_MAX_AUTO_BACKUPS = 250
-DEFAULT_MEMORY_PROTECTION_KEEP_DAILY_DAYS = 90
+DEFAULT_MEMORY_PROTECTION_MAX_AUTO_BACKUPS = 50
+DEFAULT_MEMORY_PROTECTION_KEEP_DAILY_DAYS = 14
 MAX_MEMORY_PROTECTION_MIRROR_DIR_CHARS = 1_000
 MAX_MEMORY_PROTECTION_TIMESTAMP_CHARS = 80
 MAX_MEMORY_PROTECTION_ERROR_CHARS = 600
@@ -2453,7 +2453,14 @@ def _memory_protection_auto_backup_worker() -> None:
 def _schedule_memory_protection_auto_backup(protected_state: dict) -> None:
     global _MEMORY_PROTECTION_BACKUP_THREAD
 
-    _MEMORY_PROTECTION_BACKUP_QUEUE.put({"state": normalize_state(protected_state)})
+    while True:
+        try:
+            _MEMORY_PROTECTION_BACKUP_QUEUE.get_nowait()
+        except queue.Empty:
+            break
+        _MEMORY_PROTECTION_BACKUP_QUEUE.task_done()
+
+    _MEMORY_PROTECTION_BACKUP_QUEUE.put({"state": protected_state})
 
     with _MEMORY_PROTECTION_BACKUP_THREAD_LOCK:
         if _MEMORY_PROTECTION_BACKUP_THREAD is not None and _MEMORY_PROTECTION_BACKUP_THREAD.is_alive():
@@ -2504,12 +2511,18 @@ def _run_memory_protection_maintenance(
             max_auto_backups=max_auto_backups,
             keep_daily_days=keep_daily_days,
         )
+        memory_backup.prune_stale_temp_files(local_backups_dir)
+        memory_backup.prune_stale_temp_files(
+            _state_file_path().parent,
+            name_prefix=f"{_state_file_path().name}.tmp-",
+        )
         if rendered_mirror_dir:
             memory_backup.prune_auto_backups(
                 backups_dir=Path(rendered_mirror_dir).expanduser(),
                 max_auto_backups=max_auto_backups,
                 keep_daily_days=keep_daily_days,
             )
+            memory_backup.prune_stale_temp_files(Path(rendered_mirror_dir).expanduser())
     except memory_backup.MemoryBackupError as exc:
         _record_memory_protection_maintenance_error(str(exc))
     except Exception as exc:

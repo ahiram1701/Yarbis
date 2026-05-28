@@ -904,11 +904,11 @@ class MemoryProtectionDialog(ThemedDialog):
         self.backup_each_change_var = tk.BooleanVar(
             value=bool(self.initial_settings.get("backup_on_every_change", True))
         )
-        self.verify_var = tk.BooleanVar(value=bool(self.initial_settings.get("verify_after_write", True)))
+        self.verify_var = tk.BooleanVar(value=bool(self.initial_settings.get("verify_after_write", False)))
         self.restore_var = tk.BooleanVar(value=bool(self.initial_settings.get("auto_restore", True)))
         self.mirror_var = tk.StringVar(value=str(self.initial_settings.get("mirror_dir", "")).strip())
-        self.max_auto_var = tk.StringVar(value=str(retention.get("max_auto_backups", 250)))
-        self.keep_daily_var = tk.StringVar(value=str(retention.get("keep_daily_days", 90)))
+        self.max_auto_var = tk.StringVar(value=str(retention.get("max_auto_backups", 50)))
+        self.keep_daily_var = tk.StringVar(value=str(retention.get("keep_daily_days", 14)))
 
         container = ttk.Frame(master)
         container.grid(row=0, column=0, sticky="nsew", padx=6, pady=6)

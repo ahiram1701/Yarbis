@@ -1936,9 +1936,9 @@ def update_memory_protection_settings(
     enabled: bool = True,
     backup_on_every_change: bool = True,
     mirror_dir: str = "",
-    max_auto_backups: int = 250,
-    keep_daily_days: int = 90,
-    verify_after_write: bool = True,
+    max_auto_backups: int = 50,
+    keep_daily_days: int = 14,
+    verify_after_write: bool = False,
     auto_restore: bool = True,
 ) -> str:
     """

@@ -214,6 +214,10 @@ def _parse_service_account(output: str) -> str:
     return account or "unknown"
 
 
+def _parse_binary_path(output: str) -> str:
+    return _parse_sc_value(output, "BINARY_PATH_NAME", "NOMBRE_RUTA_BINARIO")
+
+
 def _service_missing(completed: subprocess.CompletedProcess) -> bool:
     output = _completed_output(completed)
     return completed.returncode != 0 and (
@@ -327,6 +331,8 @@ def get_service_status(force: bool = False) -> dict:
         "account_name": "",
         "log_file": str(LOG_FILE),
         "service_binary": _service_binary_path(),
+        "configured_binary": "",
+        "workspace_mismatch": False,
     }
 
     if os.name != "nt":
@@ -342,6 +348,8 @@ def get_service_status(force: bool = False) -> dict:
 
     state, running = _parse_state(query.stdout)
     start_type = _parse_start_type(config.stdout)
+    configured_binary = _parse_binary_path(config.stdout)
+    workspace_mismatch = bool(configured_binary and str(WORKSPACE_ROOT).lower() not in configured_binary.lower())
 
     base.update({
         "installed": True,
@@ -351,6 +359,8 @@ def get_service_status(force: bool = False) -> dict:
         "autostart_enabled": start_type == "auto_start",
         "start_type": start_type,
         "account_name": _parse_service_account(config.stdout),
+        "configured_binary": configured_binary,
+        "workspace_mismatch": workspace_mismatch,
     })
     return _store_service_status(base)
 
