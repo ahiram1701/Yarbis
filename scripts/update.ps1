@@ -17,6 +17,16 @@ $UpdateBackupDir = Join-Path $RuntimeDir "updates"
 $StateFile = Join-Path $RepoRoot "state.json"
 $ServiceName = "Yarbis"
 $DefaultSourceRepo = "C:\DEV\Github\yarbis"
+$StashPathspec = @(
+    ".",
+    ":(exclude)state.json",
+    ":(exclude)state.json.tmp",
+    ":(exclude)state.json.tmp-*",
+    ":(exclude).yarbis_runtime/**",
+    ":(exclude).yarbis_checkpoints/**",
+    ":(exclude).yarbis_memory_backups/**",
+    ":(exclude)tests_runtime/**"
+)
 
 $serviceWasInstalled = $false
 $serviceWasRunning = $false
@@ -27,10 +37,12 @@ $checksSummary = "no ejecutados"
 $dependencySummary = "no ejecutadas"
 $serviceSummary = "no instalado"
 $stateBackup = ""
+$stateBackupHash = ""
+$stateGuardSummary = "sin estado previo"
 $stashCreated = $false
 $stashRef = ""
 $stashMessage = ""
-$stashSummary = "sin cambios locales"
+$stashSummary = "sin cambios locales fuera de memoria/runtime"
 $stashConflict = $false
 $stashPopAttempted = $false
 $resolvedFetchSource = ""
@@ -153,7 +165,8 @@ function Test-UpdateSource {
 }
 
 function Get-GitStatusLines {
-    $result = Invoke-NativeCapture -FilePath "git" -Arguments @("-C", $RepoRoot, "status", "--porcelain")
+    $arguments = @("-C", $RepoRoot, "status", "--porcelain", "--") + $StashPathspec
+    $result = Invoke-NativeCapture -FilePath "git" -Arguments $arguments
     if ($result.ExitCode -ne 0) {
         throw "No pude revisar cambios locales.`n$($result.Output -join "`n")"
     }
@@ -170,17 +183,21 @@ function Save-LocalChangesForUpdate {
     Write-Step "Guardando cambios locales"
     $script:stashMessage = "yarbis-update-$(Get-Date -Format 'yyyyMMdd-HHmmss')"
     Write-Host "Cambios detectados; se guardaran temporalmente con git stash."
+    Write-Host "La memoria local de Yarbis queda fuera del stash: state.json, runtime y respaldos."
     $statusLines | ForEach-Object { Write-Host "  $_" }
 
-    Invoke-CommandChecked "git" @(
+    $stashArguments = @(
         "-C",
         $RepoRoot,
         "stash",
         "push",
         "--include-untracked",
         "--message",
-        $script:stashMessage
-    ) "guardar cambios locales en stash"
+        $script:stashMessage,
+        "--"
+    ) + $StashPathspec
+
+    Invoke-CommandChecked "git" $stashArguments "guardar cambios locales en stash"
 
     $stashListResult = Invoke-NativeCapture -FilePath "git" -Arguments @("-C", $RepoRoot, "stash", "list", "--format=%gd`t%s")
     if ($stashListResult.ExitCode -ne 0) {
@@ -310,6 +327,75 @@ function Stop-YarbisServiceIfNeeded {
     Write-Host "Servicio Yarbis detenido."
 }
 
+function Get-FileSha256([string]$Path) {
+    if (-not (Test-Path -LiteralPath $Path)) {
+        return ""
+    }
+
+    try {
+        return (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash
+    }
+    catch {
+        return ""
+    }
+}
+
+function Backup-StateForUpdate {
+    New-Item -ItemType Directory -Force -Path $UpdateBackupDir | Out-Null
+    if (Test-Path -LiteralPath $StateFile) {
+        $timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
+        $script:stateBackup = Join-Path $UpdateBackupDir "state-$timestamp.json"
+        Copy-Item -LiteralPath $StateFile -Destination $script:stateBackup -Force
+        $script:stateBackupHash = Get-FileSha256 $script:stateBackup
+        $script:stateGuardSummary = "respaldo pre-update creado"
+        Write-Host "Respaldo de state.json: $script:stateBackup"
+        Invoke-PythonOutput "import memory_transfer; backup = memory_transfer.create_backup(reason='pre_update'); print('Respaldo portable de memoria: ' + backup['path'])" "crear respaldo portable pre-update" -AllowMissingPython -AllowFailure | Out-Null
+    }
+    else {
+        $script:stateGuardSummary = "no existia state.json"
+        Write-Host "No existe state.json; no hay estado que respaldar."
+    }
+}
+
+function Restore-StateBackupForUpdate([string]$Reason) {
+    if (-not $script:stateBackup) {
+        return
+    }
+
+    if (-not (Test-Path -LiteralPath $script:stateBackup)) {
+        Write-Warning "No pude restaurar state.json porque falta el respaldo pre-update: $script:stateBackup"
+        return
+    }
+
+    Copy-Item -LiteralPath $script:stateBackup -Destination $StateFile -Force
+    $script:stateGuardSummary = "restaurado desde respaldo pre-update ($Reason)"
+    Write-Warning "state.json fue restaurado desde el respaldo pre-update: $Reason."
+}
+
+function Confirm-StatePreservedAfterUpdate {
+    if (-not $script:stateBackup) {
+        return
+    }
+
+    if (-not (Test-Path -LiteralPath $StateFile)) {
+        Restore-StateBackupForUpdate "state.json faltaba al finalizar"
+        return
+    }
+
+    $currentHash = Get-FileSha256 $StateFile
+    if (-not $currentHash) {
+        Restore-StateBackupForUpdate "no pude verificar el hash actual"
+        return
+    }
+
+    if ($script:stateBackupHash -and ($currentHash -ne $script:stateBackupHash)) {
+        Restore-StateBackupForUpdate "state.json cambio durante la actualizacion"
+        return
+    }
+
+    $script:stateGuardSummary = "preservado"
+}
+
 function Ensure-Venv {
     if (Test-Path -LiteralPath $VenvPython) {
         return
@@ -379,21 +465,12 @@ try {
         Invoke-PythonOutput "from pc_context_runtime import stop_context_helper; print(stop_context_helper())" "detener helper de contexto local" -AllowMissingPython -AllowFailure | Out-Null
     }
 
-    Save-LocalChangesForUpdate
-
-    New-Item -ItemType Directory -Force -Path $UpdateBackupDir | Out-Null
-    if (Test-Path -LiteralPath $StateFile) {
-        $timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
-        $stateBackup = Join-Path $UpdateBackupDir "state-$timestamp.json"
-        Copy-Item -LiteralPath $StateFile -Destination $stateBackup -Force
-        Write-Host "Respaldo de state.json: $stateBackup"
-        Invoke-PythonOutput "import memory_transfer; backup = memory_transfer.create_backup(reason='pre_update'); print('Respaldo portable de memoria: ' + backup['path'])" "crear respaldo portable pre-update" -AllowMissingPython -AllowFailure | Out-Null
-    }
-    else {
-        Write-Host "No existe state.json; no hay estado que respaldar."
-    }
-
     Stop-YarbisServiceIfNeeded
+
+    Write-Step "Protegiendo memoria local"
+    Backup-StateForUpdate
+
+    Save-LocalChangesForUpdate
 
     Write-Step "Trayendo cambios desde $resolvedFetchLabel/$Branch"
     Invoke-CommandChecked "git" @("-C", $RepoRoot, "fetch", $resolvedFetchSource, $Branch) "git fetch"
@@ -423,6 +500,8 @@ try {
         $serviceSummary = "no reiniciado por conflictos locales"
     }
 
+    Confirm-StatePreservedAfterUpdate
+
     if ($serviceWasInstalled -and -not $stashConflict) {
         Write-Step "Recompilando/reconfigurando servicio SCM"
         $startAutoLiteral = if ($serviceAutostart) { "True" } else { "False" }
@@ -449,6 +528,7 @@ try {
     Write-Host "Checks:          $checksSummary"
     Write-Host "Cambios locales: $stashSummary"
     Write-Host "Servicio:        $serviceSummary"
+    Write-Host "Estado local:    $stateGuardSummary"
     if ($stateBackup) {
         Write-Host "Respaldo estado: $stateBackup"
     }
@@ -471,6 +551,18 @@ catch {
         Write-Host ""
         Write-Host "Intentando restaurar cambios locales guardados antes de salir..."
         Restore-LocalChangesFromStash
+    }
+
+    if ($stateBackup) {
+        Write-Host ""
+        Write-Host "Verificando que state.json quede como antes del update..."
+        try {
+            Confirm-StatePreservedAfterUpdate
+            Write-Host "Estado local: $stateGuardSummary"
+        }
+        catch {
+            Write-Warning "No pude verificar/restaurar state.json: $($_.Exception.Message)"
+        }
     }
 
     if ($serviceWasRunning -and -not $codeUpdated -and -not $stashConflict) {

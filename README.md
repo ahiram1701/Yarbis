@@ -141,23 +141,24 @@ Que puede cambiar:
 - Documentacion.
 - Host nativo publicado en `.yarbis_runtime/service_host/`.
 
-Si detecta cambios locales versionados o no versionados, el actualizador los guarda temporalmente con `git stash --include-untracked`, trae la actualizacion y luego intenta reaplicarlos con `git stash pop --index`. No descarta trabajo local automaticamente. Si al reaplicar hay conflictos, deja el arbol de Git en estado conflictivo, conserva el stash y no reinicia el servicio hasta que resuelvas los conflictos.
+Si detecta cambios locales versionados o no versionados, el actualizador los guarda temporalmente con `git stash --include-untracked`, trae la actualizacion y luego intenta reaplicarlos con `git stash pop --index`. La memoria local (`state.json`, `.yarbis_runtime/`, `.yarbis_checkpoints/`, `.yarbis_memory_backups/` y `tests_runtime/`) queda fuera del stash y se protege con un respaldo pre-update. No descarta trabajo local automaticamente. Si al reaplicar hay conflictos, deja el arbol de Git en estado conflictivo, conserva el stash y no reinicia el servicio hasta que resuelvas los conflictos.
 
 Flujo interno del actualizador:
 
 1. Valida que la carpeta sea un repo Git.
 2. Resuelve y valida la fuente de actualizacion antes de tocar servicio o cambios locales.
 3. Lee si el servicio SCM y el helper de contexto local estan activos.
-4. Detiene el helper si estaba corriendo, antes de ocultar archivos untracked con stash.
-5. Si hay cambios locales, los guarda en un stash con nombre `yarbis-update-AAAAMMDD-HHMMSS`.
-6. Copia `state.json` a `.yarbis_runtime/updates/state-AAAAMMDD-HHMMSS.json` si existe.
-7. Detiene el servicio si estaba corriendo.
+4. Detiene el helper y el servicio si estaban corriendo, para congelar la memoria antes de tocar el codigo.
+5. Copia `state.json` a `.yarbis_runtime/updates/state-AAAAMMDD-HHMMSS.json` si existe y crea un respaldo portable de memoria.
+6. Si hay cambios locales fuera de memoria/runtime, los guarda en un stash con nombre `yarbis-update-AAAAMMDD-HHMMSS`.
+7. Mantiene `state.json` y carpetas runtime fuera del stash.
 8. Ejecuta `git fetch` y `git merge --ff-only FETCH_HEAD`.
 9. Instala dependencias con `.venv\Scripts\python.exe -m pip install -r requirements.txt`.
 10. Ejecuta `.\scripts\check.ps1`, salvo que uses `-SkipChecks`.
 11. Reaplica el stash local con `git stash pop --index`.
-12. Si no hay conflictos, recompila/reconfigura el servicio SCM y reinicia lo que estaba activo.
-13. Imprime un resumen con commit anterior, commit remoto, commit actual, checks, dependencias, cambios locales, servicio y respaldo de estado.
+12. Verifica que `state.json` siga identico al respaldo pre-update; si falta o cambio durante la actualizacion, lo restaura automaticamente.
+13. Si no hay conflictos, recompila/reconfigura el servicio SCM y reinicia lo que estaba activo.
+14. Imprime un resumen con commit anterior, commit remoto, commit actual, checks, dependencias, cambios locales, servicio y respaldo de estado.
 
 Recuperacion si algo falla:
 
@@ -166,7 +167,7 @@ Recuperacion si algo falla:
 - Si fallo al reaplicar cambios locales, revisa `git status`, resuelve conflictos y despues inicia Yarbis o el servicio de nuevo.
 - Para inspeccionar el respaldo temporal usa `git stash list`, `git stash show --stat 'stash@{N}'` y, si necesitas reaplicarlo manualmente, `git stash pop 'stash@{N}'`.
 - Si el servicio quedo detenido tras una falla posterior al cambio de codigo, abre Yarbis como administrador y usa `Servicio` -> `Iniciar servicio`, o ejecuta de nuevo el update cuando el problema este corregido.
-- Si `state.json` quedara danado, cierra Yarbis y restaura el respaldo mas reciente desde `.yarbis_runtime/updates/`.
+- Si `state.json` quedara danado, el actualizador intenta restaurarlo automaticamente desde `.yarbis_runtime/updates/`. Si necesitas hacerlo a mano, cierra Yarbis y restaura el respaldo mas reciente desde esa carpeta.
 
 Ejemplos comunes:
 
