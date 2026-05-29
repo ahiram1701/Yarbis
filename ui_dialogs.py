@@ -307,9 +307,72 @@ class FirstRunDialog(ThemedDialog):
             self.provider_var.set(provider)
         self._load_provider_fields(provider)
 
+    def _create_scrollable_body(self, master):
+        screen_width = max(760, self.winfo_screenwidth())
+        screen_height = max(560, self.winfo_screenheight())
+        body_width = max(640, min(720, screen_width - 120))
+        body_height = max(360, min(520, screen_height - 210))
+
+        try:
+            self.minsize(720, min(560, screen_height - 80))
+        except tk.TclError:
+            pass
+
+        master.columnconfigure(0, weight=1)
+        master.rowconfigure(0, weight=1)
+
+        container = ttk.Frame(master)
+        container.grid(row=0, column=0, sticky="nsew")
+        container.columnconfigure(0, weight=1)
+        container.rowconfigure(0, weight=1)
+
+        canvas = tk.Canvas(
+            container,
+            width=body_width,
+            height=body_height,
+            bd=0,
+            highlightthickness=0,
+            bg=self.theme_palette["bg"],
+        )
+        canvas.grid(row=0, column=0, sticky="nsew")
+
+        scrollbar = ttk.Scrollbar(
+            container,
+            orient="vertical",
+            command=canvas.yview,
+            style="Yarbis.Vertical.TScrollbar",
+        )
+        scrollbar.grid(row=0, column=1, sticky="ns")
+        canvas.configure(yscrollcommand=scrollbar.set)
+        style_scrollbar_widget(scrollbar, self.theme_palette)
+
+        content = ttk.Frame(canvas)
+        content.columnconfigure(0, weight=1)
+        content_window = canvas.create_window((0, 0), window=content, anchor="nw")
+
+        def sync_scroll_region(_event=None):
+            canvas.configure(scrollregion=canvas.bbox("all"))
+
+        def sync_content_width(event):
+            canvas.itemconfigure(content_window, width=event.width)
+
+        def scroll_body(event):
+            if event.delta:
+                canvas.yview_scroll(int(-event.delta / 120), "units")
+
+        content.bind("<Configure>", sync_scroll_region)
+        canvas.bind("<Configure>", sync_content_width)
+        canvas.bind("<Enter>", lambda _event: canvas.bind_all("<MouseWheel>", scroll_body))
+        canvas.bind("<Leave>", lambda _event: canvas.unbind_all("<MouseWheel>"))
+
+        self.first_run_canvas = canvas
+        self.first_run_scrollbar = scrollbar
+        return content
+
     def body(self, master):
         self._prepare_body(master)
-        master.columnconfigure(0, weight=1)
+        form = self._create_scrollable_body(master)
+        form.columnconfigure(0, weight=1)
 
         state_goal = str(self.initial_state.get("goal", "")).strip()
         profile = self.initial_state.get("profile", {})
@@ -330,19 +393,19 @@ class FirstRunDialog(ThemedDialog):
         self.api_help_var = tk.StringVar()
 
         ttk.Label(
-            master,
+            form,
             text="Objetivo principal",
             font=("Segoe UI", 11, "bold"),
         ).grid(row=0, column=0, sticky="w", padx=6, pady=(6, 2))
 
-        self.goal_text = tk.Text(master, width=68, height=4, wrap="word")
+        self.goal_text = tk.Text(form, width=68, height=4, wrap="word")
         self.goal_text.grid(row=1, column=0, sticky="ew", padx=6)
         self._style_text_widget(self.goal_text)
         self.goal_text.insert("1.0", state_goal)
 
-        ttk.Label(master, text="Plantillas rápidas").grid(row=2, column=0, sticky="w", padx=6, pady=(8, 2))
+        ttk.Label(form, text="Plantillas rápidas").grid(row=2, column=0, sticky="w", padx=6, pady=(8, 2))
         self.template_combo = ttk.Combobox(
-            master,
+            form,
             values=self.GOAL_TEMPLATES,
             state="readonly",
             width=64,
@@ -350,7 +413,7 @@ class FirstRunDialog(ThemedDialog):
         self.template_combo.grid(row=3, column=0, sticky="ew", padx=6)
         self.template_combo.bind("<<ComboboxSelected>>", self._apply_template)
 
-        identity = ttk.LabelFrame(master, text="Contexto mínimo")
+        identity = ttk.LabelFrame(form, text="Contexto mínimo")
         identity.grid(row=4, column=0, sticky="ew", padx=6, pady=(10, 0))
         identity.columnconfigure(0, weight=1)
 
@@ -364,7 +427,7 @@ class FirstRunDialog(ThemedDialog):
         self.role_entry.grid(row=3, column=0, sticky="ew", padx=8, pady=(0, 8))
         self.role_entry.insert(0, profile.get("role", ""))
 
-        model_frame = ttk.LabelFrame(master, text="Modelo")
+        model_frame = ttk.LabelFrame(form, text="Modelo")
         model_frame.grid(row=5, column=0, sticky="ew", padx=6, pady=(10, 0))
         model_frame.columnconfigure(0, weight=1)
         model_frame.columnconfigure(1, weight=0)
@@ -410,7 +473,7 @@ class FirstRunDialog(ThemedDialog):
             wraplength=420,
         ).grid(row=10, column=0, columnspan=2, sticky="w", padx=8, pady=(0, 8))
 
-        options = ttk.LabelFrame(master, text="Al guardar")
+        options = ttk.LabelFrame(form, text="Al guardar")
         options.grid(row=6, column=0, sticky="ew", padx=6, pady=(10, 6))
         self.run_first_cycle_var = tk.BooleanVar(value=True)
         self.open_notifications_var = tk.BooleanVar(value=False)
