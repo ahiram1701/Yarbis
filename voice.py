@@ -729,6 +729,14 @@ def _ffmpeg_executable() -> str:
     return imageio_ffmpeg.get_ffmpeg_exe()
 
 
+def synthesize_speech_wav_file(text: str, settings: dict | None = None) -> Path:
+    voice_settings = ensure_voice_enabled(settings)
+    cleaned_text = str(text or "").strip()
+    if not cleaned_text:
+        raise VoiceError("No hay texto para convertir a voz.")
+    return _synthesize_wav_file(cleaned_text, voice_settings)
+
+
 def synthesize_speech_file(text: str, settings: dict | None = None) -> Path:
     import subprocess
 

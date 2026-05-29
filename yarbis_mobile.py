@@ -1053,11 +1053,18 @@ def _synthesize_mobile_speech(payload: dict) -> tuple[str, str]:
     text = _payload_text(payload, "text")
     if not text:
         raise ValueError("No hay texto para escuchar.")
+    requested_format = _payload_text(payload, "format", "wav").lower()
+    if requested_format in {"ogg", "opus", "audio/ogg"}:
+        synthesizer = yarbis_voice.synthesize_speech_file
+        mime_type = "audio/ogg"
+    else:
+        synthesizer = yarbis_voice.synthesize_speech_wav_file
+        mime_type = "audio/wav"
     audio_path = None
     try:
-        audio_path = yarbis_voice.synthesize_speech_file(text, settings=load_state())
+        audio_path = synthesizer(text, settings=load_state())
         raw_audio = audio_path.read_bytes()
-        return base64.b64encode(raw_audio).decode("ascii"), "audio/ogg"
+        return base64.b64encode(raw_audio).decode("ascii"), mime_type
     finally:
         yarbis_voice.cleanup_voice_file(audio_path)
 
@@ -1744,7 +1751,13 @@ function base64ToBlob(base64Text, mimeType) {
   const binary = atob(base64Text || "");
   const bytes = new Uint8Array(binary.length);
   for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
-  return new Blob([bytes], { type: mimeType || "audio/ogg" });
+  return new Blob([bytes], { type: mimeType || "audio/wav" });
+}
+
+function preferredLocalSpeechFormat() {
+  const audio = document.createElement("audio");
+  if (audio.canPlayType && audio.canPlayType("audio/ogg; codecs=opus")) return "ogg";
+  return "wav";
 }
 
 async function speakText(text) {
@@ -1761,11 +1774,13 @@ async function speakText(text) {
       const data = await api("/api/voice/speak", {
         method: "POST",
         headers: { "X-CSRF-Token": csrfToken },
-        body: { csrf: csrfToken, text: clean }
+        body: { csrf: csrfToken, text: clean, format: preferredLocalSpeechFormat() }
       });
       csrfToken = data.csrf || csrfToken;
       const blob = base64ToBlob(data.audio_b64, data.mime_type);
       localSpeechAudio = new Audio(URL.createObjectURL(blob));
+      localSpeechAudio.preload = "auto";
+      localSpeechAudio.playsInline = true;
       localSpeechAudio.onended = () => {
         if (localSpeechAudio && localSpeechAudio.src) URL.revokeObjectURL(localSpeechAudio.src);
         localSpeechAudio = null;

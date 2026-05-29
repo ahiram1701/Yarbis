@@ -292,8 +292,10 @@ class YarbisMobileTestCase(unittest.TestCase):
     def test_http_api_voice_voices_catalog_flag_and_speak_endpoint(self):
         state_path = TEST_RUNTIME_DIR / "mobile_voice_catalog_state.json"
         audio_path = TEST_RUNTIME_DIR / "mobile_speak.ogg"
+        wav_path = TEST_RUNTIME_DIR / "mobile_speak.wav"
         state_path.parent.mkdir(parents=True, exist_ok=True)
         audio_path.write_bytes(b"ogg")
+        wav_path.write_bytes(b"wav")
 
         with patch.object(memory, "STATE_FILE", state_path):
             memory.save_state(memory.default_state())
@@ -328,11 +330,30 @@ class YarbisMobileTestCase(unittest.TestCase):
                 self.assertTrue(voices_mock.call_args.kwargs["include_downloadable"])
                 self.assertTrue(voices_mock.call_args.kwargs["refresh_catalog"])
 
+                with patch.object(yarbis_mobile.yarbis_voice, "synthesize_speech_wav_file", return_value=wav_path):
+                    with patch.object(yarbis_mobile.yarbis_voice, "cleanup_voice_file") as cleanup_mock:
+                        conn.request("POST", "/api/voice/speak", body=json.dumps({
+                            "csrf": login_payload["csrf"],
+                            "text": "Hola",
+                        }), headers={
+                            "Content-Type": "application/json",
+                            "Cookie": cookie,
+                            "X-CSRF-Token": login_payload["csrf"],
+                        })
+                        response = conn.getresponse()
+                        speak_payload = json.loads(response.read().decode("utf-8"))
+
+                self.assertEqual(response.status, 200)
+                self.assertEqual(base64.b64decode(speak_payload["audio_b64"]), b"wav")
+                self.assertEqual(speak_payload["mime_type"], "audio/wav")
+                cleanup_mock.assert_called_once_with(wav_path)
+
                 with patch.object(yarbis_mobile.yarbis_voice, "synthesize_speech_file", return_value=audio_path):
                     with patch.object(yarbis_mobile.yarbis_voice, "cleanup_voice_file") as cleanup_mock:
                         conn.request("POST", "/api/voice/speak", body=json.dumps({
                             "csrf": login_payload["csrf"],
                             "text": "Hola",
+                            "format": "ogg",
                         }), headers={
                             "Content-Type": "application/json",
                             "Cookie": cookie,
@@ -500,6 +521,7 @@ class YarbisMobileTestCase(unittest.TestCase):
         self.assertIn("Detener habla", html)
         self.assertIn("speechSynthesis.cancel", html)
         self.assertIn("/api/voice/speak", html)
+        self.assertIn("preferredLocalSpeechFormat", html)
         self.assertIn("Catálogo Kokoro", html)
         self.assertIn("modalBackdrop", html)
         self.assertNotIn("confirm(", html)

@@ -99,6 +99,25 @@ class VoiceTestCase(unittest.TestCase):
         finally:
             voice.cleanup_voice_file(audio_path)
 
+    def test_synthesize_speech_wav_file_uses_kokoro_without_ogg_conversion(self):
+        def fake_kokoro(_text, wav_path, _settings):
+            with wave.open(str(wav_path), "wb") as wav_file:
+                wav_file.setnchannels(1)
+                wav_file.setsampwidth(2)
+                wav_file.setframerate(24000)
+                wav_file.writeframes(b"\0\0" * 16)
+
+        with patch.object(voice, "_synthesize_kokoro_wav", side_effect=fake_kokoro) as kokoro_mock:
+            audio_path = voice.synthesize_speech_wav_file(
+                "Hola",
+                settings={"enabled": True, "tts_provider": "kokoro", "kokoro_voice_id": "ef_dora"},
+            )
+        try:
+            self.assertEqual(audio_path.suffix, ".wav")
+            kokoro_mock.assert_called_once()
+        finally:
+            voice.cleanup_voice_file(audio_path)
+
     def test_stop_speaking_stops_active_engine(self):
         engine = Mock()
         previous = voice._TTS_ENGINE

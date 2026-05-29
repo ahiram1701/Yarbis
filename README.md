@@ -465,7 +465,8 @@ Superficies disponibles:
 - La UI movil permite grabar en el compositor y transcribe en Yarbis mediante
   `/api/voice/transcribe`; tambien puede leer resultados con `speechSynthesis` del navegador,
   elegir motor `Sistema/Kokoro`, probar voz, elegir voz/rate/pitch
-  en `Config` -> `Voz` y detener habla activa con `Detener habla`.
+  en `Config` -> `Voz` y detener habla activa con `Detener habla`. Para Kokoro en Safari/iPhone,
+  la UI web pide audio WAV porque iOS no reproduce OGG/Opus de forma consistente.
   Si iPhone/Safari bloquea el microfono por HTTP o por origen no seguro, usa `Grabar archivo`:
   abre la captura/subida de audio del sistema y reutiliza la misma transcripcion local.
 - La app de escritorio tiene `Dictar` en el compositor, `Voz` para elegir motor, voz del sistema
