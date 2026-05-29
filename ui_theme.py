@@ -190,20 +190,19 @@ def configure_app_styles(style, palette: dict):
             bordercolor=palette["border"],
             padding=7,
         )
-    for scrollbar_style in ("TScrollbar", "Yarbis.Vertical.TScrollbar"):
-        style.configure(
-            scrollbar_style,
-            background=palette["button_bg"],
-            troughcolor=palette["panel"],
-            bordercolor=palette["border"],
-            darkcolor=palette["button_bg"],
-            lightcolor=palette["button_bg"],
-            arrowcolor=palette["fg"],
-            relief="flat",
-            borderwidth=0,
-            arrowsize=12,
-            width=14,
-        )
+    style.configure(
+        "Yarbis.Vertical.TScrollbar",
+        background=palette["button_bg"],
+        troughcolor=palette["panel"],
+        bordercolor=palette["border"],
+        darkcolor=palette["button_bg"],
+        lightcolor=palette["button_bg"],
+        arrowcolor=palette["fg"],
+        relief="flat",
+        borderwidth=0,
+        arrowsize=12,
+        width=14,
+    )
 
     style.map(
         "TButton",
@@ -243,12 +242,11 @@ def configure_app_styles(style, palette: dict):
         selectforeground=[("readonly", palette["select_fg"])],
         arrowcolor=[("disabled", palette["disabled_fg"])],
     )
-    for scrollbar_style in ("TScrollbar", "Yarbis.Vertical.TScrollbar"):
-        style.map(
-            scrollbar_style,
-            background=[("active", palette["button_active"]), ("pressed", palette["accent"]), ("disabled", palette["disabled_bg"])],
-            arrowcolor=[("pressed", palette["accent_fg"]), ("disabled", palette["disabled_fg"])],
-        )
+    style.map(
+        "Yarbis.Vertical.TScrollbar",
+        background=[("active", palette["button_active"]), ("pressed", palette["accent"]), ("disabled", palette["disabled_bg"])],
+        arrowcolor=[("pressed", palette["accent_fg"]), ("disabled", palette["disabled_fg"])],
+    )
 
 
 def style_scrollbar_widget(scrollbar, palette: dict):

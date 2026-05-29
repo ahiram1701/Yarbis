@@ -6,6 +6,7 @@ import subprocess
 import threading
 import tkinter as tk
 import time
+import traceback
 from datetime import datetime
 from pathlib import Path
 from tkinter import filedialog, messagebox, simpledialog, ttk
@@ -2753,5 +2754,32 @@ def main():
         _release_single_instance_lock()
 
 
+def _run_main_with_crash_report():
+    try:
+        main()
+    except Exception:
+        _RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
+        crash_log = _RUNTIME_DIR / "desktop_crash.log"
+        crash_log.write_text(
+            (
+                f"Yarbis desktop crash at {datetime.now().isoformat(timespec='seconds')}\n\n"
+                f"{traceback.format_exc()}"
+            ),
+            encoding="utf-8",
+        )
+        try:
+            root = tk.Tk()
+            root.withdraw()
+            messagebox.showerror(
+                "Yarbis no pudo abrir",
+                f"Guardé el detalle del error en:\n{crash_log}",
+                parent=root,
+            )
+            root.destroy()
+        except Exception:
+            pass
+        raise
+
+
 if __name__ == "__main__":
-    main()
+    _run_main_with_crash_report()
