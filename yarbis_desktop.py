@@ -108,7 +108,16 @@ from ui_settings_dialogs import (
     ServicePulseDialog,
     VoiceSettingsDialog,
 )
-from ui_theme import THEMES, style_scrollbar_widget, style_text_widget
+from ui_theme import (
+    THEMES,
+    configure_app_styles,
+    create_app_style,
+    create_card,
+    create_section,
+    style_scrollbar_widget,
+    style_text_widget,
+    use_bootstrap_theme,
+)
 from yarbis_mobile import get_mobile_ui_settings, public_mobile_ui_status, update_mobile_ui_settings
 
 _SINGLE_INSTANCE_MUTEX_NAME = "Local\\YarbisDesktopSingleInstance"
@@ -212,7 +221,7 @@ try:
     elif operation == "submit_user_reply":
         result = submit_user_reply(str(payload.get("reply_text", "")))
     else:
-        raise ValueError(f"Operacion de escritorio desconocida: {operation}")
+        raise ValueError(f"Operación de escritorio desconocida: {operation}")
 except Exception as exc:
     response_payload = {
         "ok": False,
@@ -353,7 +362,7 @@ def _session_operation_subprocess(operation: str, **payload) -> str:
             _terminate_process_tree(process)
             stdout, stderr = process.communicate()
             raise RuntimeError(
-                "La operacion de escritorio excedio el tiempo limite y fue detenida."
+                "La operación de escritorio excedió el tiempo límite y fue detenida."
             ) from exc
 
         response_payload = {}
@@ -371,7 +380,7 @@ def _session_operation_subprocess(operation: str, **payload) -> str:
                 for part in (stdout, stderr)
                 if str(part).strip()
             )
-        raise RuntimeError(error_text or f"Operacion {operation} termino con exit={process.returncode}.")
+        raise RuntimeError(error_text or f"Operación {operation} terminó con exit={process.returncode}.")
     finally:
         for path in (request_path, response_path):
             try:
@@ -391,7 +400,7 @@ class YarbisDesktop(tk.Tk):
 
         self.current_theme_name = get_ui_theme()
         self.theme_palette = THEMES.get(self.current_theme_name, THEMES["dark"])
-        self.style = ttk.Style(self)
+        self.style, self._bootstrap_style_active = create_app_style(self, self.current_theme_name)
 
         self.goal_var = tk.StringVar()
         self.cycles_var = tk.StringVar()
@@ -408,6 +417,10 @@ class YarbisDesktop(tk.Tk):
         self.service_button_text = tk.StringVar()
         self.service_autostart_var = tk.BooleanVar()
         self.service_autostart_text = tk.StringVar()
+        self._current_view = "home"
+        self._view_frames = {}
+        self._nav_buttons = {}
+        self._dashboard_badges = {}
 
         self._result_queue = queue.Queue()
         self._worker_thread = None
@@ -448,272 +461,87 @@ class YarbisDesktop(tk.Tk):
         self.after(_STATE_SYNC_INTERVAL_MS, self._sync_state_view)
 
     def _build_ui(self):
+        self.columnconfigure(0, weight=0)
         self.columnconfigure(1, weight=1)
-        self.rowconfigure(1, weight=1)
+        self.rowconfigure(0, weight=1)
 
-        summary = ttk.LabelFrame(self, text="Resumen rapido")
-        summary.grid(row=0, column=0, columnspan=2, sticky="nsew", padx=12, pady=(12, 6))
-        summary.columnconfigure(1, weight=1)
+        sidebar = ttk.Frame(self, style="Sidebar.TFrame", padding=(16, 18, 16, 12))
+        sidebar.grid(row=0, column=0, sticky="ns")
+        sidebar.columnconfigure(0, weight=1)
 
-        ttk.Label(summary, text="Objetivo").grid(row=0, column=0, sticky="nw", padx=10, pady=(10, 4))
-        ttk.Label(summary, textvariable=self.goal_var, wraplength=780).grid(
-            row=0,
-            column=1,
-            sticky="nw",
-            padx=(0, 10),
-            pady=(10, 4),
+        ttk.Label(sidebar, text="Yarbis", style="SidebarTitle.TLabel").grid(row=0, column=0, sticky="w")
+        ttk.Label(
+            sidebar,
+            text="Panel operativo local",
+            style="SidebarMuted.TLabel",
+        ).grid(row=1, column=0, sticky="w", pady=(2, 18))
+
+        nav_items = (
+            ("home", "Inicio"),
+            ("run", "Ejecutar"),
+            ("context", "Contexto"),
+            ("settings", "Configuración"),
+            ("activity", "Actividad"),
+        )
+        for index, (view_name, label) in enumerate(nav_items, start=2):
+            self._nav_buttons[view_name] = ttk.Button(
+                sidebar,
+                text=label,
+                style="Nav.TButton",
+                command=lambda name=view_name: self._show_view(name),
+            )
+            self._nav_buttons[view_name].grid(row=index, column=0, sticky="ew", pady=(0, 6))
+
+        quick = create_section(sidebar, "Rápido")
+        quick.grid(row=8, column=0, sticky="ew", pady=(16, 0))
+        self._pack_action_button(
+            ttk.Button(quick, text="Ejecutar ciclo", command=self._run_cycle, style="Accent.TButton")
+        )
+        self._pack_action_button(
+            ttk.Button(quick, text="Detener pensando", command=self._stop_current_operation, style="Danger.TButton"),
+            disable_when_busy=False,
+        )
+        ttk.Button(quick, textvariable=self.theme_button_text, command=self._toggle_theme).pack(
+            fill="x",
+            padx=8,
+            pady=(3, 8),
         )
 
-        ttk.Label(summary, text="Ciclos").grid(row=1, column=0, sticky="w", padx=10, pady=4)
-        ttk.Label(summary, textvariable=self.cycles_var).grid(row=1, column=1, sticky="w", pady=4)
+        content_shell = ttk.Frame(self, padding=(18, 14, 18, 8))
+        content_shell.grid(row=0, column=1, sticky="nsew")
+        content_shell.columnconfigure(0, weight=1)
+        content_shell.rowconfigure(1, weight=1)
 
-        ttk.Label(summary, text="Tema").grid(row=2, column=0, sticky="w", padx=10, pady=4)
-        ttk.Label(summary, textvariable=self.theme_var).grid(row=2, column=1, sticky="w", pady=4)
+        header = ttk.Frame(content_shell)
+        header.grid(row=0, column=0, sticky="ew", pady=(0, 12))
+        header.columnconfigure(0, weight=1)
+        ttk.Label(header, text="Centro de control", style="Title.TLabel").grid(row=0, column=0, sticky="w")
+        ttk.Label(
+            header,
+            text="Estado, ejecución, configuración y actividad en una misma vista de trabajo.",
+            style="Subtitle.TLabel",
+        ).grid(row=1, column=0, sticky="w", pady=(2, 0))
+        ttk.Button(header, text="Refrescar", command=self.refresh_state_view).grid(row=0, column=1, rowspan=2, sticky="e")
 
-        ttk.Label(summary, text="Modelo").grid(row=3, column=0, sticky="w", padx=10, pady=4)
-        ttk.Label(summary, textvariable=self.ollama_var, wraplength=780).grid(
-            row=3,
-            column=1,
-            sticky="w",
-            padx=(0, 10),
-            pady=4,
-        )
+        views = ttk.Frame(content_shell)
+        views.grid(row=1, column=0, sticky="nsew")
+        views.columnconfigure(0, weight=1)
+        views.rowconfigure(0, weight=1)
 
-        ttk.Label(summary, text="Servicio").grid(row=4, column=0, sticky="nw", padx=10, pady=4)
-        ttk.Label(summary, textvariable=self.service_var, wraplength=780).grid(
-            row=4,
-            column=1,
-            sticky="nw",
-            padx=(0, 10),
-            pady=4,
-        )
+        for view_name in ("home", "run", "context", "settings", "activity"):
+            frame = ttk.Frame(views)
+            frame.grid(row=0, column=0, sticky="nsew")
+            frame.columnconfigure(0, weight=1)
+            self._view_frames[view_name] = frame
 
-        ttk.Label(summary, text="Coding").grid(row=5, column=0, sticky="nw", padx=10, pady=4)
-        ttk.Label(summary, textvariable=self.coding_var, wraplength=780).grid(
-            row=5,
-            column=1,
-            sticky="nw",
-            padx=(0, 10),
-            pady=4,
-        )
+        self._build_home_view(self._view_frames["home"])
+        self._build_run_view(self._view_frames["run"])
+        self._build_context_view(self._view_frames["context"])
+        self._build_settings_view(self._view_frames["settings"])
+        self._build_activity_view(self._view_frames["activity"])
 
-        ttk.Label(summary, text="Pensando").grid(row=6, column=0, sticky="nw", padx=10, pady=4)
-        ttk.Label(summary, textvariable=self.thinking_var, wraplength=780).grid(
-            row=6,
-            column=1,
-            sticky="nw",
-            padx=(0, 10),
-            pady=4,
-        )
-
-        ttk.Label(summary, text="Salud").grid(row=7, column=0, sticky="nw", padx=10, pady=4)
-        ttk.Label(summary, textvariable=self.health_var, wraplength=780).grid(
-            row=7,
-            column=1,
-            sticky="nw",
-            padx=(0, 10),
-            pady=4,
-        )
-
-        ttk.Label(summary, text="Preparacion").grid(row=8, column=0, sticky="nw", padx=10, pady=4)
-        ttk.Label(summary, textvariable=self.readiness_var, wraplength=780).grid(
-            row=8,
-            column=1,
-            sticky="nw",
-            padx=(0, 10),
-            pady=4,
-        )
-
-        ttk.Label(summary, text="Pendiente").grid(row=9, column=0, sticky="nw", padx=10, pady=(4, 10))
-        ttk.Label(summary, textvariable=self.pending_var, wraplength=780).grid(
-            row=9,
-            column=1,
-            sticky="nw",
-            padx=(0, 10),
-            pady=(4, 10),
-        )
-
-        actions_shell = ttk.Frame(self)
-        actions_shell.grid(row=1, column=0, sticky="nsew", padx=(12, 6), pady=6)
-        actions_shell.columnconfigure(0, weight=1)
-        actions_shell.rowconfigure(0, weight=1)
-
-        self.actions_canvas = tk.Canvas(
-            actions_shell,
-            width=220,
-            height=1,
-            highlightthickness=0,
-            bd=0,
-        )
-        self.actions_canvas.grid(row=0, column=0, sticky="nsew")
-        self.actions_scrollbar = ttk.Scrollbar(
-            actions_shell,
-            orient="vertical",
-            command=self.actions_canvas.yview,
-        )
-        self.actions_scrollbar.grid(row=0, column=1, sticky="ns")
-        self.actions_canvas.configure(yscrollcommand=self.actions_scrollbar.set)
-
-        actions = ttk.Frame(self.actions_canvas)
-        self.actions_window = self.actions_canvas.create_window((0, 0), window=actions, anchor="nw")
-        actions.bind("<Configure>", self._on_actions_content_configure)
-        self.actions_canvas.bind("<Configure>", self._on_actions_canvas_configure)
-        self.actions_canvas.bind("<Enter>", self._bind_action_mousewheel)
-        self.actions_canvas.bind("<Leave>", self._unbind_action_mousewheel)
-        actions.columnconfigure(0, weight=1)
-
-        self._build_action_group(
-            actions,
-            "Ejecucion",
-            (
-                {"text": "Ejecutar ciclo", "command": self._run_cycle, "style": "Accent.TButton"},
-                {"text": "Modo autonomo", "command": self._run_auto, "style": "Secondary.TButton"},
-                {
-                    "text": "Detener pensando",
-                    "command": self._stop_current_operation,
-                    "style": "Danger.TButton",
-                    "disable_when_busy": False,
-                },
-            ),
-        )
-        self._build_action_group(
-            actions,
-            "Modelo",
-            (
-                {"text": "Modelo y timeout", "command": self._edit_ollama_settings},
-            ),
-        )
-        self._build_action_group(
-            actions,
-            "Contexto",
-            (
-                {"text": "Cambiar objetivo", "command": self._change_goal},
-                {"text": "Editar perfil", "command": self._edit_profile},
-                {"text": "Ver notas", "command": self._manage_notes},
-                {"text": "Crear tarea", "command": self._create_task},
-            ),
-        )
-        self._build_action_group(
-            actions,
-            "Coding",
-            (
-                {"text": "Workspace de codigo", "command": self._choose_coding_workspace},
-                {"text": "Propuestas", "command": self._manage_coding_proposals},
-            ),
-        )
-        self._build_action_group(
-            actions,
-            "Memoria",
-            (
-                {"text": "Proteccion", "command": self._edit_memory_protection},
-                {"text": "Respaldar memoria", "command": self._backup_memory},
-                {"text": "Trasplantar memoria", "command": self._import_memory},
-                {"text": "Verificar respaldos", "command": self._verify_memory_backups},
-            ),
-        )
-        self._build_action_group(
-            actions,
-            "Comunicacion",
-            (
-                {"text": "Notificaciones", "command": self._edit_notifications},
-                {"text": "Probar notificacion", "command": self._send_test_notification},
-                {"text": "Voz", "command": self._edit_voice_settings},
-                {"text": "Voces Kokoro", "command": self._choose_kokoro_voice},
-                {"text": "Probar voz", "command": self._test_voice},
-                {
-                    "text": "Leer ultimo resultado",
-                    "command": self._speak_last_result,
-                    "disable_when_busy": False,
-                },
-                {
-                    "text": "Detener voz",
-                    "command": self._stop_speaking,
-                    "disable_when_busy": False,
-                },
-            ),
-        )
-        self._build_action_group(
-            actions,
-            "Redes sociales",
-            (
-                {"text": "Conectar cuenta", "command": self._connect_social_account},
-                {"text": "Ver cuentas", "command": self._show_social_accounts},
-                {"text": "Ver pendientes", "command": self._show_social_publications},
-                {"text": "Copiar confirmacion", "command": self._copy_social_confirmation},
-                {"text": "Abrir asistido", "command": self._open_assisted_social_post},
-            ),
-        )
-        self._build_service_group(actions)
-        self._build_action_group(
-            actions,
-            "Mantenimiento",
-            (
-                {"text": "Actualizar Yarbis", "command": self._update_yarbis, "style": "Secondary.TButton"},
-            ),
-        )
-        self._build_action_group(
-            actions,
-            "Vista",
-            (
-                {"textvariable": self.theme_button_text, "command": self._toggle_theme},
-                {"text": "Refrescar estado", "command": self.refresh_state_view},
-                {"text": "Limpiar actividad", "command": self._clear_activity, "style": "Danger.TButton"},
-            ),
-        )
-
-        main_panel = ttk.Frame(self)
-        main_panel.grid(row=1, column=1, sticky="nsew", padx=(6, 12), pady=6)
-        main_panel.columnconfigure(0, weight=1)
-        main_panel.columnconfigure(1, weight=1)
-        main_panel.rowconfigure(0, weight=1)
-        main_panel.rowconfigure(1, weight=0)
-
-        summary_frame = ttk.LabelFrame(main_panel, text="Estado actual")
-        summary_frame.grid(row=0, column=0, sticky="nsew", padx=(0, 4))
-        summary_frame.columnconfigure(0, weight=1)
-        summary_frame.rowconfigure(0, weight=1)
-        self.summary_text = self._create_scrolled_text(summary_frame, wrap="word", height=16)
-        self.summary_text.frame.grid(row=0, column=0, sticky="nsew", padx=8, pady=8)
-        self.summary_text.configure(state="disabled")
-
-        activity_frame = ttk.LabelFrame(main_panel, text="Actividad")
-        activity_frame.grid(row=0, column=1, sticky="nsew", padx=(4, 0))
-        activity_frame.columnconfigure(0, weight=1)
-        activity_frame.rowconfigure(0, weight=1)
-        self.activity_text = self._create_scrolled_text(activity_frame, wrap="word", height=18)
-        self.activity_text.frame.grid(row=0, column=0, sticky="nsew", padx=8, pady=8)
-        self.activity_text.configure(state="disabled")
-
-        composer = ttk.LabelFrame(main_panel, text="Respuesta o contexto libre")
-        composer.grid(row=1, column=0, columnspan=2, sticky="nsew", pady=(8, 0))
-        composer.columnconfigure(0, weight=1)
-        self.reply_text = tk.Text(composer, height=5, wrap="word")
-        self.reply_text.grid(row=0, column=0, sticky="nsew", padx=8, pady=8)
-
-        composer_buttons = ttk.Frame(composer)
-        composer_buttons.grid(row=0, column=1, sticky="ns", padx=(0, 8), pady=8)
-        composer_buttons.columnconfigure(0, weight=1)
-
-        self.voice_button = ttk.Button(
-            composer_buttons,
-            text="Dictar",
-            command=self._toggle_voice_recording,
-            style="Secondary.TButton",
-        )
-        self.voice_button.grid(row=0, column=0, sticky="ew", pady=(0, 6))
-
-        self.send_button = ttk.Button(
-            composer_buttons,
-            text="Enviar y ejecutar",
-            command=self._send_reply,
-            style="Accent.TButton",
-        )
-        self.send_button.grid(row=1, column=0, sticky="nsew")
-        self._action_buttons.append(self.voice_button)
-        self._action_buttons.append(self.send_button)
-
-        status_shell = ttk.Frame(self)
-        status_shell.grid(row=2, column=0, columnspan=2, sticky="ew", padx=12, pady=(0, 10))
+        status_shell = ttk.Frame(self, padding=(16, 0, 18, 10))
+        status_shell.grid(row=1, column=0, columnspan=2, sticky="ew")
         status_shell.columnconfigure(0, weight=1)
 
         status_bar = ttk.Label(status_shell, textvariable=self.status_var, anchor="w")
@@ -729,7 +557,239 @@ class YarbisDesktop(tk.Tk):
         self.factory_reset_button.grid(row=0, column=1, sticky="e", padx=(8, 0))
         self._action_buttons.append(self.factory_reset_button)
 
+        self._show_view("home")
         self.protocol("WM_DELETE_WINDOW", self._on_close)
+
+    def _build_metric_card(self, parent, title: str, variable: tk.StringVar, column: int, row: int = 0):
+        card = create_card(parent, title)
+        card.grid(row=row, column=column, sticky="nsew", padx=(0 if column == 0 else 8, 0), pady=(0, 8))
+        ttk.Label(card, textvariable=variable, style="Card.TLabel", wraplength=210).grid(
+            row=1,
+            column=0,
+            sticky="ew",
+            pady=(8, 0),
+        )
+        return card
+
+    def _build_home_view(self, parent):
+        parent.rowconfigure(2, weight=1)
+        parent.columnconfigure(0, weight=1)
+
+        metrics = ttk.Frame(parent)
+        metrics.grid(row=0, column=0, sticky="ew")
+        for column in range(4):
+            metrics.columnconfigure(column, weight=1, uniform="metrics")
+        self._build_metric_card(metrics, "Servicio", self.service_var, 0)
+        self._build_metric_card(metrics, "Ciclos", self.cycles_var, 1)
+        self._build_metric_card(metrics, "Modelo", self.ollama_var, 2)
+        self._build_metric_card(metrics, "Pendiente", self.pending_var, 3)
+
+        goal_card = create_card(parent, "Objetivo actual")
+        goal_card.grid(row=1, column=0, sticky="ew", pady=(4, 12))
+        ttk.Label(goal_card, textvariable=self.goal_var, style="Card.TLabel", wraplength=760).grid(
+            row=1,
+            column=0,
+            sticky="ew",
+            pady=(8, 0),
+        )
+
+        detail = ttk.Frame(parent)
+        detail.grid(row=2, column=0, sticky="nsew")
+        detail.columnconfigure(0, weight=1)
+        detail.columnconfigure(1, weight=1)
+        detail.rowconfigure(0, weight=1)
+
+        summary_frame = create_section(detail, "Estado actual")
+        summary_frame.grid(row=0, column=0, sticky="nsew", padx=(0, 6))
+        summary_frame.rowconfigure(0, weight=1)
+        self.summary_text = self._create_scrolled_text(summary_frame, wrap="word", height=16)
+        self.summary_text.frame.grid(row=0, column=0, sticky="nsew")
+        self.summary_text.configure(state="disabled")
+
+        health = create_section(detail, "Lectura rápida")
+        health.grid(row=0, column=1, sticky="nsew", padx=(6, 0))
+        health.columnconfigure(0, weight=1)
+        for row, (label, variable) in enumerate(
+            (
+                ("Pensando", self.thinking_var),
+                ("Salud", self.health_var),
+                ("Preparación", self.readiness_var),
+                ("Coding", self.coding_var),
+                ("Tema", self.theme_var),
+            )
+        ):
+            ttk.Label(health, text=label, style="Muted.TLabel").grid(row=row * 2, column=0, sticky="w", pady=(0, 2))
+            ttk.Label(health, textvariable=variable, wraplength=380).grid(
+                row=row * 2 + 1,
+                column=0,
+                sticky="ew",
+                pady=(0, 10),
+            )
+
+    def _build_run_view(self, parent):
+        parent.columnconfigure(0, weight=1)
+        parent.rowconfigure(1, weight=1)
+
+        actions = create_section(parent, "Ejecutar", "Acciones principales del ciclo actual.")
+        actions.grid(row=0, column=0, sticky="ew", pady=(0, 12))
+        for column in range(5):
+            actions.columnconfigure(column, weight=1, uniform="run_actions")
+        run_specs = (
+            ("Ejecutar ciclo", self._run_cycle, "Accent.TButton", True),
+            ("Modo autónomo", self._run_auto, "Secondary.TButton", True),
+            ("Detener pensando", self._stop_current_operation, "Danger.TButton", False),
+            ("Leer último resultado", self._speak_last_result, "TButton", False),
+            ("Detener voz", self._stop_speaking, "TButton", False),
+        )
+        for column, (text, command, style, disable_when_busy) in enumerate(run_specs):
+            button = ttk.Button(actions, text=text, command=command, style=style)
+            button.grid(row=1, column=column, sticky="ew", padx=(0 if column == 0 else 8, 0))
+            if disable_when_busy:
+                self._action_buttons.append(button)
+
+        composer = create_section(parent, "Respuesta o contexto", "Escribe una respuesta, una instrucción o contexto libre.")
+        composer.grid(row=1, column=0, sticky="nsew")
+        composer.columnconfigure(0, weight=1)
+        composer.rowconfigure(1, weight=1)
+        self.reply_text = tk.Text(composer, height=9, wrap="word")
+        self.reply_text.grid(row=1, column=0, sticky="nsew", pady=(0, 10))
+
+        composer_buttons = ttk.Frame(composer)
+        composer_buttons.grid(row=2, column=0, sticky="ew")
+        composer_buttons.columnconfigure(0, weight=0)
+        composer_buttons.columnconfigure(1, weight=1)
+        self.voice_button = ttk.Button(
+            composer_buttons,
+            text="Dictar",
+            command=self._toggle_voice_recording,
+            style="Secondary.TButton",
+        )
+        self.voice_button.grid(row=0, column=0, sticky="w", padx=(0, 8))
+        self.send_button = ttk.Button(
+            composer_buttons,
+            text="Enviar y ejecutar",
+            command=self._send_reply,
+            style="Accent.TButton",
+        )
+        self.send_button.grid(row=0, column=1, sticky="e")
+        self._action_buttons.extend([self.voice_button, self.send_button])
+
+    def _build_context_view(self, parent):
+        parent.columnconfigure(0, weight=1)
+        parent.columnconfigure(1, weight=1)
+        left = ttk.Frame(parent)
+        right = ttk.Frame(parent)
+        left.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
+        right.grid(row=0, column=1, sticky="nsew", padx=(8, 0))
+        for frame in (left, right):
+            frame.columnconfigure(0, weight=1)
+
+        self._build_action_group(
+            left,
+            "Objetivo y memoria de trabajo",
+            (
+                {"text": "Cambiar objetivo", "command": self._change_goal, "style": "Accent.TButton"},
+                {"text": "Editar perfil", "command": self._edit_profile},
+                {"text": "Ver notas", "command": self._manage_notes},
+                {"text": "Crear tarea", "command": self._create_task},
+            ),
+        )
+        self._build_action_group(
+            left,
+            "Coding",
+            (
+                {"text": "Workspace de código", "command": self._choose_coding_workspace},
+                {"text": "Propuestas", "command": self._manage_coding_proposals},
+            ),
+        )
+        self._build_action_group(
+            right,
+            "Redes sociales",
+            (
+                {"text": "Conectar cuenta", "command": self._connect_social_account},
+                {"text": "Ver cuentas", "command": self._show_social_accounts},
+                {"text": "Ver pendientes", "command": self._show_social_publications},
+                {"text": "Copiar confirmación", "command": self._copy_social_confirmation},
+                {"text": "Abrir asistido", "command": self._open_assisted_social_post},
+            ),
+        )
+        self._build_action_group(
+            right,
+            "Memoria",
+            (
+                {"text": "Protección", "command": self._edit_memory_protection},
+                {"text": "Respaldar memoria", "command": self._backup_memory},
+                {"text": "Trasplantar memoria", "command": self._import_memory},
+                {"text": "Verificar respaldos", "command": self._verify_memory_backups},
+            ),
+        )
+
+    def _build_settings_view(self, parent):
+        parent.columnconfigure(0, weight=1)
+        parent.columnconfigure(1, weight=1)
+        left = ttk.Frame(parent)
+        right = ttk.Frame(parent)
+        left.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
+        right.grid(row=0, column=1, sticky="nsew", padx=(8, 0))
+        for frame in (left, right):
+            frame.columnconfigure(0, weight=1)
+
+        self._build_action_group(
+            left,
+            "Modelo",
+            ({"text": "Modelo y timeout", "command": self._edit_ollama_settings, "style": "Accent.TButton"},),
+        )
+        self._build_action_group(
+            left,
+            "Comunicación",
+            (
+                {"text": "Notificaciones", "command": self._edit_notifications},
+                {"text": "Probar notificación", "command": self._send_test_notification},
+                {"text": "Voz", "command": self._edit_voice_settings},
+                {"text": "Voces Kokoro", "command": self._choose_kokoro_voice},
+                {"text": "Probar voz", "command": self._test_voice},
+            ),
+        )
+        self._build_service_group(right)
+        self._build_action_group(
+            right,
+            "Vista y mantenimiento",
+            (
+                {"textvariable": self.theme_button_text, "command": self._toggle_theme},
+                {"text": "Refrescar estado", "command": self.refresh_state_view},
+                {"text": "Actualizar Yarbis", "command": self._update_yarbis, "style": "Secondary.TButton"},
+            ),
+        )
+
+    def _build_activity_view(self, parent):
+        parent.columnconfigure(0, weight=1)
+        parent.rowconfigure(0, weight=1)
+        activity_frame = create_section(parent, "Actividad", "Historial local reciente y eventos del servicio.")
+        activity_frame.grid(row=0, column=0, sticky="nsew")
+        activity_frame.rowconfigure(0, weight=1)
+        self.activity_text = self._create_scrolled_text(activity_frame, wrap="word", height=22)
+        self.activity_text.frame.grid(row=0, column=0, sticky="nsew")
+        self.activity_text.configure(state="disabled")
+
+        activity_buttons = ttk.Frame(activity_frame)
+        activity_buttons.grid(row=1, column=0, sticky="ew", pady=(10, 0))
+        ttk.Button(activity_buttons, text="Refrescar", command=self.refresh_state_view).pack(side="left")
+        clear_button = ttk.Button(
+            activity_buttons,
+            text="Limpiar actividad",
+            command=self._clear_activity,
+            style="Danger.TButton",
+        )
+        clear_button.pack(side="left", padx=(8, 0))
+        self._action_buttons.append(clear_button)
+
+    def _show_view(self, name: str):
+        if name not in self._view_frames:
+            name = "home"
+        self._current_view = name
+        self._view_frames[name].tkraise()
+        for view_name, button in self._nav_buttons.items():
+            button.configure(style="Active.Nav.TButton" if view_name == name else "Nav.TButton")
 
     def _create_scrolled_text(self, parent, **text_options):
         frame = tk.Frame(parent, bd=0, highlightthickness=0)
@@ -806,7 +866,7 @@ class YarbisDesktop(tk.Tk):
 
         self.mobile_ui_button = ttk.Button(
             group,
-            text="UI movil",
+            text="UI móvil",
             command=self._edit_mobile_ui,
         )
         self._pack_action_button(self.mobile_ui_button)
@@ -851,109 +911,18 @@ class YarbisDesktop(tk.Tk):
         self.theme_palette = THEMES[self.current_theme_name]
         palette = self.theme_palette
 
-        self.style.theme_use("clam")
+        if not use_bootstrap_theme(self.style, self.current_theme_name):
+            try:
+                self.style.theme_use("clam")
+            except tk.TclError:
+                pass
         self.configure(bg=palette["bg"])
         if hasattr(self, "actions_canvas"):
             self.actions_canvas.configure(bg=palette["bg"])
         if hasattr(self, "actions_scrollbar"):
             style_scrollbar_widget(self.actions_scrollbar, palette)
 
-        self.style.configure(".", background=palette["bg"], foreground=palette["fg"])
-        self.style.configure("TFrame", background=palette["bg"])
-        self.style.configure(
-            "TLabelframe",
-            background=palette["bg"],
-            bordercolor=palette["border"],
-            relief="solid",
-        )
-        self.style.configure(
-            "TLabelframe.Label",
-            background=palette["bg"],
-            foreground=palette["muted"],
-        )
-        self.style.configure("TLabel", background=palette["bg"], foreground=palette["fg"])
-        self.style.configure(
-            "TCheckbutton",
-            background=palette["bg"],
-            foreground=palette["fg"],
-            padding=(6, 4),
-        )
-        self.style.map(
-            "TCheckbutton",
-            background=[
-                ("active", palette["button_active"]),
-                ("disabled", palette["bg"]),
-            ],
-            foreground=[
-                ("disabled", palette["disabled_fg"]),
-            ],
-        )
-        self.style.configure(
-            "TButton",
-            background=palette["button_bg"],
-            foreground=palette["fg"],
-            bordercolor=palette["border"],
-            relief="flat",
-            padding=(10, 7),
-        )
-        self.style.map(
-            "TButton",
-            background=[
-                ("active", palette["button_active"]),
-                ("disabled", palette["disabled_bg"]),
-            ],
-            foreground=[
-                ("disabled", palette["disabled_fg"]),
-            ],
-        )
-        self.style.configure(
-            "Accent.TButton",
-            background=palette["accent"],
-            foreground=palette["accent_fg"],
-            bordercolor=palette["accent"],
-        )
-        self.style.map(
-            "Accent.TButton",
-            background=[
-                ("active", palette["accent_hover"]),
-                ("disabled", palette["disabled_bg"]),
-            ],
-            foreground=[
-                ("disabled", palette["disabled_fg"]),
-            ],
-        )
-        self.style.configure(
-            "Secondary.TButton",
-            background=palette["secondary"],
-            foreground=palette["secondary_fg"],
-            bordercolor=palette["secondary"],
-        )
-        self.style.map(
-            "Secondary.TButton",
-            background=[
-                ("active", palette["secondary_hover"]),
-                ("disabled", palette["disabled_bg"]),
-            ],
-            foreground=[
-                ("disabled", palette["disabled_fg"]),
-            ],
-        )
-        self.style.configure(
-            "Danger.TButton",
-            background=palette["danger"],
-            foreground=palette["danger_fg"],
-            bordercolor=palette["danger"],
-        )
-        self.style.map(
-            "Danger.TButton",
-            background=[
-                ("active", palette["danger_hover"]),
-                ("disabled", palette["disabled_bg"]),
-            ],
-            foreground=[
-                ("disabled", palette["disabled_fg"]),
-            ],
-        )
+        configure_app_styles(self.style, palette)
         self.style.configure(
             "Hidden.TButton",
             background=palette["bg"],
@@ -982,117 +951,6 @@ class YarbisDesktop(tk.Tk):
                 ("disabled", palette["bg"]),
             ],
         )
-        self.style.configure(
-            "TEntry",
-            fieldbackground=palette["field_bg"],
-            foreground=palette["field_fg"],
-            insertcolor=palette["field_fg"],
-            bordercolor=palette["border"],
-            padding=6,
-        )
-        self.style.map(
-            "TEntry",
-            fieldbackground=[
-                ("disabled", palette["disabled_bg"]),
-            ],
-            foreground=[
-                ("disabled", palette["disabled_fg"]),
-            ],
-        )
-        for spinbox_style in ("TSpinbox", "Yarbis.TSpinbox"):
-            self.style.configure(
-                spinbox_style,
-                fieldbackground=palette["field_bg"],
-                background=palette["button_bg"],
-                foreground=palette["field_fg"],
-                insertcolor=palette["field_fg"],
-                arrowcolor=palette["field_fg"],
-                bordercolor=palette["border"],
-                lightcolor=palette["border"],
-                darkcolor=palette["border"],
-                padding=6,
-            )
-            self.style.map(
-                spinbox_style,
-                fieldbackground=[
-                    ("readonly", palette["field_bg"]),
-                    ("disabled", palette["disabled_bg"]),
-                ],
-                background=[
-                    ("active", palette["button_active"]),
-                    ("disabled", palette["disabled_bg"]),
-                ],
-                foreground=[
-                    ("readonly", palette["field_fg"]),
-                    ("disabled", palette["disabled_fg"]),
-                ],
-                arrowcolor=[
-                    ("active", palette["accent"]),
-                    ("disabled", palette["disabled_fg"]),
-                ],
-                selectbackground=[
-                    ("focus", palette["select_bg"]),
-                ],
-                selectforeground=[
-                    ("focus", palette["select_fg"]),
-                ],
-            )
-        self.style.configure(
-            "TCombobox",
-            fieldbackground=palette["field_bg"],
-            background=palette["field_bg"],
-            foreground=palette["field_fg"],
-            arrowcolor=palette["field_fg"],
-            bordercolor=palette["border"],
-            padding=6,
-        )
-        self.style.map(
-            "TCombobox",
-            fieldbackground=[
-                ("readonly", palette["field_bg"]),
-                ("disabled", palette["disabled_bg"]),
-            ],
-            foreground=[
-                ("readonly", palette["field_fg"]),
-                ("disabled", palette["disabled_fg"]),
-            ],
-            selectbackground=[
-                ("readonly", palette["select_bg"]),
-            ],
-            selectforeground=[
-                ("readonly", palette["select_fg"]),
-            ],
-            arrowcolor=[
-                ("disabled", palette["disabled_fg"]),
-            ],
-        )
-        for scrollbar_style in ("TScrollbar", "Yarbis.Vertical.TScrollbar"):
-            self.style.configure(
-                scrollbar_style,
-                background=palette["button_bg"],
-                troughcolor=palette["panel"],
-                bordercolor=palette["border"],
-                darkcolor=palette["button_bg"],
-                lightcolor=palette["button_bg"],
-                arrowcolor=palette["fg"],
-                relief="flat",
-                borderwidth=0,
-                arrowsize=12,
-                width=14,
-            )
-            self.style.map(
-                scrollbar_style,
-                background=[
-                    ("active", palette["button_active"]),
-                    ("pressed", palette["accent"]),
-                    ("disabled", palette["disabled_bg"]),
-                ],
-                arrowcolor=[
-                    ("pressed", palette["accent_fg"]),
-                    ("disabled", palette["disabled_fg"]),
-                ],
-            )
-
         self.option_add("*TCombobox*Listbox*Background", palette["field_bg"])
         self.option_add("*TCombobox*Listbox*Foreground", palette["field_fg"])
         self.option_add("*TCombobox*Listbox*selectBackground", palette["select_bg"])
@@ -1102,6 +960,8 @@ class YarbisDesktop(tk.Tk):
         style_text_widget(self.activity_text, palette)
         style_text_widget(self.reply_text, palette)
         self._style_service_autostart_toggle()
+        if self._current_view:
+            self._show_view(self._current_view)
 
         self.theme_var.set("Oscuro" if self.current_theme_name == "dark" else "Claro")
         self.theme_button_text.set(
@@ -1223,7 +1083,7 @@ class YarbisDesktop(tk.Tk):
 
     @staticmethod
     def _thinking_status_text(label: str) -> str:
-        safe_label = str(label).strip() or "Operacion"
+        safe_label = str(label).strip() or "Operación"
         return f"Estoy pensando: {safe_label}..."
 
     @staticmethod
@@ -1240,7 +1100,7 @@ class YarbisDesktop(tk.Tk):
     @staticmethod
     def _runtime_thinking_from_state(state: dict) -> tuple[bool, str, str]:
         thinking = state.get("runtime", {}).get("thinking", {})
-        thinking_label = str(thinking.get("label", "")).strip() or "Operacion"
+        thinking_label = str(thinking.get("label", "")).strip() or "Operación"
         thinking_active = bool(thinking.get("active")) and bool(thinking_label)
         started_at = str(thinking.get("started_at", "")).strip()
         return thinking_active, thinking_label, started_at
@@ -1501,10 +1361,10 @@ class YarbisDesktop(tk.Tk):
                 f"{coding_workspace} "
                 f"(modo={coding_settings.get('mode', 'propose_first')}, "
                 f"propuestas={len(coding_pending)}, "
-                f"validacion={coding_settings.get('validation_command') or '-'})"
+                f"validación={coding_settings.get('validation_command') or '-'})"
             )
         else:
-            self.coding_var.set("Sin workspace de codigo.")
+            self.coding_var.set("Sin workspace de código.")
 
         proactive_settings = state["service"]["proactive"]
         pulse_status = "activo" if proactive_settings["enabled"] else "desactivado"
@@ -1544,9 +1404,9 @@ class YarbisDesktop(tk.Tk):
         if mobile_status["enabled"]:
             mobile_url = mobile_status.get("tailscale_url") or mobile_status.get("local_url")
             mobile_timeout = mobile_status.get("job_timeout_seconds")
-            mobile_text = f"UI movil activa ({mobile_url}, timeout={mobile_timeout}s)."
+            mobile_text = f"UI móvil activa ({mobile_url}, timeout={mobile_timeout}s)."
         else:
-            mobile_text = "UI movil desactivada."
+            mobile_text = "UI móvil desactivada."
         if service_status is None:
             self.service_var.set(f"Consultando servicio SCM. {pulse_text} {local_context_text} {mobile_text}")
             self.service_button_text.set("Consultando...")
@@ -1746,7 +1606,7 @@ class YarbisDesktop(tk.Tk):
                 self._handle_telegram_event(event)
                 continue
 
-            label = str(event.get("label", "")).strip() or "Operacion"
+            label = str(event.get("label", "")).strip() or "Operación"
             if label.lower() not in _SERVICE_RUNTIME_EVENT_LABELS:
                 continue
 
@@ -1828,11 +1688,11 @@ class YarbisDesktop(tk.Tk):
             return
 
         if self._busy:
-            messagebox.showinfo("Yarbis", "Ya hay una accion en curso. Espera a que termine.")
+            messagebox.showinfo("Yarbis", "Ya hay una acción en curso. Espera a que termine.")
             return
 
         self._set_busy(True, self._thinking_status_text(label))
-        self._append_activity(f"{label} iniciado", "Operacion en curso.")
+        self._append_activity(f"{label} iniciado", "Operación en curso.")
 
         def worker():
             try:
@@ -1885,7 +1745,7 @@ class YarbisDesktop(tk.Tk):
                     self._set_busy(False, source="remote")
                     self._append_activity(f"{label} (error)", str(payload))
                     self.refresh_state_view()
-                    self.status_var.set("La accion termino con error.")
+                    self.status_var.set("La acción terminó con error.")
                 elif kind == "voice_transcript":
                     self._finish_voice_recording_ui()
                     transcript = str(payload).strip()
@@ -1911,7 +1771,7 @@ class YarbisDesktop(tk.Tk):
                 else:
                     self._set_busy(False, source="local")
                     self._append_activity(f"{label} (error)", str(payload))
-                    self.status_var.set("La accion termino con error.")
+                    self.status_var.set("La acción terminó con error.")
         except queue.Empty:
             pass
 
@@ -1927,8 +1787,8 @@ class YarbisDesktop(tk.Tk):
             return
         default_cycles = load_state()["autonomy"]["auto_cycles_default"]
         cycles_text = simpledialog.askstring(
-            "Modo autonomo",
-            "Cuantos ciclos quieres ejecutar? (vacio = hasta terminar)",
+            "Modo autónomo",
+            "¿Cuántos ciclos quieres ejecutar? (vacío = hasta terminar)",
             initialvalue="" if default_cycles is None else str(default_cycles),
             parent=self,
         )
@@ -1937,12 +1797,12 @@ class YarbisDesktop(tk.Tk):
         cycles = normalize_cycle_count(cycles_text, default=0)
         if cycles == 0:
             messagebox.showerror(
-                "Modo autonomo",
-                "Indica un numero positivo o deja el campo vacio para ejecutar hasta terminar.",
+                "Modo autónomo",
+                "Indica un número positivo o deja el campo vacío para ejecutar hasta terminar.",
                 parent=self,
             )
             return
-        self._start_background_job("Modo autonomo", _session_operation_subprocess, "run_auto", cycles=cycles)
+        self._start_background_job("Modo autónomo", _session_operation_subprocess, "run_auto", cycles=cycles)
 
     def _stop_current_operation(self):
         result = request_stop_current_operation(source="desktop")
@@ -2020,7 +1880,7 @@ class YarbisDesktop(tk.Tk):
             "Yarbis",
             (
                 "Yarbis necesita tu respuesta antes de continuar.\n"
-                "Cuando respondas, retomara el modo autonomo.\n\n"
+                "Cuando respondas, retomará el modo autónomo.\n\n"
                 f"{pending_question}"
             ).strip(),
             parent=self,
@@ -2160,15 +2020,15 @@ class YarbisDesktop(tk.Tk):
 
     def _copy_social_confirmation(self):
         publication_id = simpledialog.askstring(
-            "Copiar confirmacion",
-            "Id de publicacion pendiente:",
+            "Copiar confirmación",
+            "Id de publicación pendiente:",
             parent=self,
         )
         if publication_id is None:
             return
         cleaned_id = publication_id.strip().lower()
         if not cleaned_id:
-            messagebox.showinfo("Yarbis", "Indica un id de publicacion pendiente.", parent=self)
+            messagebox.showinfo("Yarbis", "Indica un id de publicación pendiente.", parent=self)
             return
 
         state = load_state()
@@ -2181,7 +2041,7 @@ class YarbisDesktop(tk.Tk):
         if len(matches) != 1:
             messagebox.showwarning(
                 "Yarbis",
-                "No encontre una publicacion pendiente unica con ese id.",
+                "No encontré una publicación pendiente única con ese id.",
                 parent=self,
             )
             return
@@ -2195,14 +2055,14 @@ class YarbisDesktop(tk.Tk):
     def _open_assisted_social_post(self):
         publication_id = simpledialog.askstring(
             "Abrir asistido",
-            "Id de publicacion pendiente o draft:",
+            "Id de publicación pendiente o draft:",
             parent=self,
         )
         if publication_id is None:
             return
         cleaned_id = publication_id.strip()
         if not cleaned_id:
-            messagebox.showinfo("Yarbis", "Indica un id de publicacion o draft.", parent=self)
+            messagebox.showinfo("Yarbis", "Indica un id de publicación o draft.", parent=self)
             return
         self._start_background_job(
             "Facebook asistido",
@@ -2277,7 +2137,7 @@ class YarbisDesktop(tk.Tk):
                 result += f"\nURL copiada al portapapeles: {url}"
             except tk.TclError:
                 pass
-        self._append_activity("UI movil", result)
+        self._append_activity("UI móvil", result)
         self.refresh_state_view()
 
     def _edit_local_context(self):
@@ -2322,7 +2182,7 @@ class YarbisDesktop(tk.Tk):
                     "Yarbis",
                     (
                         "La cuenta indicada necesita password para registrarse en SCM.\n\n"
-                        "Indica password o deja cuenta y password vacios para usar LocalSystem."
+                        "Indica password o deja cuenta y password vacíos para usar LocalSystem."
                     ),
                     parent=self,
                 )
@@ -2391,7 +2251,7 @@ class YarbisDesktop(tk.Tk):
             return
 
         if self._busy:
-            messagebox.showinfo("Yarbis", "Ya hay una accion en curso. Espera a que termine.", parent=self)
+            messagebox.showinfo("Yarbis", "Ya hay una acción en curso. Espera a que termine.", parent=self)
             return
 
         service_status = self._require_cached_service_status()
@@ -2408,8 +2268,8 @@ class YarbisDesktop(tk.Tk):
             "Actualizar Yarbis",
             (
                 "Voy a abrir una ventana externa de PowerShell para actualizar Yarbis. "
-                "Esta ventana se cerrara para que el actualizador pueda cambiar codigo y dependencias.\n\n"
-                "Si hay cambios locales, el actualizador los guardara con git stash y los reaplicara despues."
+                "Esta ventana se cerrará para que el actualizador pueda cambiar código y dependencias.\n\n"
+                "Si hay cambios locales, el actualizador los guardará con git stash y los reaplicará después."
                 f"{admin_text}\n\nQuieres continuar?"
             ),
             parent=self,
@@ -2426,7 +2286,7 @@ class YarbisDesktop(tk.Tk):
         self.status_var.set("Actualizador iniciado en ventana externa.")
         self._append_activity(
             "Actualizacion",
-            "Actualizador externo iniciado. Esta ventana se cerrara y Yarbis se reabrira si termina bien.",
+            "Actualizador externo iniciado. Esta ventana se cerrará y Yarbis se reabrirá si termina bien.",
         )
         self._closing = True
         if self._voice_record_stop_event is not None:
@@ -2458,7 +2318,7 @@ class YarbisDesktop(tk.Tk):
         state = load_state()
         initial_dir = str(state.get("coding", {}).get("workspace_path", "")).strip() or str(_WORKSPACE_ROOT)
         selected_path = filedialog.askdirectory(
-            title="Selecciona el repositorio de codigo",
+            title="Selecciona el repositorio de código",
             initialdir=initial_dir,
             parent=self,
         )
@@ -2466,7 +2326,7 @@ class YarbisDesktop(tk.Tk):
             return
 
         result = coding_set_workspace_text(selected_path)
-        self._append_activity("Workspace de codigo", result)
+        self._append_activity("Workspace de código", result)
         self.refresh_state_view()
 
     def _manage_coding_proposals(self):
@@ -2620,7 +2480,7 @@ class YarbisDesktop(tk.Tk):
             should_import = messagebox.askyesno(
                 "Confirmar trasplante",
                 (
-                    "Esto reemplazara la memoria actual despues de crear un respaldo local previo. "
+                    "Esto reemplazará la memoria actual después de crear un respaldo local previo. "
                     "Quieres continuar?"
                 ),
                 parent=self,
@@ -2706,8 +2566,8 @@ class YarbisDesktop(tk.Tk):
             "Reiniciar de fabrica",
             (
                 "Esto borrara objetivo, perfil, notas, tareas, conversacion, Telegram, "
-                "configuracion local y actividad.\n\n"
-                "No borra el codigo ni desinstala el servicio de Windows.\n\n"
+                "configuración local y actividad.\n\n"
+                "No borra el código ni desinstala el servicio de Windows.\n\n"
                 "Quieres continuar?"
             ),
             parent=self,
@@ -2772,7 +2632,7 @@ class YarbisDesktop(tk.Tk):
         if self._busy:
             should_close = messagebox.askyesno(
                 "Cerrar Yarbis",
-                "Hay una accion en curso. Quieres cerrar la ventana de todos modos?",
+                "Hay una acción en curso. ¿Quieres cerrar la ventana de todos modos?",
                 parent=self,
             )
             if not should_close:

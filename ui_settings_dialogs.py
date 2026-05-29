@@ -152,7 +152,7 @@ class LocalContextDialog(ThemedDialog):
         self.max_age_spin.pack(side="left")
         ttk.Label(age_row, text="s").pack(side="left", padx=(6, 0))
 
-        signals = ttk.LabelFrame(container, text="Senales")
+        signals = ttk.LabelFrame(container, text="Señales")
         signals.grid(row=3, column=0, sticky="ew")
 
         self.workspace_check = ttk.Checkbutton(
@@ -490,7 +490,7 @@ class ServiceMobileUiDialog(ThemedDialog):
     def __init__(self, parent, initial_settings: dict, status: dict | None = None):
         self.initial_settings = initial_settings if isinstance(initial_settings, dict) else {}
         self.status = status if isinstance(status, dict) else {}
-        super().__init__(parent, "UI movil")
+        super().__init__(parent, "UI móvil")
 
     def body(self, master):
         self._prepare_body(master)
@@ -515,7 +515,7 @@ class ServiceMobileUiDialog(ThemedDialog):
         header = ttk.Frame(master)
         header.grid(row=0, column=0, sticky="ew", padx=6, pady=(6, 10))
         header.columnconfigure(0, weight=1)
-        ttk.Label(header, text="UI movil por Tailscale", font=("Segoe UI", 12, "bold")).grid(
+        ttk.Label(header, text="UI móvil por Tailscale", font=("Segoe UI", 12, "bold")).grid(
             row=0,
             column=0,
             sticky="w",
@@ -578,7 +578,7 @@ class ServiceMobileUiDialog(ThemedDialog):
         ttk.Label(access, text="Nuevo PIN").grid(row=0, column=0, sticky="w", padx=10, pady=(10, 2))
         self.pin_entry = ttk.Entry(access, textvariable=self.pin_var, show="*", width=30)
         self.pin_entry.grid(row=1, column=0, sticky="ew", padx=10)
-        pin_help = "Vacio = conserva el PIN actual." if self._configured else "Requerido para activar la UI movil."
+        pin_help = "Vacío = conserva el PIN actual." if self._configured else "Requerido para activar la UI móvil."
         ttk.Label(
             access,
             text=pin_help,
@@ -629,7 +629,7 @@ class ServiceMobileUiDialog(ThemedDialog):
         try:
             port = int(self.port_var.get())
         except (TypeError, ValueError):
-            messagebox.showwarning("Yarbis", "El puerto debe ser un numero.", parent=self)
+            messagebox.showwarning("Yarbis", "El puerto debe ser un número.", parent=self)
             return False
         if not 1 <= port <= 65535:
             messagebox.showwarning("Yarbis", "El puerto debe estar entre 1 y 65535.", parent=self)
@@ -637,7 +637,7 @@ class ServiceMobileUiDialog(ThemedDialog):
         try:
             timeout = int(self.timeout_var.get())
         except (TypeError, ValueError):
-            messagebox.showwarning("Yarbis", "El timeout debe ser un numero de segundos.", parent=self)
+            messagebox.showwarning("Yarbis", "El timeout debe ser un número de segundos.", parent=self)
             return False
         if not MIN_MOBILE_UI_JOB_TIMEOUT_SECONDS <= timeout <= MAX_MOBILE_UI_JOB_TIMEOUT_SECONDS:
             messagebox.showwarning(
@@ -654,7 +654,7 @@ class ServiceMobileUiDialog(ThemedDialog):
             messagebox.showwarning("Yarbis", "El PIN debe tener entre 4 y 64 caracteres.", parent=self)
             return False
         if self.enabled_var.get() and not self._configured and not pin:
-            messagebox.showwarning("Yarbis", "Configura un PIN antes de activar la UI movil.", parent=self)
+            messagebox.showwarning("Yarbis", "Configura un PIN antes de activar la UI móvil.", parent=self)
             return False
         return True
 
@@ -757,9 +757,9 @@ class OllamaSettingsDialog(ThemedDialog):
         )
         self.api_help_var.set(
             (
-                "La API key directa se guarda localmente; env sigue siendo util para overrides."
+                "La API key directa se guarda localmente; env sigue siendo útil para overrides."
                 if provider == MODEL_PROVIDER_OPENROUTER
-                else "Se usa con Ollama Cloud; para Ollama local puedes dejarla vacia."
+                else "Se usa con Ollama Cloud; para Ollama local puedes dejarla vacía."
             )
         )
         self.api_key_entry.configure(
@@ -917,7 +917,7 @@ class MemoryProtectionDialog(ThemedDialog):
 
         ttk.Checkbutton(
             container,
-            text="Activar proteccion de memoria",
+            text="Activar protección de memoria",
             variable=self.enabled_var,
         ).grid(row=0, column=0, sticky="w", pady=(0, 4))
 
@@ -929,13 +929,13 @@ class MemoryProtectionDialog(ThemedDialog):
 
         ttk.Checkbutton(
             container,
-            text="Verificar JSON despues de escribir",
+            text="Verificar JSON después de escribir",
             variable=self.verify_var,
         ).grid(row=2, column=0, sticky="w", pady=2)
 
         ttk.Checkbutton(
             container,
-            text="Restaurar automaticamente si state.json falla",
+            text="Restaurar automáticamente si state.json falla",
             variable=self.restore_var,
         ).grid(row=3, column=0, sticky="w", pady=(2, 10))
 
@@ -951,12 +951,12 @@ class MemoryProtectionDialog(ThemedDialog):
             command=self._choose_mirror_dir,
         ).grid(row=0, column=1, sticky="e", padx=(0, 10), pady=10)
 
-        retention_frame = ttk.LabelFrame(container, text="Retencion")
+        retention_frame = ttk.LabelFrame(container, text="Retención")
         retention_frame.grid(row=5, column=0, sticky="ew", pady=(0, 10))
         retention_frame.columnconfigure(0, weight=1)
         retention_frame.columnconfigure(1, weight=1)
 
-        ttk.Label(retention_frame, text="Automaticos recientes").grid(
+        ttk.Label(retention_frame, text="Automáticos recientes").grid(
             row=0,
             column=0,
             sticky="w",
@@ -974,7 +974,7 @@ class MemoryProtectionDialog(ThemedDialog):
         )
         self.max_auto_spin.grid(row=1, column=0, sticky="w", padx=10, pady=(0, 10))
 
-        ttk.Label(retention_frame, text="Dias diarios").grid(
+        ttk.Label(retention_frame, text="Días diarios").grid(
             row=0,
             column=1,
             sticky="w",
@@ -1210,7 +1210,7 @@ class NotificationsDialog(ThemedDialog):
 
         ttk.Checkbutton(
             master,
-            text="iPhone via ntfy",
+            text="iPhone vía ntfy",
             variable=self.ntfy_var,
         ).grid(row=1, column=1, sticky="w", padx=6, pady=4)
 

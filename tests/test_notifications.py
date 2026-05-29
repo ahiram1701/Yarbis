@@ -320,7 +320,7 @@ class NotificationsTestCase(unittest.TestCase):
         sent_text = telegram_mock.call_args.args[1]["text"]
         self.assertIn("Que prioridad quieres darme?", sent_text)
         self.assertIn("app de escritorio", sent_text)
-        self.assertIn("retomara los ciclos", sent_text)
+        self.assertIn("retomará los ciclos", sent_text)
 
     def test_user_input_required_telegram_falls_back_to_pending_state(self):
         state_path = TEST_RUNTIME_DIR / "notifications_telegram_pending_fallback_state.json"

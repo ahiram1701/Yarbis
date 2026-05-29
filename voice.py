@@ -80,6 +80,8 @@ _TTS_LOCK = threading.RLock()
 _TTS_ENGINE = None
 _KOKORO_LOCK = threading.RLock()
 _KOKORO_PIPELINES = {}
+_KOKORO_SPACY_LOCK = threading.Lock()
+_KOKORO_ESPEAK_LANGUAGES = {"es", "pt-br", "it", "ja", "cmn", "hi"}
 
 
 class VoiceError(RuntimeError):
@@ -440,13 +442,16 @@ def _load_kokoro_pipeline(settings: dict):
             return cached
         try:
             from pykokoro import GenerationConfig, KokoroPipeline, PipelineConfig
+            from pykokoro.tokenizer import TokenizerConfig
         except Exception as exc:
             raise VoiceError("Falta pykokoro. Instala dependencias con python -m pip install -r requirements.txt.") from exc
         try:
+            backend = "espeak" if language in _KOKORO_ESPEAK_LANGUAGES else "kokorog2p"
             pipeline = KokoroPipeline(
                 PipelineConfig(
                     voice=voice_id,
                     generation=GenerationConfig(lang=language, speed=speed),
+                    tokenizer_config=TokenizerConfig(backend=backend, spacy_model_size="sm"),
                 )
             )
         except Exception as exc:
@@ -454,6 +459,36 @@ def _load_kokoro_pipeline(settings: dict):
         _KOKORO_PIPELINES.clear()
         _KOKORO_PIPELINES[key] = pipeline
         return pipeline
+
+
+def _missing_spacy_model_name(error: Exception) -> str:
+    message = str(error or "")
+    marker = "spaCy language model '"
+    if marker not in message:
+        return ""
+    candidate = message.split(marker, 1)[1].split("'", 1)[0].strip()
+    if not candidate.replace("_", "").replace("-", "").isalnum():
+        return ""
+    return candidate
+
+
+def _ensure_spacy_model(model_name: str) -> None:
+    cleaned = str(model_name or "").strip()
+    if not cleaned:
+        return
+    with _KOKORO_SPACY_LOCK:
+        try:
+            import spacy
+        except Exception as exc:
+            raise VoiceError("Falta spaCy para preparar la voz Kokoro.") from exc
+        if cleaned in set(spacy.util.get_installed_models()):
+            return
+        try:
+            from spacy.cli import download
+
+            download(cleaned)
+        except Exception as exc:
+            raise VoiceError(f"No pude descargar el modelo local de spaCy '{cleaned}' para Kokoro: {exc}") from exc
 
 
 def _write_float_audio_wav(audio, sample_rate: int, wav_path: Path) -> None:
@@ -502,12 +537,21 @@ def _synthesize_system_wav(cleaned_text: str, wav_path: Path, settings: dict) ->
 
 def _synthesize_kokoro_wav(cleaned_text: str, wav_path: Path, settings: dict) -> None:
     pipeline = _load_kokoro_pipeline(settings)
-    try:
-        result = pipeline.run(cleaned_text)
-        _write_float_audio_wav(result.audio, int(result.sample_rate), wav_path)
-    except Exception as exc:
-        cleanup_voice_file(wav_path)
-        raise VoiceError(f"No pude sintetizar la voz Kokoro: {exc}") from exc
+    for attempt in range(2):
+        try:
+            result = pipeline.run(cleaned_text)
+            _write_float_audio_wav(result.audio, int(result.sample_rate), wav_path)
+            return
+        except Exception as exc:
+            spacy_model_name = _missing_spacy_model_name(exc)
+            if attempt == 0 and spacy_model_name:
+                _ensure_spacy_model(spacy_model_name)
+                with _KOKORO_LOCK:
+                    _KOKORO_PIPELINES.clear()
+                pipeline = _load_kokoro_pipeline(settings)
+                continue
+            cleanup_voice_file(wav_path)
+            raise VoiceError(f"No pude sintetizar la voz Kokoro: {exc}") from exc
 
 
 def _synthesize_wav_file(cleaned_text: str, settings: dict) -> Path:

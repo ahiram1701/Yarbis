@@ -33,6 +33,10 @@ class ThemedDialog(simpledialog.Dialog):
     def _prepare_body(self, master):
         self.configure(bg=self.theme_palette["bg"])
         master.configure(bg=self.theme_palette["bg"])
+        try:
+            self.resizable(True, True)
+        except tk.TclError:
+            pass
 
     def _style_text_widget(self, widget):
         style_text_widget(widget, self.theme_palette)
@@ -92,7 +96,7 @@ class ProfileDialog(ThemedDialog):
         self.role_entry.grid(row=3, column=0, sticky="ew", padx=6)
         self.role_entry.insert(0, self.initial_profile.get("role", ""))
 
-        ttk.Label(master, text="Preferencias (coma o salto de linea)").grid(
+        ttk.Label(master, text="Preferencias (coma o salto de línea)").grid(
             row=4,
             column=0,
             sticky="w",
@@ -107,7 +111,7 @@ class ProfileDialog(ThemedDialog):
             "\n".join(self.initial_profile.get("preferences", [])),
         )
 
-        ttk.Label(master, text="Restricciones (coma o salto de linea)").grid(
+        ttk.Label(master, text="Restricciones (coma o salto de línea)").grid(
             row=6,
             column=0,
             sticky="w",
@@ -291,7 +295,7 @@ class FirstRunDialog(ThemedDialog):
             self.api_help_var.set("OpenRouter puede usar la API key directa guardada localmente.")
         else:
             self.api_key_entry.configure(state="normal")
-            self.api_help_var.set("Se usa con Ollama Cloud; en local puedes dejarla vacia.")
+            self.api_help_var.set("Se usa con Ollama Cloud; en local puedes dejarla vacía.")
         self._loaded_provider = provider
 
     def _provider_changed(self, _event=None):
@@ -336,7 +340,7 @@ class FirstRunDialog(ThemedDialog):
         self._style_text_widget(self.goal_text)
         self.goal_text.insert("1.0", state_goal)
 
-        ttk.Label(master, text="Plantillas rapidas").grid(row=2, column=0, sticky="w", padx=6, pady=(8, 2))
+        ttk.Label(master, text="Plantillas rápidas").grid(row=2, column=0, sticky="w", padx=6, pady=(8, 2))
         self.template_combo = ttk.Combobox(
             master,
             values=self.GOAL_TEMPLATES,
@@ -346,7 +350,7 @@ class FirstRunDialog(ThemedDialog):
         self.template_combo.grid(row=3, column=0, sticky="ew", padx=6)
         self.template_combo.bind("<<ComboboxSelected>>", self._apply_template)
 
-        identity = ttk.LabelFrame(master, text="Contexto minimo")
+        identity = ttk.LabelFrame(master, text="Contexto mínimo")
         identity.grid(row=4, column=0, sticky="ew", padx=6, pady=(10, 0))
         identity.columnconfigure(0, weight=1)
 
@@ -418,7 +422,7 @@ class FirstRunDialog(ThemedDialog):
         ).grid(row=0, column=0, sticky="w", padx=8, pady=(8, 2))
         ttk.Checkbutton(
             options,
-            text="Abrir configuracion de Telegram",
+            text="Abrir configuración de Telegram",
             variable=self.open_notifications_var,
         ).grid(row=1, column=0, sticky="w", padx=8, pady=2)
         ttk.Checkbutton(
@@ -444,19 +448,19 @@ class FirstRunDialog(ThemedDialog):
 
         provider = self.provider_var.get().strip().lower()
         if provider not in {MODEL_PROVIDER_OLLAMA, MODEL_PROVIDER_OPENROUTER}:
-            messagebox.showwarning("Yarbis", "Proveedor invalido.", parent=self)
+            messagebox.showwarning("Yarbis", "Proveedor inválido.", parent=self)
             return False
         self._provider_settings[provider] = self._current_provider_form_settings()
         settings = self._provider_settings[provider]
 
         if not settings["model"]:
             label = "OpenRouter" if provider == MODEL_PROVIDER_OPENROUTER else "Ollama"
-            messagebox.showwarning("Yarbis", f"El modelo {label} no puede quedar vacio.", parent=self)
+            messagebox.showwarning("Yarbis", f"El modelo {label} no puede quedar vacío.", parent=self)
             return False
         try:
             int(settings["timeout_seconds"])
         except ValueError:
-            messagebox.showwarning("Yarbis", "El timeout debe ser un numero de segundos.", parent=self)
+            messagebox.showwarning("Yarbis", "El timeout debe ser un número de segundos.", parent=self)
             return False
         if provider == MODEL_PROVIDER_OPENROUTER:
             api_key_env_var = settings["api_key_env_var"] or DEFAULT_OPENROUTER_API_KEY_ENV_VAR
@@ -502,7 +506,7 @@ class FirstRunDialog(ThemedDialog):
 class NoteDialog(ThemedDialog):
     def body(self, master):
         self._prepare_body(master)
-        ttk.Label(master, text="Titulo").grid(row=0, column=0, sticky="w", padx=6, pady=(6, 2))
+        ttk.Label(master, text="Título").grid(row=0, column=0, sticky="w", padx=6, pady=(6, 2))
         self.title_entry = ttk.Entry(master, width=56)
         self.title_entry.grid(row=1, column=0, sticky="ew", padx=6)
 
@@ -511,7 +515,7 @@ class NoteDialog(ThemedDialog):
         self.content_text.grid(row=3, column=0, padx=6)
         self._style_text_widget(self.content_text)
 
-        ttk.Label(master, text="Categoria").grid(row=4, column=0, sticky="w", padx=6, pady=(8, 2))
+        ttk.Label(master, text="Categoría").grid(row=4, column=0, sticky="w", padx=6, pady=(8, 2))
         self.category_entry = ttk.Entry(master, width=56)
         self.category_entry.grid(row=5, column=0, sticky="ew", padx=6, pady=(0, 6))
         self.category_entry.insert(0, "general")
@@ -620,8 +624,8 @@ class NotesDialog(ThemedDialog):
     def _render_note(self, note: dict) -> str:
         content = note.get("content", "").strip() or "Sin contenido."
         return (
-            f"[{note.get('id', '')}] {note.get('title', 'Nota sin titulo')}\n"
-            f"Categoria: {note.get('category', 'general')}\n\n"
+            f"[{note.get('id', '')}] {note.get('title', 'Nota sin título')}\n"
+            f"Categoría: {note.get('category', 'general')}\n\n"
             f"{content}"
         )
 
@@ -661,7 +665,7 @@ class NotesDialog(ThemedDialog):
         for note in self.notes:
             self.notes_list.insert(
                 "end",
-                f"[{note.get('id', '')}] {note.get('title', 'Nota sin titulo')} ({note.get('category', 'general')})",
+                f"[{note.get('id', '')}] {note.get('title', 'Nota sin título')} ({note.get('category', 'general')})",
             )
 
         if not self.notes:
@@ -698,7 +702,7 @@ class NotesDialog(ThemedDialog):
 
         should_delete = messagebox.askyesno(
             "Eliminar nota",
-            f"Quieres eliminar la nota '{note.get('title', 'Nota sin titulo')}'?",
+            f"¿Quieres eliminar la nota '{note.get('title', 'Nota sin título')}'?",
             parent=self,
         )
         if not should_delete:
@@ -883,7 +887,7 @@ class CodingProposalsDialog(ThemedDialog):
             return
         should_apply = messagebox.askyesno(
             "Aplicar propuesta",
-            f"Quieres aplicar la propuesta {proposal_id}?",
+            f"¿Quieres aplicar la propuesta {proposal_id}?",
             parent=self,
         )
         if not should_apply:
@@ -898,7 +902,7 @@ class CodingProposalsDialog(ThemedDialog):
             return
         should_discard = messagebox.askyesno(
             "Descartar propuesta",
-            f"Quieres descartar la propuesta {proposal_id}?",
+            f"¿Quieres descartar la propuesta {proposal_id}?",
             parent=self,
         )
         if not should_discard:
@@ -966,7 +970,7 @@ class MemoryImportModeDialog(ThemedDialog):
             master,
             text=(
                 "Reemplazar crea un respaldo local previo y sustituye state.json. "
-                "Fusionar conserva configuracion local y combina perfil, notas, tareas, mensajes y plan."
+                "Fusionar conserva configuración local y combina perfil, notas, tareas, mensajes y plan."
             ),
             wraplength=520,
         ).grid(row=4, column=0, sticky="ew", padx=6, pady=(0, 6))
@@ -979,7 +983,7 @@ class MemoryImportModeDialog(ThemedDialog):
 class TaskDialog(ThemedDialog):
     def body(self, master):
         self._prepare_body(master)
-        ttk.Label(master, text="Titulo").grid(row=0, column=0, sticky="w", padx=6, pady=(6, 2))
+        ttk.Label(master, text="Título").grid(row=0, column=0, sticky="w", padx=6, pady=(6, 2))
         self.title_entry = ttk.Entry(master, width=56)
         self.title_entry.grid(row=1, column=0, sticky="ew", padx=6)
 

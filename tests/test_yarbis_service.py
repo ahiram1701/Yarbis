@@ -331,8 +331,8 @@ class YarbisServiceTestCase(unittest.TestCase):
         self.assertIn("Avance proactivo listo", result)
         send_mock.assert_called_once()
         sent_text = send_mock.call_args.args[0]
-        self.assertIn("Yarbis - Pulso proactivo", sent_text)
-        self.assertIn("Continuidad:", sent_text)
+        self.assertIn("Yarbis | Pulso proactivo", sent_text)
+        self.assertIn("Estado: Continuidad:", sent_text)
         self.assertIn("Avance proactivo listo", sent_text)
         self.assertEqual(send_mock.call_args.kwargs["chat_id"], "123")
 
@@ -462,7 +462,7 @@ class YarbisServiceTestCase(unittest.TestCase):
         self.assertIn("Respuesta de usuario pendiente recuperada", result)
         send_mock.assert_called_once()
         sent_text = send_mock.call_args.args[0]
-        self.assertIn("Yarbis - Respuesta recuperada", sent_text)
+        self.assertIn("Yarbis | Respuesta recuperada", sent_text)
         self.assertIn("Ciclo recuperado", sent_text)
         self.assertEqual(send_mock.call_args.kwargs["chat_id"], "123")
 

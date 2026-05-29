@@ -592,8 +592,8 @@ def _compose_telegram_notification_text(title: str, body: str) -> str:
         if not safe_body:
             rendered += "\n\nNo encontre la pregunta pendiente completa en memoria."
         rendered += (
-            "\n\nPuedes responder en la app de escritorio o por este chat. "
-            "Yarbis guardara la respuesta y retomara los ciclos sin perder continuidad."
+            "\n\nSiguiente paso: responde en la app de escritorio o por este chat. "
+            "Yarbis guardará la respuesta y retomará los ciclos sin perder continuidad."
         )
 
     return rendered

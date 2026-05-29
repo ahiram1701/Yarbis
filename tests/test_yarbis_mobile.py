@@ -500,13 +500,17 @@ class YarbisMobileTestCase(unittest.TestCase):
         self.assertIn("Detener habla", html)
         self.assertIn("speechSynthesis.cancel", html)
         self.assertIn("/api/voice/speak", html)
-        self.assertIn("Catalogo Kokoro", html)
+        self.assertIn("Catálogo Kokoro", html)
+        self.assertIn("modalBackdrop", html)
+        self.assertNotIn("confirm(", html)
+        self.assertNotIn("prompt(", html)
         self.assertIn("Kokoro local", html)
         self.assertIn("Usar seleccionada", html)
         self.assertIn("Probar voz", html)
         self.assertIn("kokoroVoiceFilter", html)
-        self.assertIn("Guardar validacion", html)
+        self.assertIn("Guardar validación", html)
         self.assertIn("coding_validate", html)
+        self.assertNotIn("Â", html)
 
     def test_mobile_coding_validation_actions_route_to_session_helpers(self):
         with patch.object(

@@ -29,6 +29,26 @@ from telegram_inbox import start_telegram_polling, stop_telegram_polling
 from tools import add_task, self_overview, update_profile
 
 
+COMMAND_HELP = """Comandos principales:
+  goal          Cambiar el objetivo
+  run           Ejecutar un ciclo
+  auto          Ejecutar ciclos hasta terminar o hasta el límite indicado
+  status        Ver estado completo
+  reply         Enviar respuesta o contexto libre
+
+Trabajo diario:
+  coding        Ver workspace, propuestas y validación
+  profile       Editar perfil
+  note/notas    Crear, ver, listar o borrar notas
+  task          Crear tarea
+  self          Refrescar autoanálisis
+
+Sistema:
+  help          Ver esta ayuda
+  exit          Salir
+"""
+
+
 def main():
     startup_message = run_startup_self_analysis(force=False, background=True)
     state = load_state()
@@ -43,7 +63,7 @@ def main():
         if not telegram_polling_started:
             print("Servicio de fondo activo: Telegram queda atendido por el servicio.")
         print(f"Objetivo actual: {state['goal']}")
-        print("Comandos: goal, run, auto, status, coding, self, profile, note, notes, task, reply, exit")
+        print("Comandos principales: run, auto, status, reply. Escribe help para ver todo.")
         if has_pending_user_question(state):
             print(f"Pendiente: {state['awaiting_user_input']['question']}")
         print()
@@ -61,15 +81,19 @@ def main():
             if cmd == "exit":
                 break
 
+            if cmd in {"help", "ayuda", "?"}:
+                print(COMMAND_HELP)
+                continue
+
             if cmd == "goal":
                 try:
                     new_goal = input("Nuevo objetivo: ").strip()
                 except (EOFError, KeyboardInterrupt):
-                    print("\nOperacion cancelada.")
+                    print("\nOperación cancelada.")
                     continue
 
                 if not new_goal:
-                    print("El objetivo no puede quedar vacio.")
+                    print("El objetivo no puede quedar vacío.")
                     continue
 
                 print(update_goal(new_goal))
@@ -105,7 +129,7 @@ def main():
                         try:
                             coding_value = input("Ruta del repositorio: ").strip()
                         except (EOFError, KeyboardInterrupt):
-                            print("\nOperacion cancelada.")
+                            print("\nOperación cancelada.")
                             continue
                     print(coding_set_workspace_text(coding_value))
                     continue
@@ -162,15 +186,15 @@ def main():
                 continue
 
             if cmd == "profile":
-                print("Deja un campo vacio para no cambiarlo. Usa [clear] para borrarlo.")
+                print("Deja un campo vacío para no cambiarlo. Usa [clear] para borrarlo.")
 
                 try:
                     name = input("Nombre: ").strip()
                     role = input("Rol o contexto: ").strip()
-                    preferences = input("Preferencias (coma o salto de linea): ").strip()
-                    constraints = input("Restricciones (coma o salto de linea): ").strip()
+                    preferences = input("Preferencias (coma o salto de línea): ").strip()
+                    constraints = input("Restricciones (coma o salto de línea): ").strip()
                 except (EOFError, KeyboardInterrupt):
-                    print("\nOperacion cancelada.")
+                    print("\nOperación cancelada.")
                     continue
 
                 print(update_profile(
@@ -187,16 +211,16 @@ def main():
 
             if cmd in {"note", "nota"}:
                 try:
-                    action = input("Accion [crear/listar/ver/borrar]: ").strip().lower() or "crear"
+                    action = input("Acción [crear/listar/ver/borrar]: ").strip().lower() or "crear"
                 except (EOFError, KeyboardInterrupt):
-                    print("\nOperacion cancelada.")
+                    print("\nOperación cancelada.")
                     continue
 
                 if action in {"listar", "lista", "list", "ver todas"}:
                     try:
                         category = input("Categoria (opcional): ").strip()
                     except (EOFError, KeyboardInterrupt):
-                        print("\nOperacion cancelada.")
+                        print("\nOperación cancelada.")
                         continue
                     print(list_notes_text(category=category, limit=20))
                     continue
@@ -205,7 +229,7 @@ def main():
                     try:
                         identifier = input("Id o titulo de la nota: ").strip()
                     except (EOFError, KeyboardInterrupt):
-                        print("\nOperacion cancelada.")
+                        print("\nOperación cancelada.")
                         continue
                     print(get_note_text(identifier))
                     continue
@@ -214,7 +238,7 @@ def main():
                     try:
                         identifier = input("Id o titulo de la nota: ").strip()
                     except (EOFError, KeyboardInterrupt):
-                        print("\nOperacion cancelada.")
+                        print("\nOperación cancelada.")
                         continue
                     print(delete_note_text(identifier))
                     continue
@@ -224,7 +248,7 @@ def main():
                     content = input("Contenido: ").strip()
                     category = input("Categoria (opcional): ").strip()
                 except (EOFError, KeyboardInterrupt):
-                    print("\nOperacion cancelada.")
+                    print("\nOperación cancelada.")
                     continue
 
                 print(save_note_text(title=title, content=content, category=category or "general"))
@@ -247,7 +271,7 @@ def main():
                     details = input("Detalles (opcional): ").strip()
                     priority = input("Prioridad [alta/media/baja]: ").strip()
                 except (EOFError, KeyboardInterrupt):
-                    print("\nOperacion cancelada.")
+                    print("\nOperación cancelada.")
                     continue
 
                 print(add_task(title=title, details=details, priority=priority or "media"))
@@ -257,7 +281,7 @@ def main():
                 try:
                     reply_text = input("Tu respuesta: ").strip()
                 except (EOFError, KeyboardInterrupt):
-                    print("\nOperacion cancelada.")
+                    print("\nOperación cancelada.")
                     continue
 
                 try:
@@ -275,9 +299,9 @@ def main():
                     continue
 
                 try:
-                    cycles_text = input("Cuantos ciclos? (vacio = hasta terminar): ").strip()
+                    cycles_text = input("¿Cuántos ciclos? (vacío = hasta terminar): ").strip()
                 except (EOFError, KeyboardInterrupt):
-                    print("\nOperacion cancelada.")
+                    print("\nOperación cancelada.")
                     continue
 
                 if not cycles_text:
@@ -286,11 +310,11 @@ def main():
                     try:
                         cycles = int(cycles_text)
                     except ValueError:
-                        print("Numero invalido.")
+                        print("Número inválido.")
                         continue
 
                 if cycles is not None and cycles <= 0:
-                    print("Debes indicar un numero mayor que cero.")
+                    print("Debes indicar un número mayor que cero.")
                     continue
 
                 print(run_auto_with_output(cycles=cycles))

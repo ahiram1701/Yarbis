@@ -1285,16 +1285,19 @@ def _html_page() -> str:
 <style>
 :root {
   color-scheme: dark;
-  --bg: #101214;
-  --panel: #181c20;
-  --panel-2: #20262b;
-  --text: #f4f1ec;
-  --muted: #a9b0b6;
-  --line: #343d45;
-  --accent: #2fbf71;
-  --accent-2: #e1a73a;
-  --danger: #df5b57;
-  --field: #0d1012;
+  --bg: #0f1115;
+  --surface: #141820;
+  --panel: #191e27;
+  --panel-2: #242b36;
+  --text: #f5f7fa;
+  --muted: #a6afbd;
+  --line: #303846;
+  --accent: #5b8cff;
+  --accent-2: #32c776;
+  --warning: #d9a441;
+  --danger: #e35d6a;
+  --field: #0b0e13;
+  --shadow: 0 14px 36px rgba(0,0,0,.28);
 }
 * { box-sizing: border-box; }
 body {
@@ -1303,6 +1306,7 @@ body {
   color: var(--text);
   font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   letter-spacing: 0;
+  line-height: 1.45;
 }
 button, input, textarea, select {
   font: inherit;
@@ -1311,15 +1315,16 @@ button, input, textarea, select {
   max-width: 980px;
   margin: 0 auto;
   min-height: 100vh;
-  padding: 14px 14px 84px;
+  padding: 16px 16px 92px;
 }
 .topbar {
   position: sticky;
   top: 0;
   z-index: 2;
-  margin: -14px -14px 12px;
-  padding: 12px 14px;
-  background: rgba(16, 18, 20, .96);
+  margin: -16px -16px 14px;
+  padding: 13px 16px;
+  background: rgba(15, 17, 21, .96);
+  backdrop-filter: blur(10px);
   border-bottom: 1px solid var(--line);
 }
 .title-row {
@@ -1336,6 +1341,15 @@ h1 { font-size: 1.35rem; }
 h2 { font-size: 1.05rem; margin-bottom: 10px; }
 h3 { font-size: .98rem; margin-bottom: 8px; }
 .muted { color: var(--muted); }
+.hero {
+  display: grid;
+  gap: 10px;
+  padding: 14px 0 4px;
+}
+.hero h2 {
+  font-size: 1.24rem;
+  margin-bottom: 0;
+}
 .pill {
   display: inline-flex;
   align-items: center;
@@ -1347,6 +1361,18 @@ h3 { font-size: .98rem; margin-bottom: 8px; }
   font-size: .82rem;
   white-space: nowrap;
 }
+.pill.good {
+  border-color: rgba(50, 199, 118, .55);
+  color: #8ee8b5;
+}
+.pill.warn {
+  border-color: rgba(217, 164, 65, .6);
+  color: #f0cf86;
+}
+.pill.bad {
+  border-color: rgba(227, 93, 106, .65);
+  color: #ffb5bd;
+}
 .grid {
   display: grid;
   gap: 10px;
@@ -1356,13 +1382,14 @@ h3 { font-size: .98rem; margin-bottom: 8px; }
 }
 .section {
   border-top: 1px solid var(--line);
-  padding: 14px 0;
+  padding: 16px 0;
 }
 .panel {
   background: var(--panel);
   border: 1px solid var(--line);
   border-radius: 8px;
   padding: 12px;
+  box-shadow: var(--shadow);
 }
 .metric {
   min-height: 74px;
@@ -1373,6 +1400,10 @@ h3 { font-size: .98rem; margin-bottom: 8px; }
 }
 .metric strong {
   font-size: 1.15rem;
+}
+.metric .muted {
+  font-size: .82rem;
+  text-transform: uppercase;
 }
 .row {
   display: flex;
@@ -1385,6 +1416,15 @@ h3 { font-size: .98rem; margin-bottom: 8px; }
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 8px;
 }
+.actions.tight {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+.toolbar {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  align-items: center;
+}
 button {
   min-height: 44px;
   border: 1px solid var(--line);
@@ -1396,13 +1436,15 @@ button {
 }
 button.primary {
   background: var(--accent);
-  color: #07140d;
+  color: #fff;
   border-color: var(--accent);
   font-weight: 700;
 }
 button.secondary {
+  background: var(--accent-2);
   border-color: var(--accent-2);
-  color: var(--accent-2);
+  color: #07140d;
+  font-weight: 700;
 }
 button.danger {
   border-color: var(--danger);
@@ -1482,6 +1524,21 @@ pre {
   padding: 10px;
   background: var(--panel);
 }
+.setting-group {
+  display: grid;
+  gap: 10px;
+}
+.setting-group + .setting-group {
+  margin-top: 18px;
+  padding-top: 18px;
+  border-top: 1px solid var(--line);
+}
+.empty {
+  color: var(--muted);
+  border: 1px dashed var(--line);
+  border-radius: 8px;
+  padding: 12px;
+}
 .toast {
   position: fixed;
   left: 12px;
@@ -1494,6 +1551,33 @@ pre {
   padding: 10px 12px;
   box-shadow: 0 10px 30px rgba(0,0,0,.35);
   display: none;
+}
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 10;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  padding: 18px;
+  background: rgba(3, 6, 10, .66);
+}
+.modal-backdrop.open {
+  display: flex;
+}
+.modal {
+  width: min(460px, 100%);
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 14px;
+  box-shadow: var(--shadow);
+}
+.modal-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+  margin-top: 12px;
 }
 .login {
   max-width: 420px;
@@ -1511,14 +1595,36 @@ pre {
   }
 }
 @media (max-width: 520px) {
-  .two, .actions {
+  .two, .actions, .actions.tight {
     grid-template-columns: 1fr;
+  }
+  .shell {
+    padding-left: 12px;
+    padding-right: 12px;
+  }
+  .topbar {
+    margin-left: -12px;
+    margin-right: -12px;
   }
 }
 </style>
 </head>
 <body>
 <div id="toast" class="toast"></div>
+<div id="modalBackdrop" class="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="modalTitle">
+  <div class="modal">
+    <h2 id="modalTitle"></h2>
+    <p id="modalMessage" class="muted"></p>
+    <div id="modalInputWrap" class="hidden">
+      <label id="modalInputLabel" for="modalInput">Valor</label>
+      <input id="modalInput">
+    </div>
+    <div class="modal-actions">
+      <button id="modalCancel" type="button">Cancelar</button>
+      <button id="modalOk" class="primary" type="button">Continuar</button>
+    </div>
+  </div>
+</div>
 <main class="shell">
   <section id="loginView" class="login panel hidden">
     <h1>Yarbis movil</h1>
@@ -1581,12 +1687,57 @@ function escapeHtml(value) {
   }[ch]));
 }
 
+function toneClass(text) {
+  const value = String(text || "").toLowerCase();
+  if (value.includes("error") || value.includes("fall") || value.includes("detenido") || value.includes("falta")) return "bad";
+  if (value.includes("pendiente") || value.includes("esperando") || value.includes("revis")) return "warn";
+  if (value.includes("activo") || value.includes("listo") || value.includes("usable")) return "good";
+  return "";
+}
+
 function toast(message) {
   const node = $("toast");
   node.textContent = message;
   node.style.display = "block";
   window.clearTimeout(window._toastTimer);
   window._toastTimer = window.setTimeout(() => node.style.display = "none", 4200);
+}
+
+function askModal({ title, message = "", input = false, label = "Valor", defaultValue = "", okText = "Continuar" }) {
+  return new Promise((resolve) => {
+    const backdrop = $("modalBackdrop");
+    const inputWrap = $("modalInputWrap");
+    const inputNode = $("modalInput");
+    $("modalTitle").textContent = title || "Confirmar";
+    $("modalMessage").textContent = message || "";
+    $("modalInputLabel").textContent = label;
+    $("modalOk").textContent = okText;
+    inputWrap.classList.toggle("hidden", !input);
+    inputNode.value = defaultValue || "";
+    backdrop.classList.add("open");
+    const cleanup = (value) => {
+      backdrop.classList.remove("open");
+      $("modalOk").onclick = null;
+      $("modalCancel").onclick = null;
+      inputNode.onkeydown = null;
+      resolve(value);
+    };
+    $("modalCancel").onclick = () => cleanup(null);
+    $("modalOk").onclick = () => cleanup(input ? inputNode.value : true);
+    inputNode.onkeydown = (event) => {
+      if (event.key === "Enter") cleanup(inputNode.value);
+      if (event.key === "Escape") cleanup(null);
+    };
+    if (input) window.setTimeout(() => inputNode.focus(), 0);
+  });
+}
+
+function askConfirm(title, message, okText = "Continuar") {
+  return askModal({ title, message, okText });
+}
+
+function askText(title, message, defaultValue = "", label = "Valor") {
+  return askModal({ title, message, input: true, defaultValue, label, okText: "Aceptar" });
 }
 
 function base64ToBlob(base64Text, mimeType) {
@@ -1949,8 +2100,19 @@ function renderHome() {
   const pending = appState.awaiting_user_input || {};
   const service = appState.service || {};
   const status = service.status || {};
+  const runningText = status.running ? "Servicio activo" : "Servicio detenido";
   const thinking = status.running ? appState.health_text : appState.readiness_text;
+  const nextStep = pending.pending
+    ? "Responde la pregunta pendiente para retomar los ciclos."
+    : (status.running ? "Puedes ejecutar un ciclo o dejar que el pulso continúe." : "Inicia el servicio o ejecuta desde esta sesión.");
   $("home").innerHTML = `
+    <section class="hero">
+      <div class="toolbar">
+        <span class="pill ${toneClass(runningText)}">${escapeHtml(runningText)}</span>
+        <span class="pill">${escapeHtml(appState.cycle_count)} ciclo(s)</span>
+      </div>
+      <h2>${escapeHtml(nextStep)}</h2>
+    </section>
     <section class="section">
       <div class="grid two">
         <div class="panel metric"><span class="muted">Ciclos</span><strong>${escapeHtml(appState.cycle_count)}</strong></div>
@@ -1963,14 +2125,15 @@ function renderHome() {
     </section>
     ${pending.pending ? `<section class="section"><h2>Pendiente</h2><div class="panel">${escapeHtml(pending.question)}</div></section>` : ""}
     <section class="section">
-      <h2>Salud</h2>
+      <h2>Estado operativo</h2>
       <div class="panel"><pre>${escapeHtml(thinking)}</pre></div>
     </section>
     <section class="section">
-      <h2>Ultimo resultado</h2>
-      <div class="actions">
+      <h2>Último resultado</h2>
+      <div class="actions tight">
         <button data-speak="${escapeHtml(appState.last_result || "")}">Escuchar</button>
         <button data-action="stop-speaking">Detener habla</button>
+        <button data-action="refresh">Refrescar</button>
       </div>
       <div class="panel"><pre>${escapeHtml(appState.last_result || "Sin resultado reciente.")}</pre></div>
     </section>`;
@@ -1978,11 +2141,15 @@ function renderHome() {
 
 function renderRun() {
   $("run").innerHTML = `
+    <section class="hero">
+      <h2>Ejecuta, responde o dicta sin salir del teléfono.</h2>
+      <div class="muted">Las operaciones largas quedan como trabajos y se actualizan automáticamente.</div>
+    </section>
     <section class="section">
       <h2>Ejecutar</h2>
-      <div class="actions">
+      <div class="actions tight">
         <button class="primary" data-action="run-cycle">Ejecutar ciclo</button>
-        <button class="secondary" data-action="run-auto">Modo autonomo</button>
+        <button class="secondary" data-action="run-auto">Modo autónomo</button>
         <button class="danger" data-action="stop-operation">Detener pensando</button>
         <button data-action="stop-speaking">Detener habla</button>
         <button data-action="refresh">Refrescar</button>
@@ -1991,9 +2158,9 @@ function renderRun() {
     <section class="section">
       <h2>Respuesta o contexto</h2>
       <div class="form-grid">
-        <textarea id="replyText" placeholder="Escribe respuesta, instruccion o contexto libre"></textarea>
+        <textarea id="replyText" placeholder="Escribe respuesta, instrucción o contexto libre"></textarea>
         <input id="voiceFileInput" class="hidden" type="file" accept="audio/*" capture>
-        <div class="actions">
+        <div class="actions tight">
           <button data-action="record-reply">${voiceRecorder && voiceRecorder.state === "recording" ? "Detener voz" : "Grabar voz"}</button>
           <button data-action="voice-file">Grabar archivo</button>
           <button class="primary" data-action="send-reply">Enviar y ejecutar</button>
@@ -2016,6 +2183,10 @@ function renderRun() {
 function renderContext() {
   const profile = appState.profile || {};
   $("context").innerHTML = `
+    <section class="hero">
+      <h2>Contexto que Yarbis usa para trabajar mejor.</h2>
+      <div class="muted">Objetivo, perfil, notas, tareas y propuestas de código.</div>
+    </section>
     <section class="section">
       <h2>Objetivo</h2>
       <div class="form-grid">
@@ -2036,8 +2207,8 @@ function renderContext() {
     <section class="section">
       <h2>Notas</h2>
       <div class="form-grid">
-        <input id="noteTitle" placeholder="Titulo">
-        <input id="noteCategory" placeholder="Categoria" value="general">
+        <input id="noteTitle" placeholder="Título">
+        <input id="noteCategory" placeholder="Categoría" value="general">
         <textarea id="noteContent" placeholder="Contenido"></textarea>
         <button data-action="save-note">Guardar nota</button>
       </div>
@@ -2052,7 +2223,7 @@ function renderContext() {
     <section class="section">
       <h2>Tareas</h2>
       <div class="form-grid">
-        <input id="taskTitle" placeholder="Titulo">
+        <input id="taskTitle" placeholder="Título">
         <textarea id="taskDetails" placeholder="Detalles"></textarea>
         <select id="taskPriority"><option>media</option><option>alta</option><option>baja</option></select>
         <button data-action="add-task">Crear tarea</button>
@@ -2072,8 +2243,8 @@ function renderContext() {
         <button data-action="save-coding-workspace">Guardar workspace</button>
       </div>
       <div class="form-grid">
-        <input id="codingValidation" value="${escapeHtml((appState.coding || {}).validation_command || "")}" placeholder="Comando de validacion">
-        <button data-action="save-coding-validation">Guardar validacion</button>
+        <input id="codingValidation" value="${escapeHtml((appState.coding || {}).validation_command || "")}" placeholder="Comando de validación">
+        <button data-action="save-coding-validation">Guardar validación</button>
       </div>
       <div class="form-grid">
         <input id="codingProposalId" placeholder="Id de propuesta">
@@ -2088,7 +2259,7 @@ function renderContext() {
 
 function renderSettings() {
   if (!appState.model_provider) {
-    $("settings").innerHTML = `<section class="section"><div class="panel">Cargando configuracion...</div></section>`;
+    $("settings").innerHTML = `<section class="section"><div class="panel">Cargando configuración...</div></section>`;
     return;
   }
   const mp = appState.model_provider;
@@ -2120,9 +2291,13 @@ function renderSettings() {
     `<option value="${escapeHtml(item.name || "")}">${escapeHtml((item.name || "Voz") + (item.lang ? " - " + item.lang : ""))}</option>`
   )).join("");
   $("settings").innerHTML = `
+    <section class="hero">
+      <h2>Configuración operativa</h2>
+      <div class="muted">Ajustes por área, guardados sin cambiar la forma de trabajar de Yarbis.</div>
+    </section>
     <section class="section">
       <h2>Modelo</h2>
-      <div class="form-grid wide">
+      <div class="setting-group form-grid wide">
         <div><label>Proveedor</label><select id="modelProvider"><option value="ollama">ollama</option><option value="openrouter">openrouter</option></select></div>
         <div><label>Modelo</label><input id="modelName" value="${escapeHtml(active.model || "")}"></div>
         <div><label>Host</label><input id="modelHost" value="${escapeHtml(active.host || "")}"></div>
@@ -2133,8 +2308,8 @@ function renderSettings() {
       </div>
     </section>
     <section class="section">
-      <h2>UI movil</h2>
-      <div class="form-grid wide">
+      <h2>UI móvil</h2>
+      <div class="setting-group form-grid wide">
         <label><input id="mobileEnabled" type="checkbox" ${mobile.enabled ? "checked" : ""}> Activa</label>
         <div><label>Puerto</label><input id="mobilePort" type="number" value="${escapeHtml(mobile.port || 8787)}"></div>
         <div><label>Timeout operaciones</label><input id="mobileJobTimeout" type="number" min="60" max="86400" value="${escapeHtml(mobile.job_timeout_seconds || 1800)}"></div>
@@ -2145,7 +2320,7 @@ function renderSettings() {
     </section>
     <section class="section">
       <h2>Voz</h2>
-      <div class="form-grid wide">
+      <div class="setting-group form-grid wide">
         <label><input id="voiceEnabled" type="checkbox" ${voice.enabled === false ? "" : "checked"}> Activa</label>
         <div><label>Motor TTS</label><select id="voiceProvider"><option value="system">Sistema</option><option value="kokoro">Kokoro local</option></select></div>
         <div><label>Voz sistema/Telegram</label><select id="ttsVoiceId"><option value="">predeterminada</option>${systemVoiceOptions}</select></div>
@@ -2156,7 +2331,7 @@ function renderSettings() {
         <div><label>Velocidad navegador</label><input id="browserTtsRate" type="number" min="0.5" max="2" step="0.1" value="${escapeHtml(voice.browser_tts_rate || 1)}"></div>
         <div><label>Tono navegador</label><input id="browserTtsPitch" type="number" min="0" max="2" step="0.1" value="${escapeHtml(voice.browser_tts_pitch || 1)}"></div>
         <div><label>Telegram voz</label><select id="telegramVoiceMode"><option value="off">off</option><option value="auto">auto</option><option value="always">always</option></select></div>
-        <button data-action="refresh-voice-catalog">Catalogo Kokoro</button>
+        <button data-action="refresh-voice-catalog">Catálogo Kokoro</button>
         <button data-action="use-free-voice">Usar seleccionada</button>
         <button data-action="test-voice">Probar voz</button>
         <button data-action="save-voice">Guardar voz</button>
@@ -2165,7 +2340,7 @@ function renderSettings() {
     </section>
     <section class="section">
       <h2>Pulso proactivo</h2>
-      <div class="form-grid wide">
+      <div class="setting-group form-grid wide">
         <label><input id="pulseEnabled" type="checkbox" ${proactive.enabled ? "checked" : ""}> Activo</label>
         <div><label>Intervalo segundos</label><input id="pulseInterval" type="number" value="${escapeHtml(proactive.interval_seconds || 1800)}"></div>
         <div><label>Ciclos</label><input id="pulseCycles" value="${escapeHtml(proactive.cycles ?? "")}" placeholder="vacio = hasta terminar"></div>
@@ -2176,7 +2351,7 @@ function renderSettings() {
     </section>
     <section class="section">
       <h2>Contexto local</h2>
-      <div class="form-grid wide">
+      <div class="setting-group form-grid wide">
         <label><input id="localEnabled" type="checkbox" ${local.enabled ? "checked" : ""}> Activo</label>
         <div><label>Modo</label><select id="localMode"><option value="safe">safe</option><option value="detailed">detailed</option><option value="off">off</option></select></div>
         <div><label>Muestra cada</label><input id="localSample" type="number" value="${escapeHtml(local.sample_interval_seconds || 30)}"></div>
@@ -2190,7 +2365,7 @@ function renderSettings() {
     </section>
     <section class="section">
       <h2>Notificaciones</h2>
-      <div class="form-grid wide">
+      <div class="setting-group form-grid wide">
         <label><input id="notifyEnabled" type="checkbox" ${notifications.enabled ? "checked" : ""}> Activas</label>
         <label><input id="notifyWindows" type="checkbox" ${(notifications.channels || []).includes("windows") ? "checked" : ""}> Windows</label>
         <label><input id="notifyNtfy" type="checkbox" ${(notifications.channels || []).includes("ntfy") ? "checked" : ""}> ntfy</label>
@@ -2201,7 +2376,7 @@ function renderSettings() {
         <div><label>Telegram token nuevo</label><input id="telegramToken" type="password" placeholder="${telegram.bot_token_configured ? "guardado" : ""}"></div>
         <div><label>Telegram chat</label><input id="telegramChat" value="${escapeHtml(telegram.chat_id || "")}"></div>
         <button data-action="save-notifications">Guardar notificaciones</button>
-        <button data-action="test-notification">Probar notificacion</button>
+        <button data-action="test-notification">Probar notificación</button>
       </div>
     </section>
     <section class="section">
@@ -2235,7 +2410,7 @@ function renderSettings() {
       <div class="panel"><pre>${escapeHtml(appState.social_accounts_text || "")}</pre></div>
       <input id="socialId" placeholder="Id de publicacion o draft">
       <div class="actions">
-        <button data-action="social-confirmation">Ver confirmacion</button>
+        <button data-action="social-confirmation">Ver confirmación</button>
         <button data-action="social-assisted">Abrir asistido</button>
       </div>
     </section>`;
@@ -2317,7 +2492,7 @@ document.addEventListener("click", async (event) => {
     } else if (name === "run-cycle") {
       await action("run_cycle");
     } else if (name === "run-auto") {
-      const cycles = prompt("Ciclos (vacio = hasta terminar)", "");
+      const cycles = await askText("Modo autónomo", "Deja vacío para continuar hasta terminar.", "", "Ciclos");
       if (cycles !== null) await action("run_auto", { cycles });
     } else if (name === "stop-operation") {
       await action("stop_operation");
@@ -2424,7 +2599,7 @@ document.addEventListener("click", async (event) => {
     } else if (name === "memory-inspect") {
       await action("memory_inspect", { path_or_id: $("backupPath").value });
     } else if (name === "memory-import") {
-      if (confirm("Esto puede reemplazar o fusionar memoria. Continuar?")) {
+      if (await askConfirm("Trasplantar memoria", "Esto puede reemplazar o fusionar memoria. ¿Continuar?")) {
         await action("memory_import", { path_or_id: $("backupPath").value, mode: "replace" });
       }
     } else if (name === "memory-verify") {
@@ -2434,18 +2609,18 @@ document.addEventListener("click", async (event) => {
     } else if (name === "service-start") {
       await action("service_start");
     } else if (name === "service-stop") {
-      if (confirm("Detener el servicio cerrara esta UI hasta que vuelva a iniciar. Continuar?")) await action("service_stop");
+      if (await askConfirm("Detener servicio", "Detener el servicio cerrará esta UI hasta que vuelva a iniciar. ¿Continuar?")) await action("service_stop");
     } else if (name === "service-autostart") {
       await action("service_autostart", { enabled: !(appState.service.status.autostart_enabled) });
     } else if (name === "service-remove") {
-      if (confirm("Quitar el servicio SCM?")) await action("service_remove");
+      if (await askConfirm("Quitar servicio", "¿Quitar el servicio de SCM?")) await action("service_remove");
     } else if (name === "social-confirmation") {
       const data = await action("social_confirmation", { publication_id: $("socialId").value });
-      if (data.result) prompt("Confirmacion", data.result);
+      if (data.result) await askText("Confirmación", "Copia esta frase para publicar.", data.result, "Frase");
     } else if (name === "social-assisted") {
       await action("social_assisted", { publication_id: $("socialId").value, draft_id: $("socialId").value });
     } else if (name === "clear-activity") {
-      if (confirm("Limpiar actividad local?")) await action("clear_activity");
+      if (await askConfirm("Limpiar actividad", "¿Limpiar la actividad local?")) await action("clear_activity");
     }
   } catch (error) {
     toast(error.message);

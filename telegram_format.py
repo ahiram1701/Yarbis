@@ -84,12 +84,13 @@ def format_telegram_operation_reply(label: str, content: str, state: dict | None
         except Exception:
             state = {}
 
-    body = extract_telegram_operation_body(content) or "Operacion completada sin salida visible."
+    body = extract_telegram_operation_body(content) or "Operación completada sin salida visible."
 
     lines = [
-        f"Yarbis - {operation_label}",
-        telegram_continuity_line(state),
+        f"Yarbis | {operation_label}",
+        f"Estado: {telegram_continuity_line(state)}",
         "",
+        "Resultado:",
         body,
     ]
 

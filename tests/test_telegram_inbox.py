@@ -114,8 +114,9 @@ class TelegramInboxTestCase(unittest.TestCase):
         )
         send_mock.assert_called_once()
         sent_text = send_mock.call_args.args[0]
-        self.assertIn("Yarbis - Respuesta", sent_text)
-        self.assertIn("Continuidad:", sent_text)
+        self.assertIn("Yarbis | Respuesta", sent_text)
+        self.assertIn("Estado: Continuidad:", sent_text)
+        self.assertIn("Resultado:", sent_text)
         self.assertIn("Respuesta procesada.", sent_text)
         self.assertEqual(send_mock.call_args.kwargs["chat_id"], "123")
 
@@ -662,8 +663,8 @@ class TelegramInboxTestCase(unittest.TestCase):
         )
         send_mock.assert_called_once()
         sent_text = send_mock.call_args.args[0]
-        self.assertIn("Yarbis - Respuesta diferida", sent_text)
-        self.assertIn("Continuidad:", sent_text)
+        self.assertIn("Yarbis | Respuesta diferida", sent_text)
+        self.assertIn("Estado: Continuidad:", sent_text)
         self.assertIn("Respuesta guardada.", sent_text)
         self.assertEqual(send_mock.call_args.kwargs["chat_id"], "123")
         self.assertEqual(telegram_inbox._load_deferred_telegram_replies(), [])
@@ -697,8 +698,9 @@ class TelegramInboxTestCase(unittest.TestCase):
             state=state,
         )
 
-        self.assertIn("Yarbis - Ciclo", rendered)
-        self.assertIn("Continuidad: 7 ciclo(s) | 1 tarea(s) abierta(s)", rendered)
+        self.assertIn("Yarbis | Ciclo", rendered)
+        self.assertIn("Estado: Continuidad: 7 ciclo(s) | 1 tarea(s) abierta(s)", rendered)
+        self.assertIn("Resultado:", rendered)
         self.assertIn("Avance listo para Telegram.", rendered)
         self.assertNotIn("truncado", rendered.lower())
         self.assertIn("/run o /auto", rendered)

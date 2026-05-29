@@ -76,7 +76,7 @@ TELEGRAM_OPERATION_LABELS = {
     "Detener",
     "Modelo",
     "Proveedor",
-    "Modo autonomo",
+    "Modo autónomo",
     "Pulso proactivo",
     "Respuesta",
     "Respuesta diferida",
@@ -269,8 +269,8 @@ def _enqueue_deferred_telegram_reply(text: str, chat_id: str) -> str:
 
     return (
         "Recibi tu respuesta por Telegram.\n\n"
-        "Continuidad: estoy terminando otra operacion. "
-        "Dejo tu mensaje en cola y lo procesare automaticamente en cuanto quede libre."
+        "Continuidad: estoy terminando otra operación. "
+        "Dejé tu mensaje en cola y lo procesaré automáticamente en cuanto quede libre."
     )
 
 
@@ -380,56 +380,31 @@ def _claim_telegram_update(update_id: int) -> bool:
 
 def _help_text() -> str:
     return (
-        "Yarbis por Telegram listo.\n\n"
-        "Comandos disponibles:\n"
-        "/status - ver el estado actual\n"
-        "/stop - detener la operacion en curso\n"
-        "/goal TEXTO - cambiar el objetivo\n"
-        "/objetivo TEXTO - cambiar el objetivo\n"
+        "Yarbis por Telegram está listo.\n\n"
+        "Trabajo diario\n"
+        "/status - estado actual\n"
         "/run - ejecutar un ciclo\n"
-        "/auto - ejecutar el modo autonomo hasta terminar\n"
-        "/auto N - ejecutar N ciclos\n"
-        "/proveedor ollama|openrouter - elegir proveedor por defecto\n"
-        "/modelo NOMBRE - cambiar el modelo de Ollama\n"
-        "/timeout SEGUNDOS - cambiar el timeout del proveedor activo\n"
-        "/ollama NOMBRE SEGUNDOS - cambiar modelo y timeout juntos\n"
-        "/ollama host URL - cambiar host Ollama; vacio/local usa el daemon local\n"
-        "/ollama cloud MODELO - usar Ollama Cloud directo con OLLAMA_API_KEY\n"
-        "/ollama local MODELO - volver al daemon local\n"
-        "/ollama fallback MODELO1, MODELO2 - modelos de respaldo\n"
-        "/openrouter MODELO - configurar OpenRouter y usarlo por defecto\n"
-        "/voz auto - voz activada y respuesta hablada opcional\n"
-        "/voz on - activar entrada de voz\n"
-        "/voz off - desactivar entrada y respuestas de voz\n"
-        "/voz status - ver configuracion de voz\n"
-        "/voz voces - listar voces del sistema\n"
-        "/voz catalogo [es|en|all] - listar voces Kokoro\n"
-        "/voz proveedor kokoro|sistema - elegir motor TTS\n"
-        "/voz usar NUMERO - elegir voz del sistema/Telegram\n"
-        "/voz velocidad NUMERO - cambiar velocidad de voz\n"
-        "/voz callar - no enviar mas respuestas habladas por Telegram\n"
-        "/coding - ver workspace y propuestas\n"
-        "/coding propuestas - listar propuestas\n"
-        "/coding ver ID - ver una propuesta\n"
-        "/coding aplicar ID - aplicar una propuesta aprobada\n"
-        "/coding descartar ID - descartar una propuesta\n"
-        "/coding validar [ID] - ejecutar validacion del workspace/propuesta\n"
-        "/coding workspace RUTA - cambiar workspace de codigo\n"
+        "/auto [N] - modo autónomo hasta terminar o por N ciclos\n"
+        "/stop - detener la operación en curso\n"
+        "/goal TEXTO - cambiar objetivo\n\n"
+        "Contexto y código\n"
         "/notas - listar notas\n"
-        "/nota crear Titulo | contenido | categoria - guardar una nota\n"
-        "/nota ID - ver una nota\n"
-        "/nota borrar ID - eliminar una nota\n"
-        "/apagar - apagar esta PC en 60 segundos\n"
-        "/apagar ahora - apagar esta PC inmediatamente\n"
-        "/reiniciar - reiniciar esta PC en 60 segundos\n"
-        "/reiniciar ahora - reiniciar esta PC inmediatamente\n"
-        "/confirmar_apagado CODIGO - confirmar un apagado solicitado\n"
-        "/confirmar_reinicio CODIGO - confirmar un reinicio solicitado\n"
-        "/cancelar_apagado - cancelar un apagado programado\n"
-        "/cancelar_reinicio - cancelar un reinicio programado\n"
-        "/help - ver esta ayuda\n\n"
-        "Tambien puedes decir 'guarda una nota: ...', 'detente', 'apaga la pc', 'reinicia pc', "
-        "mandar una nota de voz o responder con texto libre cuando Yarbis te pida algo."
+        "/nota crear Título | contenido | categoría - guardar nota\n"
+        "/nota ID - ver nota\n"
+        "/nota borrar ID - eliminar nota\n"
+        "/coding - workspace y propuestas\n"
+        "/coding validar [ID] - validar workspace/propuesta\n"
+        "/coding aplicar ID - aplicar propuesta aprobada\n\n"
+        "Modelo y voz\n"
+        "/proveedor ollama|openrouter\n"
+        "/modelo NOMBRE\n"
+        "/timeout SEGUNDOS\n"
+        "/ollama ... /openrouter ...\n"
+        "/voz status|voces|catalogo|usar NUMERO|velocidad NUMERO|callar\n\n"
+        "Energía\n"
+        "/apagar, /reiniciar, /cancelar_apagado, /cancelar_reinicio\n"
+        "/confirmar_apagado CODIGO, /confirmar_reinicio CODIGO\n\n"
+        "También puedes escribir texto libre, mandar una nota de voz o responder cuando Yarbis te pida algo."
     )
 
 
@@ -507,14 +482,14 @@ def _transcribe_telegram_attachment(attachment: dict) -> str:
         duration = 0
     max_seconds = int(voice_settings.get("max_audio_seconds", 120))
     if duration and duration > max_seconds:
-        raise yarbis_voice.VoiceError(f"El audio dura {duration}s y el limite actual es {max_seconds}s.")
+        raise yarbis_voice.VoiceError(f"El audio dura {duration}s y el límite actual es {max_seconds}s.")
 
     try:
         file_size = int(attachment.get("file_size", 0) or 0)
     except (TypeError, ValueError):
         file_size = 0
     if file_size and file_size > yarbis_voice.MAX_VOICE_AUDIO_BYTES:
-        raise yarbis_voice.VoiceError("El audio excede el limite de 20 MB.")
+        raise yarbis_voice.VoiceError("El audio excede el límite de 20 MB.")
 
     raw_audio = download_telegram_file(
         str(attachment.get("file_id", "")).strip(),
@@ -560,7 +535,7 @@ def _voice_status_text() -> str:
 def _voice_list_text() -> str:
     voices = yarbis_voice.list_tts_voices(load_state())
     if not voices:
-        return "No encontre voces del sistema disponibles."
+        return "No encontré voces del sistema disponibles."
     lines = ["Voces disponibles:"]
     for item in voices[:30]:
         languages = item.get("languages", [])
@@ -579,7 +554,7 @@ def _voice_for_selection(selection: str) -> dict:
     if voice:
         return voice
     if target.isdigit():
-        raise ValueError("No encontre una voz con ese numero.")
+        raise ValueError("No encontré una voz con ese número.")
     return {"provider": "system", "id": target, "voice_id": target, "status": "manual"}
 
 
@@ -599,7 +574,7 @@ def _dispatch_voice_command(argument_text: str) -> str:
             provider = "system"
         return yarbis_voice.update_voice_settings_text(tts_provider=provider)
     if argument.startswith("descargar "):
-        return "Kokoro se descarga automaticamente en el primer uso; usa /voz usar ID."
+        return "Kokoro se descarga automáticamente en el primer uso; usa /voz usar ID."
     if argument in {"callar", "silencio", "mute"}:
         return yarbis_voice.update_voice_settings_text(telegram_reply_mode="off")
 
@@ -661,13 +636,13 @@ def _send_optional_telegram_voice_reply(text: str, chat_id: str, source_was_voic
 def _should_format_operation_reply(label: str, content: str) -> bool:
     operation_label = str(label).strip()
     rendered = str(content).strip()
-    if rendered.startswith("Uso:") or rendered.startswith("El numero de ciclos"):
+    if rendered.startswith("Uso:") or rendered.startswith("El número de ciclos") or rendered.startswith("El numero de ciclos"):
         return False
 
     if operation_label in TELEGRAM_OPERATION_LABELS:
         return True
 
-    return "=== CICLO" in rendered or "Modo autonomo ejecutado por" in rendered
+    return "=== CICLO" in rendered or "Modo autonomo ejecutado por" in rendered or "Modo autónomo ejecutado por" in rendered
 
 
 def _telegram_reply_for_delivery(label: str, content: str) -> str:
@@ -1201,7 +1176,7 @@ def _power_confirmation_expired(pending: dict) -> bool:
 
 def _request_power_confirmation(action: str, delay_seconds: int, chat_id: str) -> str:
     if not chat_id:
-        return "No pude preparar la confirmacion: falta el chat de Telegram."
+        return "No pude preparar la confirmación: falta el chat de Telegram."
 
     token = _store_power_confirmation(action, delay_seconds, chat_id)
     label = _power_action_label(action)
@@ -1224,14 +1199,14 @@ def _dispatch_confirm_power(action: str, argument_text: str, chat_id: str) -> st
     if not pending.get("action"):
         return f"No hay ningun {label} pendiente de confirmar."
     if pending.get("action") != action:
-        return f"La confirmacion pendiente no corresponde a {label}."
+        return f"La confirmación pendiente no corresponde a {label}."
     if str(pending.get("chat_id", "")).strip() != str(chat_id).strip():
-        return "Esta confirmacion pertenece a otro chat vinculado."
+        return "Esta confirmación pertenece a otro chat vinculado."
     if _power_confirmation_expired(pending):
         _clear_power_confirmation(action=action, chat_id=chat_id)
-        return f"La confirmacion de {label} caduco. Vuelve a solicitarla."
+        return f"La confirmación de {label} caducó. Vuelve a solicitarla."
     if str(pending.get("token", "")).strip().upper() != token:
-        return "Codigo de confirmacion incorrecto."
+        return "Código de confirmación incorrecto."
 
     delay_seconds = int(pending.get("delay_seconds", DEFAULT_SHUTDOWN_DELAY_SECONDS))
     _clear_power_confirmation(action=action, chat_id=chat_id)
@@ -1325,7 +1300,7 @@ def _job_label_for_message(text: str) -> str:
     if command == "/run":
         return "Ciclo"
     if command == "/auto":
-        return "Modo autonomo"
+        return "Modo autónomo"
     if _is_stop_command(command):
         return "Detener"
     if command in {"/modelo", "/model", "/ollama", "/openrouter"}:
@@ -1448,7 +1423,7 @@ def _dispatch_command(command_text: str, chat_id: str = "") -> str:
             except ValueError:
                 return "Uso: /auto o /auto 3"
             if cycles <= 0:
-                return "El numero de ciclos debe ser mayor que cero."
+                return "El número de ciclos debe ser mayor que cero."
         else:
             cycles = None
 
@@ -1544,7 +1519,7 @@ def process_telegram_update(update: dict) -> str:
             if voice_input and _voice_power_confirmation_blocked(text):
                 reply = (
                     "Por seguridad, confirma apagado o reinicio escribiendo el comando exacto en texto. "
-                    "Puedes pedir la accion por voz, pero el codigo final debe ser escrito."
+                    "Puedes pedir la acción por voz, pero el código final debe ser escrito."
                 )
             elif text.startswith("/"):
                 reply = _dispatch_command(text, chat_id=chat_id)

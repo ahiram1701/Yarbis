@@ -218,7 +218,7 @@ def _update_icon(icon, status: dict) -> None:
     state = str(status.get("state", "pausado")).strip() or "pausado"
     try:
         icon.icon = _make_icon_image(state)
-        icon.title = f"Yarbis contexto: {state}"
+        icon.title = f"Yarbis contexto local: {state}"
         icon.update_menu()
     except Exception:
         pass
@@ -240,13 +240,13 @@ def _run_with_tray() -> None:
     menu = pystray.Menu(
         pystray.MenuItem(lambda _item: controller.status_text(), lambda *_args: None, enabled=False),
         pystray.MenuItem("Abrir Yarbis", open_yarbis),
-        pystray.MenuItem("Capturar ahora", capture_now),
+        pystray.MenuItem("Actualizar contexto ahora", capture_now),
         pystray.MenuItem("Salir", quit_helper),
     )
     icon = pystray.Icon(
         "YarbisLocalContext",
         _make_icon_image("pausado"),
-        "Yarbis contexto: pausado",
+        "Yarbis contexto local: pausado",
         menu,
     )
     icon.run(setup=lambda tray_icon: controller.start_worker(tray_icon))
