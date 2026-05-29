@@ -17,6 +17,11 @@ $UpdateBackupDir = Join-Path $RuntimeDir "updates"
 $StateFile = Join-Path $RepoRoot "state.json"
 $ServiceName = "Yarbis"
 $DefaultSourceRepo = "C:\DEV\Github\yarbis"
+$LocalConfigRoots = @(
+    ".yarbis_runtime",
+    ".yarbis_checkpoints",
+    ".yarbis_memory_backups"
+)
 $StashPathspec = @(
     ".",
     ":(exclude)state.json",
@@ -39,6 +44,9 @@ $serviceSummary = "no instalado"
 $stateBackup = ""
 $stateBackupHash = ""
 $stateGuardSummary = "sin estado previo"
+$localConfigBackupDir = ""
+$localConfigBackupFileCount = 0
+$localConfigGuardSummary = "sin archivos runtime previos"
 $stashCreated = $false
 $stashRef = ""
 $stashMessage = ""
@@ -340,10 +348,83 @@ function Get-FileSha256([string]$Path) {
     }
 }
 
+function Get-RelativeRepoPath([string]$Path) {
+    $fullPath = [IO.Path]::GetFullPath($Path)
+    $rootPath = [IO.Path]::GetFullPath($RepoRoot).TrimEnd([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar)
+    if (-not $fullPath.StartsWith($rootPath, [StringComparison]::OrdinalIgnoreCase)) {
+        return ""
+    }
+
+    return $fullPath.Substring($rootPath.Length).TrimStart([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar)
+}
+
+function Test-ShouldSkipLocalConfigFile([string]$RelativePath) {
+    $normalized = $RelativePath.Replace("/", "\").TrimStart("\").ToLowerInvariant()
+    if (-not $normalized) {
+        return $true
+    }
+
+    if ($normalized -like ".yarbis_runtime\service_host\*" -or $normalized -eq ".yarbis_runtime\service_host") {
+        return $true
+    }
+    if ($normalized -like ".yarbis_runtime\updates\*" -or $normalized -eq ".yarbis_runtime\updates") {
+        return $true
+    }
+    if ($normalized -like "*.pid" -or $normalized -like "*.lock" -or $normalized -like "*.stop") {
+        return $true
+    }
+    if ($normalized -eq ".yarbis_runtime\pc_context_helper.status.json") {
+        return $true
+    }
+
+    return $false
+}
+
+function Copy-FilePreservingRelativePath([string]$SourceFile, [string]$DestinationRoot, [string]$RelativePath) {
+    $target = Join-Path $DestinationRoot $RelativePath
+    $targetDir = Split-Path -Parent $target
+    if ($targetDir) {
+        New-Item -ItemType Directory -Force -Path $targetDir | Out-Null
+    }
+    Copy-Item -LiteralPath $SourceFile -Destination $target -Force
+}
+
+function Backup-LocalConfigForUpdate([string]$Timestamp) {
+    $script:localConfigBackupDir = Join-Path $UpdateBackupDir "local-config-$Timestamp"
+    $script:localConfigBackupFileCount = 0
+    New-Item -ItemType Directory -Force -Path $script:localConfigBackupDir | Out-Null
+
+    foreach ($relativeRoot in $LocalConfigRoots) {
+        $rootPath = Join-Path $RepoRoot $relativeRoot
+        if (-not (Test-Path -LiteralPath $rootPath)) {
+            continue
+        }
+
+        Get-ChildItem -LiteralPath $rootPath -Recurse -Force -File | ForEach-Object {
+            $relativePath = Get-RelativeRepoPath $_.FullName
+            if (-not (Test-ShouldSkipLocalConfigFile $relativePath)) {
+                Copy-FilePreservingRelativePath $_.FullName $script:localConfigBackupDir $relativePath
+                $script:localConfigBackupFileCount += 1
+            }
+        }
+    }
+
+    if ($script:localConfigBackupFileCount -gt 0) {
+        $script:localConfigGuardSummary = "respaldo pre-update creado ($script:localConfigBackupFileCount archivo(s))"
+        Write-Host "Respaldo de configuracion local: $script:localConfigBackupDir"
+    }
+    else {
+        $script:localConfigGuardSummary = "sin archivos runtime previos"
+        Write-Host "No encontre archivos runtime/config locales para respaldar."
+    }
+}
+
 function Backup-StateForUpdate {
     New-Item -ItemType Directory -Force -Path $UpdateBackupDir | Out-Null
+    $timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
+    Backup-LocalConfigForUpdate $timestamp
+
     if (Test-Path -LiteralPath $StateFile) {
-        $timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
         $script:stateBackup = Join-Path $UpdateBackupDir "state-$timestamp.json"
         Copy-Item -LiteralPath $StateFile -Destination $script:stateBackup -Force
         $script:stateBackupHash = Get-FileSha256 $script:stateBackup
@@ -354,6 +435,26 @@ function Backup-StateForUpdate {
     else {
         $script:stateGuardSummary = "no existia state.json"
         Write-Host "No existe state.json; no hay estado que respaldar."
+    }
+}
+
+function Restore-LocalConfigBackupForUpdate([string]$Reason) {
+    if (-not $script:localConfigBackupDir -or -not (Test-Path -LiteralPath $script:localConfigBackupDir)) {
+        return
+    }
+
+    $restored = 0
+    Get-ChildItem -LiteralPath $script:localConfigBackupDir -Recurse -Force -File | ForEach-Object {
+        $backupRoot = [IO.Path]::GetFullPath($script:localConfigBackupDir).TrimEnd([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar)
+        $relativePath = $_.FullName.Substring($backupRoot.Length).TrimStart([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar)
+        if (-not (Test-ShouldSkipLocalConfigFile $relativePath)) {
+            Copy-FilePreservingRelativePath $_.FullName $RepoRoot $relativePath
+            $restored += 1
+        }
+    }
+
+    if ($restored -gt 0) {
+        $script:localConfigGuardSummary = "restaurada ($restored archivo(s); $Reason)"
     }
 }
 
@@ -373,6 +474,8 @@ function Restore-StateBackupForUpdate([string]$Reason) {
 }
 
 function Confirm-StatePreservedAfterUpdate {
+    Restore-LocalConfigBackupForUpdate "post-update"
+
     if (-not $script:stateBackup) {
         return
     }
@@ -529,6 +632,7 @@ try {
     Write-Host "Cambios locales: $stashSummary"
     Write-Host "Servicio:        $serviceSummary"
     Write-Host "Estado local:    $stateGuardSummary"
+    Write-Host "Config local:    $localConfigGuardSummary"
     if ($stateBackup) {
         Write-Host "Respaldo estado: $stateBackup"
     }
@@ -553,15 +657,16 @@ catch {
         Restore-LocalChangesFromStash
     }
 
-    if ($stateBackup) {
+    if ($stateBackup -or $localConfigBackupDir) {
         Write-Host ""
-        Write-Host "Verificando que state.json quede como antes del update..."
+        Write-Host "Verificando que la memoria/configuracion local quede como antes del update..."
         try {
             Confirm-StatePreservedAfterUpdate
             Write-Host "Estado local: $stateGuardSummary"
+            Write-Host "Config local: $localConfigGuardSummary"
         }
         catch {
-            Write-Warning "No pude verificar/restaurar state.json: $($_.Exception.Message)"
+            Write-Warning "No pude verificar/restaurar memoria/configuracion local: $($_.Exception.Message)"
         }
     }
 

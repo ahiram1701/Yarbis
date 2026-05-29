@@ -129,7 +129,7 @@ Requisitos previos:
 Que conserva:
 
 - `state.json`: objetivo, historial reciente, perfil, notas, tareas, Telegram, notificaciones, modelo y configuracion local.
-- `.yarbis_runtime/`: logs, actividad, eventos y archivos operativos no versionados.
+- `.yarbis_runtime/`: credenciales, configuracion runtime, propuestas, logs, actividad, eventos y archivos operativos no versionados.
 - `.yarbis_checkpoints/`: checkpoints de autoedicion.
 - `.yarbis_memory_backups/`: paquetes portables de respaldo y trasplante de memoria.
 - La configuracion del servicio SCM, incluida la cuenta existente; el actualizador solo refresca `binPath`, arranque automatico/manual y el host publicado.
@@ -141,7 +141,7 @@ Que puede cambiar:
 - Documentacion.
 - Host nativo publicado en `.yarbis_runtime/service_host/`.
 
-Si detecta cambios locales versionados o no versionados, el actualizador los guarda temporalmente con `git stash --include-untracked`, trae la actualizacion y luego intenta reaplicarlos con `git stash pop --index`. La memoria local (`state.json`, `.yarbis_runtime/`, `.yarbis_checkpoints/`, `.yarbis_memory_backups/` y `tests_runtime/`) queda fuera del stash y se protege con un respaldo pre-update. No descarta trabajo local automaticamente. Si al reaplicar hay conflictos, deja el arbol de Git en estado conflictivo, conserva el stash y no reinicia el servicio hasta que resuelvas los conflictos.
+Si detecta cambios locales versionados o no versionados, el actualizador los guarda temporalmente con `git stash --include-untracked`, trae la actualizacion y luego intenta reaplicarlos con `git stash pop --index`. La memoria y configuracion local (`state.json`, `.yarbis_runtime/`, `.yarbis_checkpoints/`, `.yarbis_memory_backups/` y `tests_runtime/`) queda fuera del stash y se protege con un respaldo pre-update. No descarta trabajo local automaticamente. Si al reaplicar hay conflictos, deja el arbol de Git en estado conflictivo, conserva el stash y no reinicia el servicio hasta que resuelvas los conflictos.
 
 Flujo interno del actualizador:
 
@@ -149,14 +149,14 @@ Flujo interno del actualizador:
 2. Resuelve y valida la fuente de actualizacion antes de tocar servicio o cambios locales.
 3. Lee si el servicio SCM y el helper de contexto local estan activos.
 4. Detiene el helper y el servicio si estaban corriendo, para congelar la memoria antes de tocar el codigo.
-5. Copia `state.json` a `.yarbis_runtime/updates/state-AAAAMMDD-HHMMSS.json` si existe y crea un respaldo portable de memoria.
+5. Copia `state.json` a `.yarbis_runtime/updates/state-AAAAMMDD-HHMMSS.json`, respalda configuracion runtime util y crea un respaldo portable de memoria.
 6. Si hay cambios locales fuera de memoria/runtime, los guarda en un stash con nombre `yarbis-update-AAAAMMDD-HHMMSS`.
 7. Mantiene `state.json` y carpetas runtime fuera del stash.
 8. Ejecuta `git fetch` y `git merge --ff-only FETCH_HEAD`.
 9. Instala dependencias con `.venv\Scripts\python.exe -m pip install -r requirements.txt`.
 10. Ejecuta `.\scripts\check.ps1`, salvo que uses `-SkipChecks`.
 11. Reaplica el stash local con `git stash pop --index`.
-12. Verifica que `state.json` siga identico al respaldo pre-update; si falta o cambio durante la actualizacion, lo restaura automaticamente.
+12. Restaura configuracion local respaldada y verifica que `state.json` siga identico al respaldo pre-update; si falta o cambio durante la actualizacion, lo restaura automaticamente.
 13. Si no hay conflictos, recompila/reconfigura el servicio SCM y reinicia lo que estaba activo.
 14. Imprime un resumen con commit anterior, commit remoto, commit actual, checks, dependencias, cambios locales, servicio y respaldo de estado.
 
@@ -835,7 +835,7 @@ Validacion completa antes de cerrar cambios:
 .\scripts\check.ps1
 ```
 
-El script ejecuta la suite Python con `unittest` y compila `service_host\YarbisServiceHost.csproj` con .NET 8. Tambien puedes usar la tool interna `run_project_tests`, que ejecuta `unittest` dentro del workspace.
+El script protege `state.json` y runtime local util antes de validar, ejecuta la suite Python con `unittest`, compila `service_host\YarbisServiceHost.csproj` con .NET 8 y restaura la memoria/configuracion local al terminar aunque haya fallos. Tambien puedes usar la tool interna `run_project_tests`, que ejecuta `unittest` dentro del workspace.
 Para una validacion equivalente desde el agente, usa `run_project_check`.
 
 Lint gradual:
