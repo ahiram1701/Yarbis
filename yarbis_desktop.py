@@ -973,7 +973,7 @@ class YarbisDesktop(tk.Tk):
         self.theme_palette = THEMES[self.current_theme_name]
         palette = self.theme_palette
 
-        if not use_bootstrap_theme(self.style, self.current_theme_name):
+        if not use_bootstrap_theme(self.style, self.current_theme_name) and not self._bootstrap_style_active:
             try:
                 self.style.theme_use("clam")
             except tk.TclError:

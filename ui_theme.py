@@ -93,10 +93,15 @@ def create_app_style(root, theme_name: str):
 
 
 def use_bootstrap_theme(style, theme_name: str) -> bool:
+    target_theme = bootstrap_theme_name(theme_name)
     try:
-        style.theme_use(bootstrap_theme_name(theme_name))
+        style.theme_use(target_theme)
         return True
     except Exception:
+        try:
+            return style.theme_use() == target_theme
+        except Exception:
+            pass
         return False
 
 
@@ -179,17 +184,16 @@ def configure_app_styles(style, palette: dict):
     style.configure("Danger.Badge.TLabel", background=palette["danger"], foreground=palette["danger_fg"], padding=(8, 3), font=("Segoe UI", 9, "bold"))
     style.configure("TEntry", fieldbackground=palette["field_bg"], foreground=palette["field_fg"], insertcolor=palette["field_fg"], bordercolor=palette["border"], padding=7)
     style.configure("TCombobox", fieldbackground=palette["field_bg"], background=palette["field_bg"], foreground=palette["field_fg"], arrowcolor=palette["field_fg"], bordercolor=palette["border"], padding=7)
-    for spinbox_style in ("TSpinbox", "Yarbis.TSpinbox"):
-        style.configure(
-            spinbox_style,
-            fieldbackground=palette["field_bg"],
-            background=palette["button_bg"],
-            foreground=palette["field_fg"],
-            insertcolor=palette["field_fg"],
-            arrowcolor=palette["field_fg"],
-            bordercolor=palette["border"],
-            padding=7,
-        )
+    style.configure(
+        "Yarbis.TSpinbox",
+        fieldbackground=palette["field_bg"],
+        background=palette["button_bg"],
+        foreground=palette["field_fg"],
+        insertcolor=palette["field_fg"],
+        arrowcolor=palette["field_fg"],
+        bordercolor=palette["border"],
+        padding=7,
+    )
     style.configure(
         "Yarbis.Vertical.TScrollbar",
         background=palette["button_bg"],
