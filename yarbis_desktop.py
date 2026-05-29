@@ -572,10 +572,37 @@ class YarbisDesktop(tk.Tk):
         return card
 
     def _build_home_view(self, parent):
-        parent.rowconfigure(2, weight=1)
+        parent.rowconfigure(0, weight=1)
         parent.columnconfigure(0, weight=1)
 
-        metrics = ttk.Frame(parent)
+        canvas = tk.Canvas(parent, highlightthickness=0, bd=0)
+        scrollbar = ttk.Scrollbar(parent, orient="vertical", command=canvas.yview)
+        canvas.configure(yscrollcommand=scrollbar.set)
+        canvas.grid(row=0, column=0, sticky="nsew")
+        scrollbar.grid(row=0, column=1, sticky="ns")
+        content = ttk.Frame(canvas)
+        content.columnconfigure(0, weight=1)
+        content_window = canvas.create_window((0, 0), window=content, anchor="nw")
+
+        def sync_scroll_region(_event=None):
+            canvas.configure(scrollregion=canvas.bbox("all"))
+
+        def sync_content_width(event):
+            canvas.itemconfigure(content_window, width=event.width)
+
+        def scroll_home(event):
+            canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+
+        content.bind("<Configure>", sync_scroll_region)
+        canvas.bind("<Configure>", sync_content_width)
+        canvas.bind("<MouseWheel>", scroll_home)
+        content.bind("<MouseWheel>", scroll_home)
+        canvas.bind("<Enter>", lambda _event: canvas.bind_all("<MouseWheel>", scroll_home))
+        canvas.bind("<Leave>", lambda _event: canvas.unbind_all("<MouseWheel>"))
+        self.home_canvas = canvas
+        self.home_scrollbar = scrollbar
+
+        metrics = ttk.Frame(content)
         metrics.grid(row=0, column=0, sticky="ew")
         for column in range(4):
             metrics.columnconfigure(column, weight=1, uniform="metrics")
@@ -584,8 +611,8 @@ class YarbisDesktop(tk.Tk):
         self._build_metric_card(metrics, "Modelo", self.ollama_var, 2)
         self._build_metric_card(metrics, "Pendiente", self.pending_var, 3)
 
-        goal_card = create_card(parent, "Objetivo actual")
-        goal_card.grid(row=1, column=0, sticky="ew", pady=(4, 12))
+        goal_card = create_card(content, "Objetivo actual")
+        goal_card.grid(row=1, column=0, sticky="ew", pady=(4, 10))
         ttk.Label(goal_card, textvariable=self.goal_var, style="Card.TLabel", wraplength=760).grid(
             row=1,
             column=0,
@@ -593,7 +620,7 @@ class YarbisDesktop(tk.Tk):
             pady=(8, 0),
         )
 
-        detail = ttk.Frame(parent)
+        detail = ttk.Frame(content)
         detail.grid(row=2, column=0, sticky="nsew")
         detail.columnconfigure(0, weight=1)
         detail.columnconfigure(1, weight=1)
@@ -602,7 +629,7 @@ class YarbisDesktop(tk.Tk):
         summary_frame = create_section(detail, "Estado actual")
         summary_frame.grid(row=0, column=0, sticky="nsew", padx=(0, 6))
         summary_frame.rowconfigure(0, weight=1)
-        self.summary_text = self._create_scrolled_text(summary_frame, wrap="word", height=16)
+        self.summary_text = self._create_scrolled_text(summary_frame, wrap="word", height=12)
         self.summary_text.frame.grid(row=0, column=0, sticky="nsew")
         self.summary_text.configure(state="disabled")
 
@@ -623,7 +650,7 @@ class YarbisDesktop(tk.Tk):
                 row=row * 2 + 1,
                 column=0,
                 sticky="ew",
-                pady=(0, 10),
+                pady=(0, 7),
             )
 
     def _build_run_view(self, parent):
@@ -921,6 +948,10 @@ class YarbisDesktop(tk.Tk):
             self.actions_canvas.configure(bg=palette["bg"])
         if hasattr(self, "actions_scrollbar"):
             style_scrollbar_widget(self.actions_scrollbar, palette)
+        if hasattr(self, "home_canvas"):
+            self.home_canvas.configure(bg=palette["bg"])
+        if hasattr(self, "home_scrollbar"):
+            style_scrollbar_widget(self.home_scrollbar, palette)
 
         configure_app_styles(self.style, palette)
         self.style.configure(
