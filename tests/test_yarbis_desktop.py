@@ -277,6 +277,35 @@ class YarbisDesktopTestCase(unittest.TestCase):
         self.assertIn("submit_user_reply(str(payload.get(\"reply_text\", \"\")))", script)
         self.assertNotIn("emit_notifications=False", script)
 
+    def test_launch_update_process_runs_external_updater_without_elevation(self):
+        with patch.object(yarbis_desktop.subprocess, "Popen") as popen_mock:
+            yarbis_desktop._launch_update_process(needs_admin=False)
+
+        popen_mock.assert_called_once()
+        args = popen_mock.call_args.args[0]
+        kwargs = popen_mock.call_args.kwargs
+        command = args[-1]
+
+        self.assertEqual(
+            args[:5],
+            ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command"],
+        )
+        self.assertIn("Start-Process -FilePath 'powershell.exe'", command)
+        self.assertIn(str(yarbis_desktop._UPDATE_SCRIPT), command)
+        self.assertIn("-RestartDesktop", command)
+        self.assertNotIn("-Verb RunAs", command)
+        self.assertEqual(kwargs["cwd"], str(yarbis_desktop._WORKSPACE_ROOT))
+        self.assertIs(kwargs["stdin"], yarbis_desktop.subprocess.DEVNULL)
+        self.assertIs(kwargs["stdout"], yarbis_desktop.subprocess.DEVNULL)
+        self.assertIs(kwargs["stderr"], yarbis_desktop.subprocess.DEVNULL)
+
+    def test_launch_update_process_requests_elevation_when_service_is_installed(self):
+        with patch.object(yarbis_desktop.subprocess, "Popen") as popen_mock:
+            yarbis_desktop._launch_update_process(needs_admin=True)
+
+        command = popen_mock.call_args.args[0][-1]
+        self.assertIn("-Verb RunAs", command)
+
     def test_refresh_state_view_uses_cached_status_without_blocking_checks(self):
         app = _desktop_app_stub()
         state = memory.default_state()
