@@ -1145,7 +1145,7 @@ class VoiceSettingsDialog(ThemedDialog):
             foreground=self.theme_palette["muted"],
             wraplength=420,
         ).grid(row=9, column=0, columnspan=2, sticky="ew", padx=6, pady=(8, 6))
-        return self.voice_combo
+        return self.kokoro_combo if self.prefer_kokoro else self.voice_combo
 
     def validate(self):
         try:

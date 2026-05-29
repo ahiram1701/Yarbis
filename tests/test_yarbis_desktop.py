@@ -116,6 +116,8 @@ def _desktop_app_stub(service_status=None):
     app._action_buttons = []
     app._view_has_pending_question = False
     app._last_summary_text = ""
+    app._last_result_text = ""
+    app._last_result_widgets = [_FakeWidget()]
     app._last_activity_text = ""
     app._last_activity_signature = None
     app._last_status_refresh_at = time.monotonic()
@@ -323,6 +325,17 @@ class YarbisDesktopTestCase(unittest.TestCase):
 
         self.assertEqual(app.goal_var.get(), "Responder rapido")
         self.assertEqual(app.service_button_text.get(), "Instalar e iniciar")
+
+    def test_refresh_state_view_shows_last_result_in_response_panel(self):
+        app = _desktop_app_stub()
+        state = memory.default_state()
+        state["last_result"] = "Respuesta visible de Yarbis."
+
+        with patch.object(yarbis_desktop, "load_state", return_value=state):
+            with patch.object(yarbis_desktop.YarbisDesktop, "_request_status_refresh", return_value=False):
+                yarbis_desktop.YarbisDesktop.refresh_state_view(app, force_heavy=False)
+
+        self.assertIn("Respuesta visible de Yarbis.", app._last_result_widgets[0].options["content"])
 
     def test_status_refresh_does_not_start_overlapping_workers(self):
         app = _desktop_app_stub()

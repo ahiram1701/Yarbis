@@ -66,6 +66,14 @@ class VoiceTestCase(unittest.TestCase):
         self.assertTrue(all(item["provider"] == "kokoro" for item in voices))
         self.assertIn("ef_dora", {item["id"] for item in voices})
 
+    def test_list_tts_voices_keeps_kokoro_when_system_voices_fail(self):
+        with patch.object(voice, "_tts_engine", side_effect=voice.VoiceError("sin voces de sistema")):
+            voices = voice.list_tts_voices({"enabled": True}, include_downloadable=True, language="es")
+
+        self.assertTrue(voices)
+        self.assertTrue(all(item["provider"] == "kokoro" for item in voices))
+        self.assertIn("ef_dora", {item["id"] for item in voices})
+
     def test_synthesize_speech_file_uses_kokoro_and_converts_to_ogg(self):
         def fake_run(args, **_kwargs):
             Path(args[-1]).write_bytes(b"ogg")

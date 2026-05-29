@@ -353,7 +353,10 @@ def list_tts_voices(
     language: str | None = None,
     refresh_catalog: bool = False,
 ) -> list[dict]:
-    rendered = _list_system_voices(settings)
+    try:
+        rendered = _list_system_voices(settings)
+    except Exception:
+        rendered = []
     rendered.extend(_list_kokoro_voices(language=language, start_index=len(rendered) + 1))
     return rendered
 

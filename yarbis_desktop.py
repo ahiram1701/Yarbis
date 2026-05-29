@@ -429,6 +429,8 @@ class YarbisDesktop(tk.Tk):
         self._action_buttons = []
         self._view_has_pending_question = False
         self._last_summary_text = ""
+        self._last_result_text = ""
+        self._last_result_widgets = []
         self._last_activity_text = ""
         self._last_activity_signature = None
         self._runtime_events_position = self._initial_runtime_events_position()
@@ -481,7 +483,7 @@ class YarbisDesktop(tk.Tk):
             ("run", "Ejecutar"),
             ("context", "Contexto"),
             ("settings", "Configuración"),
-            ("activity", "Actividad"),
+            ("activity", "Respuestas"),
         )
         for index, (view_name, label) in enumerate(nav_items, start=2):
             self._nav_buttons[view_name] = ttk.Button(
@@ -500,6 +502,16 @@ class YarbisDesktop(tk.Tk):
         self._pack_action_button(
             ttk.Button(quick, text="Detener pensando", command=self._stop_current_operation, style="Danger.TButton"),
             disable_when_busy=False,
+        )
+        ttk.Button(quick, text="Ver respuestas", command=lambda: self._show_view("activity")).pack(
+            fill="x",
+            padx=8,
+            pady=3,
+        )
+        ttk.Button(quick, text="Voz Kokoro", command=self._choose_kokoro_voice).pack(
+            fill="x",
+            padx=8,
+            pady=3,
         )
         ttk.Button(quick, textvariable=self.theme_button_text, command=self._toggle_theme).pack(
             fill="x",
@@ -620,8 +632,16 @@ class YarbisDesktop(tk.Tk):
             pady=(8, 0),
         )
 
+        response_frame = create_section(content, "Respuesta de Yarbis", "Último resultado recibido.")
+        response_frame.grid(row=2, column=0, sticky="nsew", pady=(0, 10))
+        response_frame.rowconfigure(1, weight=1)
+        home_result_text = self._create_scrolled_text(response_frame, wrap="word", height=8)
+        home_result_text.frame.grid(row=1, column=0, sticky="nsew")
+        home_result_text.configure(state="disabled")
+        self._last_result_widgets.append(home_result_text)
+
         detail = ttk.Frame(content)
-        detail.grid(row=2, column=0, sticky="nsew")
+        detail.grid(row=3, column=0, sticky="nsew")
         detail.columnconfigure(0, weight=1)
         detail.columnconfigure(1, weight=1)
         detail.rowconfigure(0, weight=1)
@@ -674,8 +694,22 @@ class YarbisDesktop(tk.Tk):
             if disable_when_busy:
                 self._action_buttons.append(button)
 
-        composer = create_section(parent, "Respuesta o contexto", "Escribe una respuesta, una instrucción o contexto libre.")
-        composer.grid(row=1, column=0, sticky="nsew")
+        workspace = ttk.Frame(parent)
+        workspace.grid(row=1, column=0, sticky="nsew")
+        workspace.columnconfigure(0, weight=3)
+        workspace.columnconfigure(1, weight=2)
+        workspace.rowconfigure(0, weight=1)
+
+        result = create_section(workspace, "Respuesta de Yarbis", "Último resultado visible mientras trabajas.")
+        result.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
+        result.rowconfigure(1, weight=1)
+        run_result_text = self._create_scrolled_text(result, wrap="word", height=14)
+        run_result_text.frame.grid(row=1, column=0, sticky="nsew")
+        run_result_text.configure(state="disabled")
+        self._last_result_widgets.append(run_result_text)
+
+        composer = create_section(workspace, "Respuesta o contexto", "Escribe una respuesta, una instrucción o contexto libre.")
+        composer.grid(row=0, column=1, sticky="nsew", padx=(8, 0))
         composer.columnconfigure(0, weight=1)
         composer.rowconfigure(1, weight=1)
         self.reply_text = tk.Text(composer, height=9, wrap="word")
@@ -768,13 +802,13 @@ class YarbisDesktop(tk.Tk):
         )
         self._build_action_group(
             left,
-            "Comunicación",
+            "Voz, Kokoro y avisos",
             (
+                {"text": "Elegir voz Kokoro", "command": self._choose_kokoro_voice, "style": "Accent.TButton"},
+                {"text": "Configurar voz", "command": self._edit_voice_settings},
+                {"text": "Probar voz", "command": self._test_voice},
                 {"text": "Notificaciones", "command": self._edit_notifications},
                 {"text": "Probar notificación", "command": self._send_test_notification},
-                {"text": "Voz", "command": self._edit_voice_settings},
-                {"text": "Voces Kokoro", "command": self._choose_kokoro_voice},
-                {"text": "Probar voz", "command": self._test_voice},
             ),
         )
         self._build_service_group(right)
@@ -791,7 +825,7 @@ class YarbisDesktop(tk.Tk):
     def _build_activity_view(self, parent):
         parent.columnconfigure(0, weight=1)
         parent.rowconfigure(0, weight=1)
-        activity_frame = create_section(parent, "Actividad", "Historial local reciente y eventos del servicio.")
+        activity_frame = create_section(parent, "Respuestas e historial", "Registro local reciente y eventos del servicio.")
         activity_frame.grid(row=0, column=0, sticky="nsew")
         activity_frame.rowconfigure(0, weight=1)
         self.activity_text = self._create_scrolled_text(activity_frame, wrap="word", height=22)
@@ -988,6 +1022,8 @@ class YarbisDesktop(tk.Tk):
         self.option_add("*TCombobox*Listbox*selectForeground", palette["select_fg"])
 
         style_text_widget(self.summary_text, palette)
+        for widget in getattr(self, "_last_result_widgets", []):
+            style_text_widget(widget, palette)
         style_text_widget(self.activity_text, palette)
         style_text_widget(self.reply_text, palette)
         self._style_service_autostart_toggle()
@@ -1037,6 +1073,21 @@ class YarbisDesktop(tk.Tk):
         widget.delete("1.0", "end")
         widget.insert("1.0", content)
         widget.configure(state="disabled")
+
+    @staticmethod
+    def _format_last_result_text(state: dict) -> str:
+        result = str(state.get("last_result", "")).strip()
+        if result:
+            return result
+        return "Aún no hay respuesta de Yarbis. Ejecuta un ciclo o responde una pregunta para verla aquí."
+
+    def _refresh_last_result_widgets(self, state: dict):
+        content = self._format_last_result_text(state)
+        if content == self._last_result_text:
+            return
+        for widget in getattr(self, "_last_result_widgets", []):
+            self._set_text(widget, content)
+        self._last_result_text = content
 
     def _activity_should_follow_end(self) -> bool:
         try:
@@ -1514,6 +1565,7 @@ class YarbisDesktop(tk.Tk):
         if summary_text != self._last_summary_text:
             self._set_text(self.summary_text, summary_text)
             self._last_summary_text = summary_text
+        self._refresh_last_result_widgets(state)
         self._refresh_activity_view()
 
     def _maybe_show_first_run(self):
@@ -2622,10 +2674,13 @@ class YarbisDesktop(tk.Tk):
         result = factory_reset_yarbis()
         self._last_activity_text = ""
         self._last_summary_text = ""
+        self._last_result_text = ""
         self._view_has_pending_question = False
         self._first_run_checked = False
         self.reply_text.delete("1.0", "end")
         self._set_text(self.activity_text, "")
+        for widget in getattr(self, "_last_result_widgets", []):
+            self._set_text(widget, "")
         self._apply_theme(get_ui_theme())
         self.refresh_state_view()
         self.status_var.set("Yarbis reiniciado de fabrica.")
