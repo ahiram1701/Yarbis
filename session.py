@@ -1202,6 +1202,20 @@ def update_notification_settings(
     telegram_chat_id: str = "",
 ) -> str:
     with SESSION_LOCK:
+        current_notifications = load_state().get("notifications", {})
+        current_ntfy = (
+            current_notifications.get("ntfy", {})
+            if isinstance(current_notifications.get("ntfy", {}), dict)
+            else {}
+        )
+        current_telegram = (
+            current_notifications.get("telegram", {})
+            if isinstance(current_notifications.get("telegram", {}), dict)
+            else {}
+        )
+        existing_ntfy_token = str(current_ntfy.get("token", "")).strip()
+        existing_telegram_bot_token = str(current_telegram.get("bot_token", "")).strip()
+
         channels = []
         if windows_enabled:
             channels.append("windows")
@@ -1217,7 +1231,8 @@ def update_notification_settings(
         if enabled and ntfy_enabled and not cleaned_topic:
             raise ValueError("Para usar ntfy necesitas indicar un topic.")
 
-        cleaned_telegram_bot_token = str(telegram_bot_token).strip()
+        cleaned_ntfy_token = str(ntfy_token).strip() or existing_ntfy_token
+        cleaned_telegram_bot_token = str(telegram_bot_token).strip() or existing_telegram_bot_token
         cleaned_telegram_chat_id = str(telegram_chat_id).strip()
         if enabled and telegram_enabled and not cleaned_telegram_bot_token:
             raise ValueError("Para usar Telegram necesitas indicar el bot token.")
@@ -1242,7 +1257,7 @@ def update_notification_settings(
                 "ntfy": {
                     "server": str(ntfy_server).strip() or default_ntfy.get("server", "https://ntfy.sh"),
                     "topic": cleaned_topic,
-                    "token": str(ntfy_token).strip(),
+                    "token": cleaned_ntfy_token,
                     "priority": str(ntfy_priority).strip().lower(),
                     "tags": str(ntfy_tags).strip(),
                     "timeout_seconds": default_ntfy.get("timeout_seconds", 10),
@@ -1263,12 +1278,16 @@ def update_notification_settings(
         if not enabled:
             return "Notificaciones desactivadas."
 
-        summary = "Notificaciones actualizadas: " + ", ".join(channels) + "."
+        summary = "Notificaciones actualizadas.\nCanales activos: " + ", ".join(channels) + "."
+        if ntfy_enabled:
+            summary += f"\nntfy: topic={cleaned_topic}; token={'configurado' if cleaned_ntfy_token else 'sin token'}."
         if telegram_enabled and cleaned_telegram_bot_token and not cleaned_telegram_chat_id:
             summary += (
-                "\n\nTelegram quedo configurado, pero aun no hay un chat vinculado. "
-                "Abre el bot y envia /start para completar el enlace."
+                "\nTelegram: bot configurado; falta vincular chat. "
+                "Abre el bot, envía /start y usa Probar notificación."
             )
+        elif telegram_enabled:
+            summary += "\nTelegram: configurado y con chat vinculado."
 
         return summary
 
@@ -1288,18 +1307,23 @@ def send_test_notification() -> str:
                 settings = load_state().get("notifications", {})
             else:
                 return (
-                    "Telegram ya esta configurado, pero aun no hay un chat vinculado. "
-                    "Escribe /start al bot desde tu iPhone y vuelve a probar."
+                    "Telegram tiene bot token, pero todavía no hay chat vinculado.\n"
+                    "Siguiente paso: escribe /start al bot desde Telegram y vuelve a probar."
                 )
 
         sent = send_notification(
             "Prueba de Yarbis",
-            "Las notificaciones estan configuradas correctamente.",
+            "Prueba recibida. Las notificaciones de Yarbis están operativas.",
         )
         if sent:
-            return "Notificacion de prueba enviada."
+            active_channels = ", ".join(channels) if channels else "sin canales"
+            return f"Notificación de prueba enviada.\nCanales activos: {active_channels}."
 
-        return "No pude enviar la notificacion de prueba. Revisa el canal, el topic y tu conexion."
+        return (
+            "No pude enviar la notificación de prueba.\n"
+            "Revisa que haya al menos un canal activo, que ntfy tenga topic, "
+            "que Telegram tenga chat vinculado y que la conexión esté disponible."
+        )
 
 
 def update_profile_text(

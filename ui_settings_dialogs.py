@@ -1184,6 +1184,29 @@ class NotificationsDialog(ThemedDialog):
         self.initial_settings = initial_settings
         super().__init__(parent, "Notificaciones")
 
+    @staticmethod
+    def _status_text(enabled: bool, channels: set[str], ntfy: dict, telegram: dict) -> str:
+        channel_text = ", ".join(
+            label
+            for key, label in (("windows", "Windows"), ("ntfy", "ntfy"), ("telegram", "Telegram"))
+            if key in channels
+        ) or "sin canales"
+        ntfy_state = "listo" if "ntfy" in channels and str(ntfy.get("topic", "")).strip() else "sin topic"
+        telegram_token = bool(str(telegram.get("bot_token", "")).strip())
+        telegram_chat = bool(str(telegram.get("chat_id", "")).strip())
+        if "telegram" not in channels:
+            telegram_state = "desactivado"
+        elif telegram_token and telegram_chat:
+            telegram_state = "listo"
+        elif telegram_token:
+            telegram_state = "falta vincular chat"
+        else:
+            telegram_state = "falta token"
+        return (
+            f"Estado: {'activas' if enabled else 'desactivadas'} | "
+            f"Canales: {channel_text} | ntfy: {ntfy_state} | Telegram: {telegram_state}"
+        )
+
     def body(self, master):
         self._prepare_body(master)
         ntfy = self.initial_settings.get("ntfy", {})
@@ -1195,99 +1218,137 @@ class NotificationsDialog(ThemedDialog):
         self.windows_var = tk.BooleanVar(value="windows" in channels)
         self.ntfy_var = tk.BooleanVar(value="ntfy" in channels)
         self.telegram_var = tk.BooleanVar(value="telegram" in channels)
-
-        ttk.Checkbutton(
-            master,
-            text="Activar notificaciones",
-            variable=self.enabled_var,
-        ).grid(row=0, column=0, columnspan=2, sticky="w", padx=6, pady=(6, 4))
-
-        ttk.Checkbutton(
-            master,
-            text="Windows",
-            variable=self.windows_var,
-        ).grid(row=1, column=0, sticky="w", padx=6, pady=4)
-
-        ttk.Checkbutton(
-            master,
-            text="iPhone vía ntfy",
-            variable=self.ntfy_var,
-        ).grid(row=1, column=1, sticky="w", padx=6, pady=4)
-
-        ttk.Checkbutton(
-            master,
-            text="Telegram",
-            variable=self.telegram_var,
-        ).grid(row=1, column=2, sticky="w", padx=6, pady=4)
-
-        ttk.Label(master, text="Servidor ntfy").grid(row=2, column=0, sticky="w", padx=6, pady=(8, 2))
-        self.server_entry = ttk.Entry(master, width=56)
-        self.server_entry.grid(row=3, column=0, columnspan=3, sticky="ew", padx=6)
-        self.server_entry.insert(0, ntfy.get("server", "https://ntfy.sh"))
-
-        ttk.Label(master, text="Topic").grid(row=4, column=0, sticky="w", padx=6, pady=(8, 2))
-        self.topic_entry = ttk.Entry(master, width=56)
-        self.topic_entry.grid(row=5, column=0, columnspan=3, sticky="ew", padx=6)
-        self.topic_entry.insert(0, ntfy.get("topic", ""))
-
-        ttk.Label(master, text="Token").grid(row=6, column=0, sticky="w", padx=6, pady=(8, 2))
-        self.token_entry = ttk.Entry(master, width=56, show="*")
-        self.token_entry.grid(row=7, column=0, columnspan=3, sticky="ew", padx=6)
-        self.token_entry.insert(0, ntfy.get("token", ""))
-
-        ttk.Label(master, text="Prioridad").grid(row=8, column=0, sticky="w", padx=6, pady=(8, 2))
-        self.priority_combo = ttk.Combobox(
-            master,
-            values=("", "min", "low", "default", "high", "urgent"),
-            state="readonly",
-            width=20,
-        )
-        self.priority_combo.grid(row=9, column=0, sticky="w", padx=6)
-        self.priority_combo.set(ntfy.get("priority", ""))
-
-        ttk.Label(master, text="Tags").grid(row=8, column=1, sticky="w", padx=6, pady=(8, 2))
-        self.tags_entry = ttk.Entry(master, width=28)
-        self.tags_entry.grid(row=9, column=1, sticky="ew", padx=6)
-        self.tags_entry.insert(0, ntfy.get("tags", ""))
+        self._initial_ntfy_token = str(ntfy.get("token", "")).strip()
 
         telegram = self.initial_settings.get("telegram", {})
         if not isinstance(telegram, dict):
             telegram = {}
+        self._initial_telegram_bot_token = str(telegram.get("bot_token", "")).strip()
 
-        ttk.Label(master, text="Bot token de Telegram").grid(
-            row=10,
-            column=0,
+        master.columnconfigure(0, weight=1)
+
+        status_frame = ttk.LabelFrame(master, text="Resumen")
+        status_frame.grid(row=0, column=0, sticky="ew", padx=6, pady=(6, 8))
+        status_frame.columnconfigure(0, weight=1)
+        ttk.Label(
+            status_frame,
+            text=self._status_text(bool(self.initial_settings.get("enabled", True)), channels, ntfy, telegram),
+            foreground=self.theme_palette["muted"],
+            wraplength=620,
+            justify="left",
+        ).grid(row=0, column=0, sticky="ew", padx=10, pady=8)
+
+        channels_frame = ttk.LabelFrame(master, text="Canales")
+        channels_frame.grid(row=1, column=0, sticky="ew", padx=6, pady=(0, 8))
+        for column in range(4):
+            channels_frame.columnconfigure(column, weight=1)
+        ttk.Checkbutton(
+            channels_frame,
+            text="Activar notificaciones",
+            variable=self.enabled_var,
+        ).grid(row=0, column=0, sticky="w", padx=10, pady=8)
+        ttk.Checkbutton(channels_frame, text="Windows", variable=self.windows_var).grid(
+            row=0,
+            column=1,
             sticky="w",
-            padx=6,
-            pady=(12, 2),
+            padx=10,
+            pady=8,
         )
-        self.telegram_bot_token_entry = ttk.Entry(master, width=56, show="*")
-        self.telegram_bot_token_entry.grid(row=11, column=0, columnspan=3, sticky="ew", padx=6)
-        self.telegram_bot_token_entry.insert(0, telegram.get("bot_token", ""))
+        ttk.Checkbutton(channels_frame, text="ntfy", variable=self.ntfy_var).grid(
+            row=0,
+            column=2,
+            sticky="w",
+            padx=10,
+            pady=8,
+        )
+        ttk.Checkbutton(channels_frame, text="Telegram", variable=self.telegram_var).grid(
+            row=0,
+            column=3,
+            sticky="w",
+            padx=10,
+            pady=8,
+        )
 
-        ttk.Label(master, text="Chat ID (opcional)").grid(
-            row=12,
+        ntfy_frame = ttk.LabelFrame(master, text="ntfy")
+        ntfy_frame.grid(row=2, column=0, sticky="ew", padx=6, pady=(0, 8))
+        ntfy_frame.columnconfigure(0, weight=1)
+        ntfy_frame.columnconfigure(1, weight=1)
+        ttk.Label(ntfy_frame, text="Servidor").grid(row=0, column=0, sticky="w", padx=10, pady=(8, 2))
+        self.server_entry = ttk.Entry(ntfy_frame, width=36)
+        self.server_entry.grid(row=1, column=0, sticky="ew", padx=10)
+        self.server_entry.insert(0, ntfy.get("server", "https://ntfy.sh"))
+
+        ttk.Label(ntfy_frame, text="Topic").grid(row=0, column=1, sticky="w", padx=10, pady=(8, 2))
+        self.topic_entry = ttk.Entry(ntfy_frame, width=28)
+        self.topic_entry.grid(row=1, column=1, sticky="ew", padx=10)
+        self.topic_entry.insert(0, ntfy.get("topic", ""))
+
+        token_label = "Token nuevo"
+        if self._initial_ntfy_token:
+            token_label += " (guardado; dejar vacío conserva)"
+        ttk.Label(ntfy_frame, text=token_label).grid(row=2, column=0, sticky="w", padx=10, pady=(10, 2))
+        self.token_entry = ttk.Entry(ntfy_frame, width=36, show="*")
+        self.token_entry.grid(row=3, column=0, sticky="ew", padx=10, pady=(0, 10))
+
+        ttk.Label(ntfy_frame, text="Prioridad").grid(row=2, column=1, sticky="w", padx=10, pady=(10, 2))
+        self.priority_combo = ttk.Combobox(
+            ntfy_frame,
+            values=("", "min", "low", "default", "high", "urgent"),
+            state="readonly",
+            width=20,
+        )
+        self.priority_combo.grid(row=3, column=1, sticky="w", padx=10, pady=(0, 10))
+        self.priority_combo.set(ntfy.get("priority", ""))
+
+        ttk.Label(ntfy_frame, text="Tags").grid(row=4, column=0, sticky="w", padx=10, pady=(0, 2))
+        self.tags_entry = ttk.Entry(ntfy_frame, width=36)
+        self.tags_entry.grid(row=5, column=0, columnspan=2, sticky="ew", padx=10, pady=(0, 10))
+        self.tags_entry.insert(0, ntfy.get("tags", ""))
+
+        telegram_frame = ttk.LabelFrame(master, text="Telegram")
+        telegram_frame.grid(row=3, column=0, sticky="ew", padx=6, pady=(0, 6))
+        telegram_frame.columnconfigure(0, weight=1)
+        telegram_frame.columnconfigure(1, weight=1)
+        telegram_token_label = "Bot token nuevo"
+        if self._initial_telegram_bot_token:
+            telegram_token_label += " (guardado; dejar vacío conserva)"
+        ttk.Label(telegram_frame, text=telegram_token_label).grid(
+            row=0,
             column=0,
             sticky="w",
-            padx=6,
+            padx=10,
             pady=(8, 2),
         )
-        self.telegram_chat_id_entry = ttk.Entry(master, width=56)
-        self.telegram_chat_id_entry.grid(row=13, column=0, columnspan=3, sticky="ew", padx=6)
+        self.telegram_bot_token_entry = ttk.Entry(telegram_frame, width=36, show="*")
+        self.telegram_bot_token_entry.grid(row=1, column=0, sticky="ew", padx=10, pady=(0, 10))
+
+        ttk.Label(telegram_frame, text="Chat ID").grid(
+            row=0,
+            column=1,
+            sticky="w",
+            padx=10,
+            pady=(8, 2),
+        )
+        self.telegram_chat_id_entry = ttk.Entry(telegram_frame, width=28)
+        self.telegram_chat_id_entry.grid(row=1, column=1, sticky="ew", padx=10, pady=(0, 10))
         self.telegram_chat_id_entry.insert(0, telegram.get("chat_id", ""))
 
         ttk.Label(
-            master,
-            text="Si dejas el Chat ID vacio, Yarbis vinculara el primer chat privado que escriba al bot.",
+            telegram_frame,
+            text="Si no hay Chat ID, escribe /start al bot y usa Probar notificación para vincular el chat.",
             anchor="w",
-        ).grid(row=14, column=0, columnspan=3, sticky="w", padx=6, pady=(4, 6))
+            foreground=self.theme_palette["muted"],
+            wraplength=620,
+        ).grid(row=2, column=0, columnspan=2, sticky="ew", padx=10, pady=(0, 10))
 
-        master.columnconfigure(0, weight=1)
-        master.columnconfigure(1, weight=1)
-        master.columnconfigure(2, weight=1)
         return self.topic_entry
 
     def apply(self):
+        ntfy_token = self.token_entry.get().strip() or getattr(self, "_initial_ntfy_token", "")
+        telegram_bot_token = (
+            self.telegram_bot_token_entry.get().strip()
+            or getattr(self, "_initial_telegram_bot_token", "")
+        )
         self.result = {
             "enabled": self.enabled_var.get(),
             "windows_enabled": self.windows_var.get(),
@@ -1295,9 +1356,9 @@ class NotificationsDialog(ThemedDialog):
             "telegram_enabled": self.telegram_var.get(),
             "ntfy_server": self.server_entry.get().strip(),
             "ntfy_topic": self.topic_entry.get().strip(),
-            "ntfy_token": self.token_entry.get().strip(),
+            "ntfy_token": ntfy_token,
             "ntfy_priority": self.priority_combo.get().strip(),
             "ntfy_tags": self.tags_entry.get().strip(),
-            "telegram_bot_token": self.telegram_bot_token_entry.get().strip(),
+            "telegram_bot_token": telegram_bot_token,
             "telegram_chat_id": self.telegram_chat_id_entry.get().strip(),
         }

@@ -364,6 +364,65 @@ class AgentTestCase(unittest.TestCase):
         self.assertEqual(response.message.tool_calls[0].id, "call-1")
         self.assertEqual(response.message.tool_calls[0].function.name, "add_task")
 
+    def test_openrouter_client_replaces_invalid_unicode_before_encoding(self):
+        class FakeResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def read(self):
+                return json.dumps({
+                    "choices": [
+                        {"message": {"content": "ok", "tool_calls": []}}
+                    ]
+                }).encode("utf-8")
+
+        with patch.dict(agent.os.environ, {}, clear=True):
+            with patch.object(agent.request, "urlopen", return_value=FakeResponse()) as urlopen_mock:
+                agent.OpenRouterClient(
+                    "https://openrouter.ai/api/v1",
+                    30,
+                    "OPENROUTER_API_KEY",
+                    api_key="stored-openrouter-key",
+                ).chat(
+                    model="openai/gpt-demo",
+                    messages=[{"role": "user", "content": "hola\udce1"}],
+                )
+
+        request_arg = urlopen_mock.call_args.args[0]
+        payload = json.loads(request_arg.data.decode("utf-8"))
+        self.assertEqual(payload["messages"][0]["content"], "hola?")
+
+    def test_ollama_client_replaces_invalid_unicode_before_request(self):
+        captured = {}
+
+        class FakeRawResponse:
+            def json(self):
+                return {"message": {"role": "assistant", "content": "ok"}}
+
+        class FakeResponse:
+            def __init__(self, **data):
+                self.data = data
+
+        class CapturingClient(agent.YarbisOllamaClient):
+            def __init__(self):
+                pass
+
+            def _request_raw(self, *args, **kwargs):
+                captured["json"] = kwargs["json"]
+                return FakeRawResponse()
+
+        CapturingClient()._request(
+            FakeResponse,
+            "POST",
+            "/api/chat",
+            json={"messages": [{"role": "user", "content": "hola\udce1"}]},
+        )
+
+        self.assertEqual(captured["json"]["messages"][0]["content"], "hola?")
+
     def test_openrouter_client_retries_http_429_once(self):
         class FakeResponse:
             def __enter__(self):
@@ -673,6 +732,54 @@ class AgentTestCase(unittest.TestCase):
         self.assertEqual(state["cycle_count"], 1)
         self.assertEqual(len(tool_messages), 1)
         self.assertIn("Ciclos ejecutados: 1", tool_messages[0]["content"])
+
+    def test_run_one_cycle_without_step_limit_continues_past_legacy_cap(self):
+        state_path = TEST_RUNTIME_DIR / "agent_unlimited_steps_state.json"
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+
+        tool_call = SimpleNamespace(
+            function=SimpleNamespace(name="agent_overview", arguments={})
+        )
+        tool_response = SimpleNamespace(
+            message=SimpleNamespace(content="", tool_calls=[tool_call])
+        )
+        final_response = SimpleNamespace(
+            message=SimpleNamespace(content="Resultado final despues de muchos pasos", tool_calls=[])
+        )
+
+        with patch.object(memory, "STATE_FILE", state_path):
+            memory.save_state(memory.default_state())
+            with patch.object(
+                agent.client,
+                "chat",
+                side_effect=[tool_response] * 6 + [final_response],
+            ) as chat_mock:
+                result = agent.run_one_cycle()
+                state = memory.load_state()
+
+        self.assertEqual(result["status"], "final")
+        self.assertEqual(chat_mock.call_count, 7)
+        self.assertEqual(state["cycle_count"], 1)
+
+    def test_run_one_cycle_explicit_max_steps_still_caps_cycle(self):
+        state_path = TEST_RUNTIME_DIR / "agent_explicit_max_steps_state.json"
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+
+        tool_call = SimpleNamespace(
+            function=SimpleNamespace(name="agent_overview", arguments={})
+        )
+        tool_response = SimpleNamespace(
+            message=SimpleNamespace(content="", tool_calls=[tool_call])
+        )
+
+        with patch.object(memory, "STATE_FILE", state_path):
+            memory.save_state(memory.default_state())
+            with patch.object(agent.client, "chat", return_value=tool_response) as chat_mock:
+                result = agent.run_one_cycle(max_steps=1)
+
+        self.assertEqual(result["status"], "max_steps")
+        self.assertIn("maximo de pasos (1)", result["content"])
+        self.assertEqual(chat_mock.call_count, 1)
 
     def test_run_one_cycle_preserves_mutating_tool_side_effects(self):
         state_path = TEST_RUNTIME_DIR / "agent_mutating_tool_state.json"

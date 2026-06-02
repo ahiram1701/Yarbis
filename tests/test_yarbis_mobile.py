@@ -10,7 +10,7 @@ from unittest.mock import patch
 
 import memory
 import yarbis_mobile
-from ui_settings_dialogs import ServiceMobileUiDialog, VoiceSettingsDialog
+from ui_settings_dialogs import NotificationsDialog, ServiceMobileUiDialog, VoiceSettingsDialog
 
 TEST_RUNTIME_DIR = Path.cwd() / "tests_runtime"
 
@@ -532,6 +532,9 @@ class YarbisMobileTestCase(unittest.TestCase):
         self.assertIn("kokoroVoiceFilter", html)
         self.assertIn("Guardar validación", html)
         self.assertIn("coding_validate", html)
+        self.assertIn("ntfyPriority", html)
+        self.assertIn("ntfyTags", html)
+        self.assertIn("guardado; vacío conserva", html)
         self.assertNotIn("Â", html)
 
     def test_mobile_coding_validation_actions_route_to_session_helpers(self):
@@ -615,6 +618,29 @@ class YarbisMobileTestCase(unittest.TestCase):
             self.assertFalse(VoiceSettingsDialog.validate(dialog))
 
         warning_mock.assert_called_once()
+
+    def test_notifications_dialog_apply_preserves_stored_tokens(self):
+        dialog = object.__new__(NotificationsDialog)
+        dialog.enabled_var = SimpleNamespace(get=lambda: True)
+        dialog.windows_var = SimpleNamespace(get=lambda: True)
+        dialog.ntfy_var = SimpleNamespace(get=lambda: True)
+        dialog.telegram_var = SimpleNamespace(get=lambda: True)
+        dialog.server_entry = SimpleNamespace(get=lambda: "https://ntfy.sh")
+        dialog.topic_entry = SimpleNamespace(get=lambda: "yarbis")
+        dialog.token_entry = SimpleNamespace(get=lambda: "")
+        dialog.priority_combo = SimpleNamespace(get=lambda: "high")
+        dialog.tags_entry = SimpleNamespace(get=lambda: "yarbis")
+        dialog.telegram_bot_token_entry = SimpleNamespace(get=lambda: "")
+        dialog.telegram_chat_id_entry = SimpleNamespace(get=lambda: "123")
+        dialog._initial_ntfy_token = "ntfy-secret"
+        dialog._initial_telegram_bot_token = "telegram-secret"
+
+        NotificationsDialog.apply(dialog)
+
+        self.assertEqual(dialog.result["ntfy_token"], "ntfy-secret")
+        self.assertEqual(dialog.result["telegram_bot_token"], "telegram-secret")
+        self.assertEqual(dialog.result["ntfy_priority"], "high")
+        self.assertEqual(dialog.result["ntfy_tags"], "yarbis")
 
 
 if __name__ == "__main__":

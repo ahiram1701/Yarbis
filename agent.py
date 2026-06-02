@@ -1,5 +1,6 @@
 import json
 import inspect
+import itertools
 import os
 import re
 import sys
@@ -34,6 +35,7 @@ from memory import (
     load_state,
     normalize_cycle_count,
     render_state_summary,
+    sanitize_unicode_text,
     state_transaction,
 )
 from tools import (
@@ -135,8 +137,27 @@ def _normalize_ollama_response_tool_arguments(data) -> None:
             function["arguments"] = _json_object_from_ollama_tool_arguments(raw_arguments)
 
 
+def _sanitize_model_payload(value):
+    if isinstance(value, str):
+        return sanitize_unicode_text(value)
+    if isinstance(value, dict):
+        return {
+            sanitize_unicode_text(key) if isinstance(key, str) else key: _sanitize_model_payload(item)
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [_sanitize_model_payload(item) for item in value]
+    if isinstance(value, tuple):
+        return [_sanitize_model_payload(item) for item in value]
+    return value
+
+
 class YarbisOllamaClient(OllamaClient):
     def _request(self, cls, *args, stream: bool = False, **kwargs):
+        if "json" in kwargs:
+            kwargs = dict(kwargs)
+            kwargs["json"] = _sanitize_model_payload(kwargs["json"])
+
         if stream:
             return super()._request(cls, *args, stream=stream, **kwargs)
 
@@ -583,6 +604,7 @@ class OpenRouterClient:
         if tools:
             payload["tools"] = _openrouter_tools(tools)
 
+        payload = _sanitize_model_payload(payload)
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         url = f"{self.host}/chat/completions"
         http_request = request.Request(
@@ -2187,7 +2209,16 @@ def run_one_cycle(max_steps=None, model_override: str | None = None):
     empty_response_retries = 0
     non_actionable_retries = 0
 
-    for step in range(1, max_steps + 1):
+    try:
+        max_steps = int(max_steps) if max_steps is not None else None
+    except (TypeError, ValueError):
+        max_steps = None
+    if max_steps is not None and max_steps <= 0:
+        max_steps = None
+
+    step_numbers = itertools.count(1) if max_steps is None else range(1, max_steps + 1)
+
+    for step in step_numbers:
         print(f"\n--- Paso {step} ---")
 
         state = load_state()
@@ -2359,7 +2390,7 @@ def run_one_cycle(max_steps=None, model_override: str | None = None):
                 action_tools_used=action_tools_used,
             )
             and non_actionable_retries < MAX_NON_ACTIONABLE_RETRIES
-            and step < max_steps
+            and (max_steps is None or step < max_steps)
         ):
             non_actionable_retries += 1
             def record_non_actionable_retry(current_state):

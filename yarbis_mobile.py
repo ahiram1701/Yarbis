@@ -2286,6 +2286,13 @@ function renderSettings() {
   const notifications = appState.notifications || {};
   const ntfy = notifications.ntfy || {};
   const telegram = notifications.telegram || {};
+  const notificationChannels = notifications.channels || [];
+  const notificationSummary = [
+    notifications.enabled === false ? "desactivadas" : "activas",
+    `canales: ${notificationChannels.length ? notificationChannels.join(", ") : "sin canales"}`,
+    `ntfy: ${notificationChannels.includes("ntfy") ? (ntfy.topic ? "listo" : "falta topic") : "off"}`,
+    `Telegram: ${notificationChannels.includes("telegram") ? (telegram.chat_id ? "listo" : (telegram.bot_token_configured ? "falta chat" : "falta token")) : "off"}`
+  ].join(" | ");
   const internet = appState.internet || {};
   const voice = appState.voice || {};
   refreshBrowserVoices();
@@ -2380,16 +2387,19 @@ function renderSettings() {
     </section>
     <section class="section">
       <h2>Notificaciones</h2>
+      <div class="panel"><pre>${escapeHtml(notificationSummary)}</pre></div>
       <div class="setting-group form-grid wide">
-        <label><input id="notifyEnabled" type="checkbox" ${notifications.enabled ? "checked" : ""}> Activas</label>
-        <label><input id="notifyWindows" type="checkbox" ${(notifications.channels || []).includes("windows") ? "checked" : ""}> Windows</label>
-        <label><input id="notifyNtfy" type="checkbox" ${(notifications.channels || []).includes("ntfy") ? "checked" : ""}> ntfy</label>
-        <label><input id="notifyTelegram" type="checkbox" ${(notifications.channels || []).includes("telegram") ? "checked" : ""}> Telegram</label>
-        <div><label>ntfy server</label><input id="ntfyServer" value="${escapeHtml(ntfy.server || "https://ntfy.sh")}"></div>
+        <label><input id="notifyEnabled" type="checkbox" ${notifications.enabled === false ? "" : "checked"}> Activas</label>
+        <label><input id="notifyWindows" type="checkbox" ${notificationChannels.includes("windows") ? "checked" : ""}> Windows</label>
+        <label><input id="notifyNtfy" type="checkbox" ${notificationChannels.includes("ntfy") ? "checked" : ""}> ntfy</label>
+        <label><input id="notifyTelegram" type="checkbox" ${notificationChannels.includes("telegram") ? "checked" : ""}> Telegram</label>
+        <div><label>ntfy servidor</label><input id="ntfyServer" value="${escapeHtml(ntfy.server || "https://ntfy.sh")}"></div>
         <div><label>ntfy topic</label><input id="ntfyTopic" value="${escapeHtml(ntfy.topic || "")}"></div>
-        <div><label>ntfy token nuevo</label><input id="ntfyToken" type="password" placeholder="${ntfy.token_configured ? "guardado" : ""}"></div>
-        <div><label>Telegram token nuevo</label><input id="telegramToken" type="password" placeholder="${telegram.bot_token_configured ? "guardado" : ""}"></div>
-        <div><label>Telegram chat</label><input id="telegramChat" value="${escapeHtml(telegram.chat_id || "")}"></div>
+        <div><label>ntfy prioridad</label><select id="ntfyPriority"><option value=""></option><option value="min">min</option><option value="low">low</option><option value="default">default</option><option value="high">high</option><option value="urgent">urgent</option></select></div>
+        <div><label>ntfy tags</label><input id="ntfyTags" value="${escapeHtml(ntfy.tags || "")}"></div>
+        <div><label>ntfy token nuevo</label><input id="ntfyToken" type="password" placeholder="${ntfy.token_configured ? "guardado; vacío conserva" : "opcional"}"></div>
+        <div><label>Telegram token nuevo</label><input id="telegramToken" type="password" placeholder="${telegram.bot_token_configured ? "guardado; vacío conserva" : "requerido si activas Telegram"}"></div>
+        <div><label>Telegram chat</label><input id="telegramChat" value="${escapeHtml(telegram.chat_id || "")}" placeholder="se vincula con /start + probar"></div>
         <button data-action="save-notifications">Guardar notificaciones</button>
         <button data-action="test-notification">Probar notificación</button>
       </div>
@@ -2445,6 +2455,8 @@ function renderSettings() {
   if (browserVoiceName) browserVoiceName.value = voice.browser_voice_name || window.localStorage.getItem("yarbis_browser_voice_name") || "";
   const telegramVoiceMode = $("telegramVoiceMode");
   if (telegramVoiceMode) telegramVoiceMode.value = voice.telegram_reply_mode || "auto";
+  const ntfyPriority = $("ntfyPriority");
+  if (ntfyPriority) ntfyPriority.value = ntfy.priority || "";
 }
 
 function renderActivity() {
@@ -2604,6 +2616,8 @@ document.addEventListener("click", async (event) => {
         ntfy_server: $("ntfyServer").value,
         ntfy_topic: $("ntfyTopic").value,
         ntfy_token: $("ntfyToken").value,
+        ntfy_priority: $("ntfyPriority").value,
+        ntfy_tags: $("ntfyTags").value,
         telegram_bot_token: $("telegramToken").value,
         telegram_chat_id: $("telegramChat").value
       });

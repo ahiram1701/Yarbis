@@ -2061,9 +2061,9 @@ class YarbisDesktop(tk.Tk):
             messagebox.showinfo(
                 "Yarbis",
                 (
-                    "Telegram ya quedo configurado, pero falta vincular el chat.\n\n"
-                    "Abre tu bot en Telegram y envia /start. Despues podras usar "
-                    "'Probar notificacion' para confirmar que ya quedo enlazado."
+                    "Telegram ya tiene bot token, pero falta vincular el chat.\n\n"
+                    "Abre tu bot en Telegram y envía /start. Después usa "
+                    "Probar notificación para confirmar el enlace."
                 ),
                 parent=self,
             )

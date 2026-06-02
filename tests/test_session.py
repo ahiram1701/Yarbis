@@ -906,7 +906,46 @@ class SessionTestCase(unittest.TestCase):
         self.assertEqual(state["notifications"]["channels"], ["telegram"])
         self.assertEqual(state["notifications"]["telegram"]["bot_token"], "bot-123")
         self.assertEqual(state["notifications"]["telegram"]["chat_id"], "")
-        self.assertIn("envia /start", result.lower())
+        self.assertIn("/start", result.lower())
+
+    def test_update_notification_settings_preserves_existing_secret_fields(self):
+        state_path = TEST_RUNTIME_DIR / "session_notifications_preserve_secrets_state.json"
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+        seeded_state = memory.normalize_state({
+            "notifications": {
+                "enabled": True,
+                "channels": ["ntfy", "telegram"],
+                "ntfy": {
+                    "server": "https://ntfy.sh",
+                    "topic": "old-topic",
+                    "token": "ntfy-secret",
+                },
+                "telegram": {
+                    "bot_token": "telegram-secret",
+                    "chat_id": "123",
+                    "last_update_id": 99,
+                },
+            },
+        })
+
+        with patch.object(memory, "STATE_FILE", state_path):
+            memory.save_state(seeded_state)
+            session.update_notification_settings(
+                enabled=True,
+                windows_enabled=True,
+                ntfy_enabled=True,
+                telegram_enabled=True,
+                ntfy_server="https://ntfy.sh",
+                ntfy_topic="new-topic",
+                ntfy_token="",
+                telegram_bot_token="",
+                telegram_chat_id="123",
+            )
+            state = memory.load_state()
+
+        self.assertEqual(state["notifications"]["ntfy"]["token"], "ntfy-secret")
+        self.assertEqual(state["notifications"]["telegram"]["bot_token"], "telegram-secret")
+        self.assertEqual(state["notifications"]["telegram"]["last_update_id"], 99)
 
     def test_update_notification_settings_requires_topic_for_ntfy(self):
         state_path = TEST_RUNTIME_DIR / "session_notifications_invalid_state.json"
@@ -962,4 +1001,5 @@ class SessionTestCase(unittest.TestCase):
 
         link_mock.assert_called_once()
         send_mock.assert_called_once()
-        self.assertEqual(result, "Notificacion de prueba enviada.")
+        self.assertIn("Notificación de prueba enviada.", result)
+        self.assertIn("telegram", result)

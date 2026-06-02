@@ -35,10 +35,7 @@ class MemoryTestCase(unittest.TestCase):
         self.assertEqual(state["tasks"], [])
         self.assertEqual(state["current_plan"], [])
         self.assertEqual(state["profile"]["preferences"], [])
-        self.assertEqual(
-            state["autonomy"]["max_steps_per_cycle"],
-            memory.DEFAULT_MAX_STEPS_PER_CYCLE,
-        )
+        self.assertIsNone(state["autonomy"]["max_steps_per_cycle"])
         self.assertEqual(state["ollama"]["timeout_seconds"], 900)
         self.assertEqual(state["coding"]["workspace_path"], "")
         self.assertEqual(state["coding"]["mode"], memory.DEFAULT_CODING_MODE)
@@ -52,6 +49,22 @@ class MemoryTestCase(unittest.TestCase):
         })
 
         self.assertEqual(normalized["goal"], "")
+
+    def test_normalize_state_replaces_invalid_unicode_surrogates(self):
+        normalized = memory.normalize_state({
+            "messages": [
+                {"role": "user", "content": "entrada\udce1rota"},
+            ],
+            "notes": [
+                {"id": "note-1", "title": "nota\udce1", "content": "contenido"},
+            ],
+            "last_result": "resultado\udce1",
+        })
+
+        self.assertEqual(normalized["messages"][0]["content"], "entrada?rota")
+        self.assertEqual(normalized["notes"][0]["title"], "nota?")
+        self.assertEqual(normalized["last_result"], "resultado?")
+        json.dumps(normalized, ensure_ascii=False).encode("utf-8")
 
     def test_normalize_state_preserves_coding_settings(self):
         normalized = memory.normalize_state({
@@ -708,6 +721,31 @@ class MemoryTestCase(unittest.TestCase):
 
         self.assertIsNone(normalized["autonomy"]["auto_cycles_default"])
         self.assertIsNone(normalized["service"]["proactive"]["cycles"])
+
+    def test_normalize_state_migrates_legacy_step_limit_to_unlimited(self):
+        normalized = memory.normalize_state({
+            "state_schema_version": 2,
+            "autonomy": {
+                "max_steps_per_cycle": 12,
+                "auto_cycles_default": memory.LEGACY_DEFAULT_AUTO_CYCLES,
+            },
+        })
+
+        self.assertIsNone(normalized["autonomy"]["max_steps_per_cycle"])
+        self.assertEqual(
+            normalized["autonomy"]["auto_cycles_default"],
+            memory.LEGACY_DEFAULT_AUTO_CYCLES,
+        )
+
+    def test_normalize_state_preserves_explicit_current_step_limit(self):
+        normalized = memory.normalize_state({
+            "state_schema_version": memory.STATE_SCHEMA_VERSION,
+            "autonomy": {
+                "max_steps_per_cycle": 30,
+            },
+        })
+
+        self.assertEqual(normalized["autonomy"]["max_steps_per_cycle"], 30)
 
     def test_normalize_state_preserves_explicit_cycle_counts_after_migration(self):
         normalized = memory.normalize_state({

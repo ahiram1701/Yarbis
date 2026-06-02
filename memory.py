@@ -60,8 +60,8 @@ MAX_PLAN_ITEM_CHARS = 220
 MAX_AWAITING_INPUT_QUESTION_CHARS = 280
 MAX_AWAITING_INPUT_REASON_CHARS = 240
 MAX_AWAITING_INPUT_FIELDS = 8
-STATE_SCHEMA_VERSION = 2
-DEFAULT_MAX_STEPS_PER_CYCLE = 5
+STATE_SCHEMA_VERSION = 3
+DEFAULT_MAX_STEPS_PER_CYCLE = None
 LEGACY_DEFAULT_AUTO_CYCLES = 5
 DEFAULT_AUTO_CYCLES = None
 DEFAULT_SERVICE_PROACTIVE_ENABLED = True
@@ -453,8 +453,27 @@ def default_state():
     }
 
 
+def sanitize_unicode_text(value) -> str:
+    return str(value).encode("utf-8", errors="replace").decode("utf-8", errors="replace")
+
+
+def sanitize_unicode_value(value):
+    if isinstance(value, str):
+        return sanitize_unicode_text(value)
+    if isinstance(value, dict):
+        return {
+            sanitize_unicode_text(key) if isinstance(key, str) else key: sanitize_unicode_value(item)
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [sanitize_unicode_value(item) for item in value]
+    if isinstance(value, tuple):
+        return [sanitize_unicode_value(item) for item in value]
+    return value
+
+
 def _coerce_text(value, limit: int) -> str:
-    return str(value)
+    return sanitize_unicode_text(value)
 
 
 def _prepare_state_lock_file(handle):
@@ -668,20 +687,31 @@ def _normalize_plan(plan):
     )
 
 
-def _normalize_autonomy(autonomy, *, migrate_legacy_cycles: bool = False):
+def _normalize_autonomy(
+    autonomy,
+    *,
+    migrate_legacy_cycles: bool = False,
+    migrate_legacy_step_limit: bool = False,
+):
     defaults = default_state()["autonomy"]
     if not isinstance(autonomy, dict):
         autonomy = {}
 
     normalized = {}
 
-    try:
-        normalized["max_steps_per_cycle"] = max(
-            1,
-            min(12, int(autonomy.get("max_steps_per_cycle", defaults["max_steps_per_cycle"]))),
-        )
-    except (TypeError, ValueError):
-        normalized["max_steps_per_cycle"] = defaults["max_steps_per_cycle"]
+    if migrate_legacy_step_limit:
+        normalized["max_steps_per_cycle"] = None
+    else:
+        raw_max_steps = autonomy.get("max_steps_per_cycle", defaults["max_steps_per_cycle"])
+        if raw_max_steps is None:
+            normalized["max_steps_per_cycle"] = None
+        else:
+            try:
+                parsed_max_steps = int(raw_max_steps)
+            except (TypeError, ValueError):
+                normalized["max_steps_per_cycle"] = defaults["max_steps_per_cycle"]
+            else:
+                normalized["max_steps_per_cycle"] = parsed_max_steps if parsed_max_steps > 0 else None
 
     normalized["auto_cycles_default"] = normalize_cycle_count(
         autonomy.get("auto_cycles_default", defaults["auto_cycles_default"]),
@@ -1845,7 +1875,8 @@ def normalize_state(state):
         source_schema_version = int(state.get("state_schema_version", 1))
     except (TypeError, ValueError):
         source_schema_version = 1
-    migrate_legacy_cycles = source_schema_version < STATE_SCHEMA_VERSION
+    migrate_legacy_cycles = source_schema_version < 2
+    migrate_legacy_step_limit = source_schema_version < 3
     normalized["state_schema_version"] = STATE_SCHEMA_VERSION
 
     goal = str(state.get("goal", normalized["goal"])).strip()
@@ -1867,6 +1898,7 @@ def normalize_state(state):
     normalized["autonomy"] = _normalize_autonomy(
         state.get("autonomy", {}),
         migrate_legacy_cycles=migrate_legacy_cycles,
+        migrate_legacy_step_limit=migrate_legacy_step_limit,
     )
     normalized["coding"] = _normalize_coding(state.get("coding", {}))
     normalized["memory_protection"] = _normalize_memory_protection(state.get("memory_protection", {}))
@@ -1906,7 +1938,7 @@ def normalize_state(state):
             if normalized_task:
                 normalized["tasks"].append(normalized_task)
 
-    return normalized
+    return sanitize_unicode_value(normalized)
 
 
 def render_state_summary(
@@ -1928,6 +1960,12 @@ def render_state_summary(
     done_tasks = [task for task in normalized["tasks"] if task["status"] == "done"]
     auto_cycles_text = format_cycle_count(normalized["autonomy"]["auto_cycles_default"])
     proactive_cycles_text = format_cycle_count(normalized["service"]["proactive"]["cycles"])
+    max_steps = normalized["autonomy"]["max_steps_per_cycle"]
+    max_steps_text = (
+        "sin limite de pasos/ciclo"
+        if max_steps is None
+        else f"{max_steps} pasos/ciclo"
+    )
 
     lines = [
         f"Objetivo: {normalized['goal']}",
@@ -1939,7 +1977,7 @@ def render_state_summary(
         f"Ciclos ejecutados: {normalized['cycle_count']}",
         (
             "Autonomia: "
-            f"{normalized['autonomy']['max_steps_per_cycle']} pasos/ciclo, "
+            f"{max_steps_text}, "
             f"{auto_cycles_text} por defecto"
         ),
         (
