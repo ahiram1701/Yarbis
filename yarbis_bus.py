@@ -239,6 +239,89 @@ def list_messages(
     return selected
 
 
+def list_instance_messages(
+    *,
+    instance_id: object | None = None,
+    limit: int = 50,
+    include_read: bool = True,
+) -> list[dict]:
+    target = yarbis_instance.normalize_instance_id(
+        yarbis_instance.current_instance_id() if instance_id is None else instance_id
+    )
+    try:
+        normalized_limit = max(1, min(200, int(limit)))
+    except (TypeError, ValueError):
+        normalized_limit = 50
+
+    items = []
+    for path in _message_files():
+        message = _read_message(path)
+        if not message:
+            continue
+        sender = yarbis_instance.normalize_instance_id(message.get("from_instance", ""))
+        receiver = yarbis_instance.normalize_instance_id(message.get("to_instance", ""))
+        if target not in {sender, receiver}:
+            continue
+        if not include_read and message.get("status") == STATUS_READ:
+            continue
+        items.append(message)
+
+    items.sort(key=lambda item: str(item.get("created_at", "")), reverse=True)
+    return items[:normalized_limit]
+
+
+def message_counts(instance_id: object | None = None) -> dict:
+    target = yarbis_instance.normalize_instance_id(
+        yarbis_instance.current_instance_id() if instance_id is None else instance_id
+    )
+    pending_direct = 0
+    unread_replies = 0
+    for path in _message_files():
+        message = _read_message(path)
+        if not message:
+            continue
+        receiver = yarbis_instance.normalize_instance_id(message.get("to_instance", ""))
+        if receiver != target:
+            continue
+        if message.get("kind") == KIND_DIRECT and message.get("status") == STATUS_QUEUED:
+            pending_direct += 1
+        elif message.get("kind") == KIND_DIRECT_REPLY and message.get("status") in {STATUS_QUEUED, STATUS_DONE}:
+            unread_replies += 1
+    return {
+        "pending_direct": pending_direct,
+        "unread_replies": unread_replies,
+        "total_unread": pending_direct + unread_replies,
+    }
+
+
+def mark_messages_read(message_ids: list[object], instance_id: object | None = None) -> int:
+    target = yarbis_instance.normalize_instance_id(
+        yarbis_instance.current_instance_id() if instance_id is None else instance_id
+    )
+    normalized_ids = {str(message_id or "").strip() for message_id in message_ids}
+    normalized_ids.discard("")
+    if not normalized_ids:
+        return 0
+
+    updated = 0
+    for message_id in normalized_ids:
+        message = _read_message(_message_path(message_id))
+        if not message:
+            continue
+        receiver = yarbis_instance.normalize_instance_id(message.get("to_instance", ""))
+        if receiver != target:
+            continue
+        if message.get("kind") != KIND_DIRECT_REPLY:
+            continue
+        if message.get("status") == STATUS_READ:
+            continue
+        message["status"] = STATUS_READ
+        message["processed_at"] = message.get("processed_at") or _utc_now()
+        _write_message(message)
+        updated += 1
+    return updated
+
+
 def pending_direct_messages(target_instance: object | None = None) -> list[dict]:
     target = yarbis_instance.normalize_instance_id(
         yarbis_instance.current_instance_id() if target_instance is None else target_instance

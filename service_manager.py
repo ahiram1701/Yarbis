@@ -61,6 +61,7 @@ _READINESS_CACHE = {
 _SERVICE_STATUS_CACHE = {
     "created_at": 0.0,
     "status": None,
+    "instance_id": None,
 }
 RUNTIME_DEPENDENCY_MODULES = ("ollama", "win11toast", "pystray", "PIL")
 
@@ -78,14 +79,62 @@ def _quote(value: str | Path) -> str:
     return f'"{value}"'
 
 
-def _service_binary_path() -> str:
+def _normalized_instance_id(instance_id: object | None = None) -> str:
+    if instance_id is None:
+        return INSTANCE_ID
+    return yarbis_instance.normalize_instance_id(instance_id)
+
+
+def _runtime_dir(instance_id: object | None = None) -> Path:
+    if instance_id is None:
+        return RUNTIME_DIR
+    return yarbis_instance.runtime_dir(instance_id)
+
+
+def _log_file(instance_id: object | None = None) -> Path:
+    return _runtime_dir(instance_id) / "service.log"
+
+
+def _service_host_output_dir(instance_id: object | None = None) -> Path:
+    if instance_id is None:
+        return SERVICE_HOST_OUTPUT_DIR
+    return _runtime_dir(instance_id) / "service_host"
+
+
+def _service_host_exe(instance_id: object | None = None) -> Path:
+    if instance_id is None:
+        return SERVICE_HOST_EXE
+    return _service_host_output_dir(instance_id) / "YarbisServiceHost.exe"
+
+
+def _service_name(instance_id: object | None = None) -> str:
+    if instance_id is None:
+        return SERVICE_NAME
+    return yarbis_instance.service_name(instance_id)
+
+
+def _service_display_name(instance_id: object | None = None) -> str:
+    if instance_id is None:
+        return SERVICE_DISPLAY_NAME
+    return yarbis_instance.service_display_name(instance_id)
+
+
+def _service_description(instance_id: object | None = None) -> str:
+    if instance_id is None:
+        return SERVICE_DESCRIPTION
+    return yarbis_instance.service_description(instance_id)
+
+
+def _service_binary_path(instance_id: object | None = None) -> str:
+    normalized = _normalized_instance_id(instance_id)
+    service = _service_name(instance_id)
     return " ".join((
-        _quote(SERVICE_HOST_EXE),
+        _quote(_service_host_exe(instance_id)),
         _quote(WORKSPACE_ROOT),
         "--instance",
-        _quote(INSTANCE_ID),
+        _quote(normalized),
         "--service-name",
-        _quote(SERVICE_NAME),
+        _quote(service),
     ))
 
 
@@ -248,12 +297,13 @@ def _service_host_sources() -> list[Path]:
     ]
 
 
-def _service_host_is_current() -> bool:
-    if not SERVICE_HOST_EXE.exists():
+def _service_host_is_current(instance_id: object | None = None) -> bool:
+    service_host_exe = _service_host_exe(instance_id)
+    if not service_host_exe.exists():
         return False
 
     try:
-        exe_mtime = SERVICE_HOST_EXE.stat().st_mtime
+        exe_mtime = service_host_exe.stat().st_mtime
         return all(
             source.exists() and source.stat().st_mtime <= exe_mtime
             for source in _service_host_sources()
@@ -262,14 +312,16 @@ def _service_host_is_current() -> bool:
         return False
 
 
-def _ensure_service_host_built():
-    if _service_host_is_current():
+def _ensure_service_host_built(instance_id: object | None = None):
+    if _service_host_is_current(instance_id):
         return
 
     if not SERVICE_HOST_PROJECT.exists():
         raise RuntimeError("No encontre el proyecto service_host/YarbisServiceHost.csproj.")
 
-    SERVICE_HOST_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    output_dir = _service_host_output_dir(instance_id)
+    service_host_exe = _service_host_exe(instance_id)
+    output_dir.mkdir(parents=True, exist_ok=True)
     try:
         build = subprocess.run(
             [
@@ -279,7 +331,7 @@ def _ensure_service_host_built():
                 "-c",
                 "Release",
                 "-o",
-                str(SERVICE_HOST_OUTPUT_DIR),
+                str(output_dir),
                 "--nologo",
             ],
             cwd=str(WORKSPACE_ROOT),
@@ -296,41 +348,48 @@ def _ensure_service_host_built():
         raise RuntimeError("dotnet publish excedio el tiempo limite al compilar el host del servicio.") from exc
     _ensure_success(build, "compilar el host nativo del servicio de Yarbis")
 
-    if not SERVICE_HOST_EXE.exists():
+    if not service_host_exe.exists():
         raise RuntimeError("dotnet publish termino, pero no encontre YarbisServiceHost.exe.")
 
 
 def _clear_service_status_cache() -> None:
     _SERVICE_STATUS_CACHE["created_at"] = 0.0
     _SERVICE_STATUS_CACHE["status"] = None
+    _SERVICE_STATUS_CACHE["instance_id"] = None
 
 
-def _cached_service_status(now: float) -> dict | None:
+def _cached_service_status(now: float, instance_id: object | None = None) -> dict | None:
     cached = _SERVICE_STATUS_CACHE.get("status")
     if cached is None:
+        return None
+    if _SERVICE_STATUS_CACHE.get("instance_id") != _normalized_instance_id(instance_id):
         return None
     if now - float(_SERVICE_STATUS_CACHE.get("created_at", 0.0)) >= SERVICE_STATUS_CACHE_SECONDS:
         return None
     return dict(cached)
 
 
-def _store_service_status(status: dict) -> dict:
+def _store_service_status(status: dict, instance_id: object | None = None) -> dict:
     stored = dict(status)
     _SERVICE_STATUS_CACHE["created_at"] = time.monotonic()
     _SERVICE_STATUS_CACHE["status"] = stored
+    _SERVICE_STATUS_CACHE["instance_id"] = _normalized_instance_id(instance_id)
     return dict(stored)
 
 
-def get_service_status(force: bool = False) -> dict:
+def get_service_status(force: bool = False, instance_id: object | None = None) -> dict:
     now = time.monotonic()
     if not force:
-        cached = _cached_service_status(now)
+        cached = _cached_service_status(now, instance_id)
         if cached is not None:
             return cached
 
+    service = _service_name(instance_id)
+    display_name = _service_display_name(instance_id)
+
     base = {
-        "service_name": SERVICE_NAME,
-        "display_name": SERVICE_DISPLAY_NAME,
+        "service_name": service,
+        "display_name": display_name,
         "installed": False,
         "running": False,
         "state": "not_installed",
@@ -338,21 +397,21 @@ def get_service_status(force: bool = False) -> dict:
         "autostart_enabled": False,
         "start_type": "not_installed",
         "account_name": "",
-        "log_file": str(LOG_FILE),
-        "service_binary": _service_binary_path(),
+        "log_file": str(_log_file(instance_id)),
+        "service_binary": _service_binary_path(instance_id),
         "configured_binary": "",
         "workspace_mismatch": False,
     }
 
     if os.name != "nt":
-        return _store_service_status(base)
+        return _store_service_status(base, instance_id)
 
-    query = _run_sc(["queryex", SERVICE_NAME])
+    query = _run_sc(["queryex", service])
     if _service_missing(query):
-        return _store_service_status(base)
+        return _store_service_status(base, instance_id)
     _ensure_success(query, "consultar el servicio de Yarbis")
 
-    config = _run_sc(["qc", SERVICE_NAME])
+    config = _run_sc(["qc", service])
     _ensure_success(config, "consultar la configuracion del servicio de Yarbis")
 
     state, running = _parse_state(query.stdout)
@@ -371,16 +430,16 @@ def get_service_status(force: bool = False) -> dict:
         "configured_binary": configured_binary,
         "workspace_mismatch": workspace_mismatch,
     })
-    return _store_service_status(base)
+    return _store_service_status(base, instance_id)
 
 
-def _safe_service_status(force: bool = False) -> dict:
+def _safe_service_status(force: bool = False, instance_id: object | None = None) -> dict:
     try:
-        return get_service_status(force=force)
+        return get_service_status(force=force, instance_id=instance_id)
     except Exception as exc:
         return {
-            "service_name": SERVICE_NAME,
-            "display_name": SERVICE_DISPLAY_NAME,
+            "service_name": _service_name(instance_id),
+            "display_name": _service_display_name(instance_id),
             "installed": False,
             "running": False,
             "state": "unknown",
@@ -388,8 +447,8 @@ def _safe_service_status(force: bool = False) -> dict:
             "autostart_enabled": False,
             "start_type": "unknown",
             "account_name": "unknown",
-            "log_file": str(LOG_FILE),
-            "service_binary": _service_binary_path(),
+            "log_file": str(_log_file(instance_id)),
+            "service_binary": _service_binary_path(instance_id),
             "error": str(exc),
         }
 
@@ -904,8 +963,8 @@ def format_readiness_status(status: dict | None = None, compact: bool = True) ->
     return "\n".join(lines)
 
 
-def is_service_running() -> bool:
-    return bool(get_service_status()["running"])
+def is_service_running(instance_id: object | None = None) -> bool:
+    return bool(get_service_status(instance_id=instance_id)["running"])
 
 
 def _service_account_args(account_name: str = "", password: str = "") -> list[str]:
@@ -937,13 +996,20 @@ def _service_account_result_text(account_name: str = "") -> str:
     return f" Cuenta: {SERVICE_DEFAULT_ACCOUNT} (predeterminada de SCM)."
 
 
-def install_service(start_auto: bool = True, account_name: str = "", password: str = "") -> str:
+def install_service(
+    start_auto: bool = True,
+    account_name: str = "",
+    password: str = "",
+    instance_id: object | None = None,
+) -> str:
     _windows_only()
-    _ensure_service_host_built()
+    _ensure_service_host_built(instance_id)
     if not SERVICE_SCRIPT.exists():
         raise RuntimeError("No encontre yarbis_service.py para instalar el servicio.")
 
-    status = get_service_status(force=True)
+    status = get_service_status(force=True, instance_id=instance_id)
+    service = _service_name(instance_id)
+    display_name = _service_display_name(instance_id)
     start_value = "auto" if start_auto else "demand"
     if service_account_requires_password(account_name) and not str(password):
         raise ValueError(
@@ -955,13 +1021,13 @@ def install_service(start_auto: bool = True, account_name: str = "", password: s
     if status["installed"]:
         config_args = [
             "config",
-            SERVICE_NAME,
+            service,
             "binPath=",
-            _service_binary_path(),
+            _service_binary_path(instance_id),
             "start=",
             start_value,
             "DisplayName=",
-            SERVICE_DISPLAY_NAME,
+            display_name,
         ]
         config_args.extend(account_args)
         config = _run_sc(config_args)
@@ -975,62 +1041,79 @@ def install_service(start_auto: bool = True, account_name: str = "", password: s
 
     create_args = [
         "create",
-        SERVICE_NAME,
+        service,
         "binPath=",
-        _service_binary_path(),
+        _service_binary_path(instance_id),
         "start=",
         start_value,
         "DisplayName=",
-        SERVICE_DISPLAY_NAME,
+        display_name,
     ]
     create_args.extend(account_args)
     create = _run_sc(create_args)
     _ensure_success(create, "instalar el servicio de Yarbis")
 
-    description = _run_sc(["description", SERVICE_NAME, SERVICE_DESCRIPTION])
+    description = _run_sc(["description", service, _service_description(instance_id)])
     _ensure_success(description, "guardar la descripcion del servicio de Yarbis")
     _clear_service_status_cache()
 
     return "Servicio de Yarbis instalado en SCM." + _service_account_result_text(account_name)
 
 
-def remove_service() -> str:
+def remove_service(instance_id: object | None = None) -> str:
     _windows_only()
-    status = get_service_status(force=True)
+    status = get_service_status(force=True, instance_id=instance_id)
+    service = _service_name(instance_id)
     if not status["installed"]:
         return "El servicio de Yarbis no esta instalado en SCM."
 
     if status["running"]:
-        stop_service()
+        stop_service(instance_id=instance_id)
 
-    delete = _run_sc(["delete", SERVICE_NAME])
+    delete = _run_sc(["delete", service])
     _ensure_success(delete, "quitar el servicio de Yarbis")
     _clear_service_status_cache()
     return "Servicio de Yarbis quitado de SCM."
 
 
-def start_service(account_name: str = "", password: str = "") -> str:
+def start_service(
+    account_name: str = "",
+    password: str = "",
+    instance_id: object | None = None,
+) -> str:
     _windows_only()
-    status = get_service_status(force=True)
+    status = get_service_status(force=True, instance_id=instance_id)
+    service = _service_name(instance_id)
     if not status["installed"]:
         if str(account_name).strip() or str(password):
-            install_service(start_auto=False, account_name=account_name, password=password)
+            if instance_id is None:
+                install_service(start_auto=False, account_name=account_name, password=password)
+            else:
+                install_service(
+                    start_auto=False,
+                    account_name=account_name,
+                    password=password,
+                    instance_id=instance_id,
+                )
         else:
-            install_service(start_auto=False)
-        status = get_service_status(force=True)
+            if instance_id is None:
+                install_service(start_auto=False)
+            else:
+                install_service(start_auto=False, instance_id=instance_id)
+        status = get_service_status(force=True, instance_id=instance_id)
     else:
-        _ensure_service_host_built()
+        _ensure_service_host_built(instance_id)
 
     if status["running"]:
         return f"El servicio de Yarbis ya esta activo en SCM (PID {status['pid']})."
 
     def start_once() -> str:
-        start = _run_sc(["start", SERVICE_NAME], timeout_seconds=45)
+        start = _run_sc(["start", service], timeout_seconds=45)
         _ensure_success(start, "iniciar el servicio de Yarbis")
 
         deadline = time.monotonic() + STARTUP_WAIT_SECONDS
         while time.monotonic() < deadline:
-            refreshed = get_service_status(force=True)
+            refreshed = get_service_status(force=True, instance_id=instance_id)
             if refreshed["running"]:
                 return f"Servicio de Yarbis iniciado por SCM (PID {refreshed['pid']})."
             time.sleep(0.5)
@@ -1043,10 +1126,17 @@ def start_service(account_name: str = "", password: str = "") -> str:
         if str(account_name).strip() or str(password):
             raise
 
-        repair_result = install_service(
-            start_auto=bool(status.get("autostart_enabled")),
-            account_name=SERVICE_DEFAULT_ACCOUNT,
-        )
+        if instance_id is None:
+            repair_result = install_service(
+                start_auto=bool(status.get("autostart_enabled")),
+                account_name=SERVICE_DEFAULT_ACCOUNT,
+            )
+        else:
+            repair_result = install_service(
+                start_auto=bool(status.get("autostart_enabled")),
+                account_name=SERVICE_DEFAULT_ACCOUNT,
+                instance_id=instance_id,
+            )
         started_result = start_once()
         return (
             f"{repair_result}\n"
@@ -1055,20 +1145,21 @@ def start_service(account_name: str = "", password: str = "") -> str:
         )
 
 
-def stop_service(timeout_seconds: float = STOP_WAIT_SECONDS) -> str:
+def stop_service(timeout_seconds: float = STOP_WAIT_SECONDS, instance_id: object | None = None) -> str:
     _windows_only()
-    status = get_service_status(force=True)
+    status = get_service_status(force=True, instance_id=instance_id)
+    service = _service_name(instance_id)
     if not status["installed"]:
         return "El servicio de Yarbis no esta instalado en SCM."
     if not status["running"]:
         return "El servicio de Yarbis ya estaba detenido."
 
-    stop = _run_sc(["stop", SERVICE_NAME], timeout_seconds=45)
+    stop = _run_sc(["stop", service], timeout_seconds=45)
     _ensure_success(stop, "detener el servicio de Yarbis")
 
     deadline = time.monotonic() + max(1.0, float(timeout_seconds))
     while time.monotonic() < deadline:
-        refreshed = get_service_status(force=True)
+        refreshed = get_service_status(force=True, instance_id=instance_id)
         if not refreshed["running"]:
             return "Servicio de Yarbis detenido por SCM."
         time.sleep(0.5)
@@ -1076,11 +1167,15 @@ def stop_service(timeout_seconds: float = STOP_WAIT_SECONDS) -> str:
     return "SCM recibio la orden de parada, pero Yarbis aun aparece activo."
 
 
-def set_autostart_enabled(enabled: bool) -> str:
+def set_autostart_enabled(enabled: bool, instance_id: object | None = None) -> str:
     _windows_only()
-    status = get_service_status(force=True)
+    status = get_service_status(force=True, instance_id=instance_id)
+    service = _service_name(instance_id)
     if not status["installed"]:
-        install_service(start_auto=bool(enabled))
+        if instance_id is None:
+            install_service(start_auto=bool(enabled))
+        else:
+            install_service(start_auto=bool(enabled), instance_id=instance_id)
         return (
             "Servicio de Yarbis instalado en SCM con arranque automatico."
             if enabled
@@ -1088,7 +1183,7 @@ def set_autostart_enabled(enabled: bool) -> str:
         )
 
     start_value = "auto" if enabled else "demand"
-    config = _run_sc(["config", SERVICE_NAME, "start=", start_value])
+    config = _run_sc(["config", service, "start=", start_value])
     _ensure_success(config, "cambiar el tipo de arranque del servicio de Yarbis")
     _clear_service_status_cache()
     if enabled:

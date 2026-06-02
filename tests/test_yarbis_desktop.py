@@ -1,11 +1,15 @@
 import json
+import os
 import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
+from uuid import uuid4
 
 import memory
+import yarbis_bus
 import yarbis_desktop
+import yarbis_instance
 
 TEST_RUNTIME_DIR = Path.cwd() / "tests_runtime"
 
@@ -99,6 +103,10 @@ def _desktop_app_stub(service_status=None):
     app.health_var = _FakeVar()
     app.readiness_var = _FakeVar()
     app.status_var = _FakeVar()
+    app.instance_chip_var = _FakeVar()
+    app.instance_warning_var = _FakeVar()
+    app.message_target_var = _FakeVar()
+    app.message_timeout_var = _FakeVar("120")
     app.service_var = _FakeVar()
     app.service_button_text = _FakeVar()
     app.service_autostart_var = _FakeVar(False)
@@ -131,6 +139,9 @@ def _desktop_app_stub(service_status=None):
     app._last_state_signature = None
     app._cached_state = None
     app._last_state_file_signature = None
+    app._instance_rows = []
+    app._message_rows = {}
+    app._archived_rows = {}
     app._local_telegram_polling = False
     app._closing = False
     app._style_service_autostart_toggle = lambda: None
@@ -141,6 +152,60 @@ def _desktop_app_stub(service_status=None):
 
 
 class YarbisDesktopTestCase(unittest.TestCase):
+    def test_instance_overview_rows_include_selector_columns_and_warnings(self):
+        root = TEST_RUNTIME_DIR / f"desktop_instances_overview-{uuid4().hex[:8]}"
+        with patch.object(yarbis_instance, "INSTANCES_ROOT", root):
+            yarbis_instance.create_instance("alpha", display_name="Alpha")
+            yarbis_instance.create_instance("beta", display_name="Beta")
+            for instance_id in ("alpha", "beta"):
+                state_path = yarbis_instance.state_file(instance_id)
+                state_path.parent.mkdir(parents=True, exist_ok=True)
+                state_path.write_text(
+                    json.dumps({
+                        "notifications": {
+                            "telegram": {"bot_token": "same-token"},
+                        },
+                        "service": {
+                            "mobile_ui": {"port": 9001 if instance_id == "alpha" else 9002},
+                        },
+                    }),
+                    encoding="utf-8",
+                )
+                pid_path = yarbis_instance.runtime_dir(instance_id) / "service.pid"
+                pid_path.parent.mkdir(parents=True, exist_ok=True)
+                pid_path.write_text(str(os.getpid()), encoding="utf-8")
+
+            rows, warnings = yarbis_desktop._instance_overview_rows()
+
+        alpha = [row for row in rows if row["id"] == "alpha"][0]
+        self.assertEqual(alpha["display_name"], "Alpha")
+        self.assertEqual(alpha["active_text"], "activa")
+        self.assertEqual(alpha["service_name"], "Yarbis-alpha")
+        self.assertEqual(alpha["mobile_port"], 9001)
+        self.assertIn("pending_messages", alpha)
+        self.assertTrue(any("Telegram duplicado" in warning for warning in warnings))
+
+    def test_instance_archive_enabled_blocks_default_current_and_active(self):
+        self.assertFalse(yarbis_desktop._instance_archive_enabled({"id": "default", "active": False}, "default"))
+        self.assertFalse(yarbis_desktop._instance_archive_enabled({"id": "worker", "active": False}, "worker"))
+        self.assertFalse(yarbis_desktop._instance_archive_enabled({"id": "worker", "active": True}, "default"))
+        self.assertTrue(yarbis_desktop._instance_archive_enabled({"id": "worker", "active": False}, "default"))
+
+    def test_instance_message_ui_helper_queues_offline_target(self):
+        root = TEST_RUNTIME_DIR / f"desktop_message_queue-{uuid4().hex[:8]}"
+        with patch.object(yarbis_instance, "INSTANCES_ROOT", root):
+            with patch.dict(os.environ, {yarbis_instance.ENV_INSTANCE: "alpha"}):
+                result = yarbis_desktop.YarbisDesktop._send_instance_message_for_ui(
+                    "beta",
+                    "hola beta",
+                    0,
+                )
+                messages = yarbis_bus.list_instance_messages(instance_id="alpha")
+
+        self.assertIn("Mensaje en cola", result)
+        self.assertEqual(len(messages), 1)
+        self.assertEqual(messages[0]["to_instance"], "beta")
+
     def test_first_run_setup_can_store_direct_ollama_api_key(self):
         state_path = TEST_RUNTIME_DIR / "desktop_first_run_ollama_key_state.json"
         state_path.parent.mkdir(parents=True, exist_ok=True)

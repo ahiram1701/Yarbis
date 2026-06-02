@@ -40,6 +40,67 @@ class YarbisInstanceTestCase(unittest.TestCase):
         self.assertEqual(created["id"], "worker")
         self.assertEqual([item["id"] for item in listed], ["default", "worker"])
 
+    def test_rename_instance_preserves_id_and_paths(self):
+        root = TEST_RUNTIME_DIR / f"instances-rename-{uuid4().hex[:8]}"
+        with patch.object(yarbis_instance, "INSTANCES_ROOT", root):
+            yarbis_instance.create_instance("worker")
+            renamed = yarbis_instance.rename_instance("worker", "Trabajo fuerte")
+            listed = yarbis_instance.list_instances()
+
+        self.assertEqual(renamed["id"], "worker")
+        self.assertEqual(renamed["display_name"], "Trabajo fuerte")
+        self.assertEqual(renamed["state_file"], str(root / "worker" / "state.json"))
+        self.assertEqual(
+            [item for item in listed if item["id"] == "worker"][0]["display_name"],
+            "Trabajo fuerte",
+        )
+
+    def test_archive_instance_moves_root_and_registry_entry(self):
+        root = TEST_RUNTIME_DIR / f"instances-archive-{uuid4().hex[:8]}"
+        with patch.object(yarbis_instance, "INSTANCES_ROOT", root):
+            yarbis_instance.create_instance("worker", display_name="Worker")
+            state_path = yarbis_instance.state_file("worker")
+            state_path.parent.mkdir(parents=True, exist_ok=True)
+            state_path.write_text("{}", encoding="utf-8")
+
+            archived = yarbis_instance.archive_instance("worker")
+            listed = yarbis_instance.list_instances()
+            archives = yarbis_instance.list_archived_instances()
+
+        self.assertEqual(archived["id"], "worker")
+        self.assertFalse((root / "worker").exists())
+        self.assertTrue(Path(archived["archive_dir"]).exists())
+        self.assertEqual([item["id"] for item in listed], ["default"])
+        self.assertEqual(archives[0]["id"], "worker")
+
+    def test_archive_rejects_default_current_and_active_instances(self):
+        root = TEST_RUNTIME_DIR / f"instances-archive-guards-{uuid4().hex[:8]}"
+        with patch.object(yarbis_instance, "INSTANCES_ROOT", root):
+            yarbis_instance.create_instance("worker")
+            with self.assertRaises(yarbis_instance.YarbisInstanceError):
+                yarbis_instance.archive_instance("default")
+
+            with patch.dict(os.environ, {yarbis_instance.ENV_INSTANCE: "worker"}):
+                with self.assertRaises(yarbis_instance.YarbisInstanceError):
+                    yarbis_instance.archive_instance("worker")
+
+            with patch.dict(os.environ, {yarbis_instance.ENV_INSTANCE: "default"}):
+                pid_file = yarbis_instance.runtime_dir("worker") / "desktop.pid"
+                pid_file.parent.mkdir(parents=True, exist_ok=True)
+                pid_file.write_text(str(os.getpid()), encoding="utf-8")
+                with self.assertRaises(yarbis_instance.YarbisInstanceError):
+                    yarbis_instance.archive_instance("worker")
+
+    def test_restore_archived_instance_rejects_existing_id(self):
+        root = TEST_RUNTIME_DIR / f"instances-restore-{uuid4().hex[:8]}"
+        with patch.object(yarbis_instance, "INSTANCES_ROOT", root):
+            yarbis_instance.create_instance("worker")
+            archived = yarbis_instance.archive_instance("worker")
+            yarbis_instance.create_instance("worker")
+
+            with self.assertRaises(yarbis_instance.YarbisInstanceError):
+                yarbis_instance.restore_archived_instance(archived["archive_id"])
+
 
 if __name__ == "__main__":
     unittest.main()

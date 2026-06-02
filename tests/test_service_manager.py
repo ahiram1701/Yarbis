@@ -167,6 +167,74 @@ class ServiceManagerTestCase(unittest.TestCase):
         self.assertIn("--service-name", rendered)
         self.assertIn('"Yarbis-worker"', rendered)
 
+    def test_secondary_service_status_uses_instance_service_name(self):
+        query = completed(
+            stdout=(
+                "SERVICE_NAME: Yarbis-worker\n"
+                "        TYPE               : 10  WIN32_OWN_PROCESS\n"
+                "        STATE              : 1  STOPPED\n"
+            ),
+        )
+        config = completed(
+            stdout=(
+                "[SC] QueryServiceConfig SUCCESS\n"
+                "        START_TYPE         : 3   DEMAND_START\n"
+                "        SERVICE_START_NAME : LocalSystem\n"
+            ),
+        )
+
+        with patch.object(service_manager, "_run_sc", side_effect=[query, config]) as sc_mock:
+            result = service_manager.get_service_status(force=True, instance_id="worker")
+
+        self.assertTrue(result["installed"])
+        self.assertEqual(result["service_name"], "Yarbis-worker")
+        self.assertEqual(sc_mock.call_args_list[0].args[0], ["queryex", "Yarbis-worker"])
+        self.assertEqual(sc_mock.call_args_list[1].args[0], ["qc", "Yarbis-worker"])
+
+    def test_secondary_service_lifecycle_uses_instance_service_name(self):
+        with patch.object(service_manager, "_ensure_service_host_built"):
+            with patch.object(service_manager, "get_service_status", return_value=status(installed=True)):
+                with patch.object(service_manager, "_run_sc", return_value=completed()) as sc_mock:
+                    service_manager.install_service(start_auto=True, instance_id="worker")
+
+        self.assertEqual(sc_mock.call_args.args[0][1], "Yarbis-worker")
+        self.assertIn('"worker"', sc_mock.call_args.args[0][3])
+
+        with patch.object(
+            service_manager,
+            "get_service_status",
+            side_effect=[
+                status(installed=True, running=False),
+                status(installed=True, running=True, pid=555),
+            ],
+        ):
+            with patch.object(service_manager, "_ensure_service_host_built"):
+                with patch.object(service_manager, "_run_sc", return_value=completed()) as sc_mock:
+                    service_manager.start_service(instance_id="worker")
+        sc_mock.assert_called_once_with(["start", "Yarbis-worker"], timeout_seconds=45)
+
+        with patch.object(
+            service_manager,
+            "get_service_status",
+            side_effect=[
+                status(installed=True, running=True, pid=555),
+                status(installed=True, running=False),
+            ],
+        ):
+            with patch.object(service_manager, "_run_sc", return_value=completed()) as sc_mock:
+                service_manager.stop_service(timeout_seconds=1, instance_id="worker")
+        sc_mock.assert_called_once_with(["stop", "Yarbis-worker"], timeout_seconds=45)
+
+        with patch.object(service_manager, "get_service_status", return_value=status(installed=True)):
+            with patch.object(service_manager, "_run_sc", return_value=completed()) as sc_mock:
+                service_manager.set_autostart_enabled(True, instance_id="worker")
+        sc_mock.assert_called_once_with(["config", "Yarbis-worker", "start=", "auto"])
+
+        with patch.object(service_manager, "get_service_status", return_value=status(installed=True, running=False)):
+            with patch.object(service_manager, "_run_sc", return_value=completed()) as sc_mock:
+                service_manager.remove_service(instance_id="worker")
+        sc_mock.assert_called_once_with(["delete", "Yarbis-worker"])
+
     def test_install_service_can_set_service_account(self):
         missing = completed(
             returncode=1060,

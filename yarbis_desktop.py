@@ -368,6 +368,101 @@ def _launch_instance_selector() -> None:
     )
 
 
+def _resolve_workspace_path(path_text: str) -> Path:
+    path = Path(str(path_text or ""))
+    if path.is_absolute():
+        return path
+    return _WORKSPACE_ROOT / path
+
+
+def _read_instance_state(instance_id: str) -> dict:
+    path = _resolve_workspace_path(str(yarbis_instance.state_file(instance_id)))
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (FileNotFoundError, OSError, json.JSONDecodeError):
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _instance_telegram_token(state: dict) -> str:
+    notifications = state.get("notifications", {}) if isinstance(state, dict) else {}
+    if not isinstance(notifications, dict):
+        return ""
+    telegram = notifications.get("telegram", {})
+    if not isinstance(telegram, dict):
+        return ""
+    return str(telegram.get("bot_token", "")).strip()
+
+
+def _instance_mobile_port(instance_id: str, state: dict) -> int:
+    service = state.get("service", {}) if isinstance(state, dict) else {}
+    if not isinstance(service, dict):
+        service = {}
+    mobile_ui = service.get("mobile_ui", {})
+    if not isinstance(mobile_ui, dict):
+        mobile_ui = {}
+    try:
+        return int(mobile_ui.get("port") or yarbis_instance.default_mobile_ui_port(instance_id))
+    except (TypeError, ValueError):
+        return yarbis_instance.default_mobile_ui_port(instance_id)
+
+
+def _instance_archive_enabled(row: dict, current_instance_id: str | None = None) -> bool:
+    current = yarbis_instance.normalize_instance_id(current_instance_id or yarbis_instance.current_instance_id())
+    return (
+        row.get("id") != yarbis_instance.DEFAULT_INSTANCE_ID
+        and row.get("id") != current
+        and not bool(row.get("active"))
+    )
+
+
+def _instance_overview_rows() -> tuple[list[dict], list[str]]:
+    rows = []
+    active_tokens: dict[str, list[str]] = {}
+    for item in yarbis_instance.list_instances():
+        instance_id = item["id"]
+        state = _read_instance_state(instance_id)
+        active = yarbis_instance.instance_is_active(instance_id)
+        token = _instance_telegram_token(state)
+        if active and token:
+            active_tokens.setdefault(token, []).append(instance_id)
+        counts = yarbis_bus.message_counts(instance_id)
+        row = {
+            "id": instance_id,
+            "display_name": item.get("display_name") or instance_id,
+            "active": active,
+            "active_text": "activa" if active else "inactiva",
+            "service_name": item.get("service_name") or yarbis_instance.service_name(instance_id),
+            "mobile_port": _instance_mobile_port(instance_id, state),
+            "pending_messages": counts.get("total_unread", 0),
+            "state_file": item.get("state_file", ""),
+            "runtime_dir": item.get("runtime_dir", ""),
+            "exists": bool(item.get("exists")),
+        }
+        row["can_archive"] = _instance_archive_enabled(row)
+        rows.append(row)
+
+    warnings = []
+    for ids in active_tokens.values():
+        if len(ids) > 1:
+            warnings.append(
+                "Telegram duplicado en instancias activas: " + ", ".join(sorted(ids))
+            )
+    return rows, warnings
+
+
+def _current_instance_chip_text(rows: list[dict] | None = None) -> str:
+    current = yarbis_instance.current_instance_id()
+    source_rows = rows if rows is not None else _instance_overview_rows()[0]
+    row = next((item for item in source_rows if item.get("id") == current), None)
+    if not row:
+        return f"Instancia: {current}"
+    return (
+        f"Instancia: {row['display_name']} ({row['id']}) | "
+        f"{row['service_name']} | puerto {row['mobile_port']}"
+    )
+
+
 def _select_instance_before_launch() -> bool:
     if _has_explicit_instance():
         return True
@@ -375,25 +470,78 @@ def _select_instance_before_launch() -> bool:
     selected = {"id": "", "continue": False}
     root = tk.Tk()
     root.title("Abrir Yarbis")
-    root.resizable(False, False)
+    root.geometry("860x420")
+    root.minsize(760, 360)
 
     frame = ttk.Frame(root, padding=18)
     frame.grid(row=0, column=0, sticky="nsew")
-    ttk.Label(frame, text="Elige una instancia de Yarbis").grid(row=0, column=0, columnspan=3, sticky="w")
+    root.columnconfigure(0, weight=1)
+    root.rowconfigure(0, weight=1)
+    frame.columnconfigure(0, weight=1)
+    frame.rowconfigure(2, weight=1)
 
-    instance_var = tk.StringVar(value=yarbis_instance.DEFAULT_INSTANCE_ID)
-    instances = yarbis_instance.list_instances()
-    values = [item["id"] for item in instances]
-    combo = ttk.Combobox(frame, textvariable=instance_var, values=values, state="readonly", width=28)
-    combo.grid(row=1, column=0, columnspan=3, sticky="ew", pady=(10, 12))
-    if values:
-        combo.set(values[0])
+    ttk.Label(frame, text="Elige una instancia de Yarbis").grid(row=0, column=0, sticky="w")
+    warning_var = tk.StringVar(value="")
+    ttk.Label(frame, textvariable=warning_var, foreground="#c97a16").grid(row=1, column=0, sticky="w", pady=(4, 8))
+
+    columns = ("name", "id", "active", "service", "port", "pending", "path")
+    tree = ttk.Treeview(frame, columns=columns, show="headings", height=9)
+    headings = {
+        "name": "Nombre",
+        "id": "Id",
+        "active": "Estado",
+        "service": "Servicio",
+        "port": "Puerto",
+        "pending": "Mensajes",
+        "path": "Estado",
+    }
+    widths = {
+        "name": 150,
+        "id": 110,
+        "active": 80,
+        "service": 120,
+        "port": 70,
+        "pending": 75,
+        "path": 230,
+    }
+    for column in columns:
+        tree.heading(column, text=headings[column])
+        tree.column(column, width=widths[column], anchor="w", stretch=column in {"name", "path"})
+    tree.grid(row=2, column=0, sticky="nsew")
+    tree_scroll = ttk.Scrollbar(frame, orient="vertical", command=tree.yview)
+    tree.configure(yscrollcommand=tree_scroll.set)
+    tree_scroll.grid(row=2, column=1, sticky="ns")
+
+    def selected_tree_id() -> str:
+        selection = tree.selection()
+        if not selection:
+            return yarbis_instance.DEFAULT_INSTANCE_ID
+        return str(tree.item(selection[0], "values")[1]).strip() or yarbis_instance.DEFAULT_INSTANCE_ID
 
     def refresh_values(select_id: str = ""):
-        refreshed = [item["id"] for item in yarbis_instance.list_instances()]
-        combo.configure(values=refreshed)
-        if select_id:
-            combo.set(select_id)
+        rows, warnings = _instance_overview_rows()
+        for item_id in tree.get_children():
+            tree.delete(item_id)
+        for row in rows:
+            tree.insert(
+                "",
+                "end",
+                iid=row["id"],
+                values=(
+                    row["display_name"],
+                    row["id"],
+                    row["active_text"],
+                    row["service_name"],
+                    row["mobile_port"],
+                    row["pending_messages"],
+                    row["state_file"],
+                ),
+            )
+        target = select_id or (rows[0]["id"] if rows else yarbis_instance.DEFAULT_INSTANCE_ID)
+        if target in tree.get_children():
+            tree.selection_set(target)
+            tree.focus(target)
+        warning_var.set(" | ".join(warnings))
 
     def create_instance_from_dialog():
         raw_id = simpledialog.askstring(
@@ -411,7 +559,7 @@ def _select_instance_before_launch() -> bool:
         refresh_values(created["id"])
 
     def open_selected():
-        selected["id"] = instance_var.get().strip() or yarbis_instance.DEFAULT_INSTANCE_ID
+        selected["id"] = selected_tree_id()
         selected["continue"] = True
         root.destroy()
 
@@ -419,9 +567,16 @@ def _select_instance_before_launch() -> bool:
         selected["continue"] = False
         root.destroy()
 
-    ttk.Button(frame, text="Abrir", command=open_selected).grid(row=2, column=0, sticky="ew", padx=(0, 6))
-    ttk.Button(frame, text="Crear", command=create_instance_from_dialog).grid(row=2, column=1, sticky="ew", padx=6)
-    ttk.Button(frame, text="Cancelar", command=cancel).grid(row=2, column=2, sticky="ew", padx=(6, 0))
+    buttons = ttk.Frame(frame)
+    buttons.grid(row=3, column=0, columnspan=2, sticky="ew", pady=(12, 0))
+    for column in range(4):
+        buttons.columnconfigure(column, weight=1, uniform="selector_buttons")
+    ttk.Button(buttons, text="Abrir", command=open_selected).grid(row=0, column=0, sticky="ew", padx=(0, 6))
+    ttk.Button(buttons, text="Crear", command=create_instance_from_dialog).grid(row=0, column=1, sticky="ew", padx=6)
+    ttk.Button(buttons, text="Refrescar", command=refresh_values).grid(row=0, column=2, sticky="ew", padx=6)
+    ttk.Button(buttons, text="Cancelar", command=cancel).grid(row=0, column=3, sticky="ew", padx=(6, 0))
+    tree.bind("<Double-1>", lambda _event: open_selected())
+    refresh_values()
     root.protocol("WM_DELETE_WINDOW", cancel)
     root.mainloop()
 
@@ -564,6 +719,10 @@ class YarbisDesktop(tk.Tk):
         self.health_var = tk.StringVar()
         self.readiness_var = tk.StringVar()
         self.status_var = tk.StringVar(value="Listo.")
+        self.instance_chip_var = tk.StringVar()
+        self.instance_warning_var = tk.StringVar()
+        self.message_target_var = tk.StringVar()
+        self.message_timeout_var = tk.StringVar(value="120")
         self.theme_button_text = tk.StringVar()
         self.service_var = tk.StringVar()
         self.service_button_text = tk.StringVar()
@@ -600,6 +759,9 @@ class YarbisDesktop(tk.Tk):
         self._local_telegram_polling = False
         self._closing = False
         self._first_run_checked = False
+        self._instance_rows = []
+        self._message_rows = {}
+        self._archived_rows = {}
         self._voice_recording = False
         self._voice_record_stop_event = None
         self._voice_record_thread = None
@@ -635,6 +797,7 @@ class YarbisDesktop(tk.Tk):
         nav_items = (
             ("home", "Inicio"),
             ("run", "Ejecutar"),
+            ("instances", "Instancias"),
             ("context", "Contexto"),
             ("settings", "Configuración"),
             ("activity", "Respuestas"),
@@ -692,14 +855,20 @@ class YarbisDesktop(tk.Tk):
             text="Estado, ejecución, configuración y actividad en una misma vista de trabajo.",
             style="Subtitle.TLabel",
         ).grid(row=1, column=0, sticky="w", pady=(2, 0))
-        ttk.Button(header, text="Refrescar", command=self.refresh_state_view).grid(row=0, column=1, rowspan=2, sticky="e")
+        ttk.Label(header, textvariable=self.instance_chip_var, style="Muted.TLabel").grid(
+            row=0,
+            column=1,
+            sticky="e",
+            padx=(12, 0),
+        )
+        ttk.Button(header, text="Refrescar", command=self.refresh_state_view).grid(row=1, column=1, sticky="e")
 
         views = ttk.Frame(content_shell)
         views.grid(row=1, column=0, sticky="nsew")
         views.columnconfigure(0, weight=1)
         views.rowconfigure(0, weight=1)
 
-        for view_name in ("home", "run", "context", "settings", "activity"):
+        for view_name in ("home", "run", "instances", "context", "settings", "activity"):
             frame = ttk.Frame(views)
             frame.grid(row=0, column=0, sticky="nsew")
             frame.columnconfigure(0, weight=1)
@@ -707,6 +876,7 @@ class YarbisDesktop(tk.Tk):
 
         self._build_home_view(self._view_frames["home"])
         self._build_run_view(self._view_frames["run"])
+        self._build_instances_view(self._view_frames["instances"])
         self._build_context_view(self._view_frames["context"])
         self._build_settings_view(self._view_frames["settings"])
         self._build_activity_view(self._view_frames["activity"])
@@ -894,6 +1064,180 @@ class YarbisDesktop(tk.Tk):
         self.send_button.grid(row=0, column=1, sticky="e")
         self._action_buttons.extend([self.voice_button, self.send_button])
 
+    def _build_instances_view(self, parent):
+        parent.columnconfigure(0, weight=3)
+        parent.columnconfigure(1, weight=2)
+        parent.rowconfigure(0, weight=1)
+
+        left = ttk.Frame(parent)
+        right = ttk.Frame(parent)
+        left.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
+        right.grid(row=0, column=1, sticky="nsew", padx=(8, 0))
+        left.columnconfigure(0, weight=1)
+        left.rowconfigure(0, weight=3)
+        left.rowconfigure(1, weight=1)
+        right.columnconfigure(0, weight=1)
+        right.rowconfigure(1, weight=1)
+
+        instances = create_section(left, "Instancias", "Estado local, servicio, puerto y rutas.")
+        instances.grid(row=0, column=0, sticky="nsew", pady=(0, 10))
+        instances.columnconfigure(0, weight=1)
+        instances.rowconfigure(1, weight=1)
+        ttk.Label(instances, textvariable=self.instance_warning_var, style="Muted.TLabel").grid(
+            row=0,
+            column=0,
+            sticky="ew",
+            pady=(0, 8),
+        )
+        columns = ("name", "id", "active", "service", "port", "pending", "path")
+        self.instances_tree = ttk.Treeview(instances, columns=columns, show="headings", height=9)
+        for column, label, width in (
+            ("name", "Nombre", 140),
+            ("id", "Id", 95),
+            ("active", "Estado", 75),
+            ("service", "Servicio", 115),
+            ("port", "Puerto", 60),
+            ("pending", "Msg", 45),
+            ("path", "Estado", 210),
+        ):
+            self.instances_tree.heading(column, text=label)
+            self.instances_tree.column(column, width=width, anchor="w", stretch=column in {"name", "path"})
+        self.instances_tree.grid(row=1, column=0, sticky="nsew")
+        instances_scroll = ttk.Scrollbar(instances, orient="vertical", command=self.instances_tree.yview)
+        self.instances_tree.configure(yscrollcommand=instances_scroll.set)
+        instances_scroll.grid(row=1, column=1, sticky="ns")
+        self.instances_tree.bind("<<TreeviewSelect>>", lambda _event: self._update_instance_action_states())
+
+        instance_buttons = ttk.Frame(instances)
+        instance_buttons.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(10, 0))
+        for column in range(4):
+            instance_buttons.columnconfigure(column, weight=1, uniform="instance_buttons")
+        self.open_instance_button = ttk.Button(instance_buttons, text="Abrir", command=self._open_selected_instance)
+        self.create_instance_button = ttk.Button(instance_buttons, text="Crear", command=self._create_instance_from_panel)
+        self.rename_instance_button = ttk.Button(instance_buttons, text="Renombrar", command=self._rename_selected_instance)
+        self.copy_instance_path_button = ttk.Button(instance_buttons, text="Copiar ruta", command=self._copy_selected_instance_path)
+        self.copy_instance_command_button = ttk.Button(instance_buttons, text="Copiar comando", command=self._copy_selected_instance_command)
+        self.start_instance_service_button = ttk.Button(instance_buttons, text="Iniciar servicio", command=self._start_selected_instance_service)
+        self.stop_instance_service_button = ttk.Button(instance_buttons, text="Detener servicio", command=self._stop_selected_instance_service)
+        self.autostart_instance_service_button = ttk.Button(instance_buttons, text="Autostart", command=self._toggle_selected_instance_autostart)
+        self.archive_instance_button = ttk.Button(
+            instance_buttons,
+            text="Archivar",
+            command=self._archive_selected_instance,
+            style="Danger.TButton",
+        )
+        for index, button in enumerate((
+            self.open_instance_button,
+            self.create_instance_button,
+            self.rename_instance_button,
+            self.copy_instance_path_button,
+            self.copy_instance_command_button,
+            self.start_instance_service_button,
+            self.stop_instance_service_button,
+            self.autostart_instance_service_button,
+            self.archive_instance_button,
+        )):
+            button.grid(row=index // 4, column=index % 4, sticky="ew", padx=(0 if index % 4 == 0 else 6, 0), pady=(0, 6))
+        self._action_buttons.extend([
+            self.create_instance_button,
+            self.rename_instance_button,
+            self.start_instance_service_button,
+            self.stop_instance_service_button,
+            self.autostart_instance_service_button,
+            self.archive_instance_button,
+        ])
+
+        archived = create_section(left, "Archivadas", "Instancias movidas a respaldo recuperable.")
+        archived.grid(row=1, column=0, sticky="nsew")
+        archived.columnconfigure(0, weight=1)
+        archived.rowconfigure(0, weight=1)
+        archive_columns = ("name", "id", "archived_at", "path")
+        self.archived_tree = ttk.Treeview(archived, columns=archive_columns, show="headings", height=4)
+        for column, label, width in (
+            ("name", "Nombre", 150),
+            ("id", "Id", 100),
+            ("archived_at", "Archivada", 140),
+            ("path", "Ruta", 260),
+        ):
+            self.archived_tree.heading(column, text=label)
+            self.archived_tree.column(column, width=width, anchor="w", stretch=column == "path")
+        self.archived_tree.grid(row=0, column=0, sticky="nsew")
+        archived_scroll = ttk.Scrollbar(archived, orient="vertical", command=self.archived_tree.yview)
+        self.archived_tree.configure(yscrollcommand=archived_scroll.set)
+        archived_scroll.grid(row=0, column=1, sticky="ns")
+        archived_buttons = ttk.Frame(archived)
+        archived_buttons.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(8, 0))
+        self.restore_instance_button = ttk.Button(archived_buttons, text="Restaurar", command=self._restore_selected_archive)
+        self.restore_instance_button.pack(side="left")
+        self._action_buttons.append(self.restore_instance_button)
+
+        composer = create_section(right, "Mensaje directo", "Enviar a otra instancia local.")
+        composer.grid(row=0, column=0, sticky="ew", pady=(0, 10))
+        composer.columnconfigure(1, weight=1)
+        ttk.Label(composer, text="Destino").grid(row=0, column=0, sticky="w", padx=(0, 8), pady=(0, 6))
+        self.message_target_combo = ttk.Combobox(
+            composer,
+            textvariable=self.message_target_var,
+            state="readonly",
+            width=24,
+        )
+        self.message_target_combo.grid(row=0, column=1, sticky="ew", pady=(0, 6))
+        ttk.Label(composer, text="Timeout").grid(row=0, column=2, sticky="e", padx=(8, 4), pady=(0, 6))
+        self.message_timeout_spin = tk.Spinbox(
+            composer,
+            from_=0,
+            to=600,
+            increment=15,
+            width=6,
+            textvariable=self.message_timeout_var,
+        )
+        self.message_timeout_spin.grid(row=0, column=3, sticky="e", pady=(0, 6))
+        self.message_text = tk.Text(composer, height=5, wrap="word")
+        self.message_text.grid(row=1, column=0, columnspan=4, sticky="ew", pady=(0, 8))
+        message_buttons = ttk.Frame(composer)
+        message_buttons.grid(row=2, column=0, columnspan=4, sticky="ew")
+        self.send_instance_message_button = ttk.Button(
+            message_buttons,
+            text="Enviar",
+            command=self._send_instance_message,
+            style="Accent.TButton",
+        )
+        self.send_instance_message_button.pack(side="left")
+        ttk.Button(message_buttons, text="Abrir destino", command=self._open_message_target_instance).pack(
+            side="left",
+            padx=(8, 0),
+        )
+        self._action_buttons.append(self.send_instance_message_button)
+
+        inbox = create_section(right, "Bandeja", "Mensajes recibidos, enviados y respuestas.")
+        inbox.grid(row=1, column=0, sticky="nsew")
+        inbox.columnconfigure(0, weight=1)
+        inbox.rowconfigure(0, weight=1)
+        message_columns = ("direction", "peer", "kind", "status", "created", "preview")
+        self.messages_tree = ttk.Treeview(inbox, columns=message_columns, show="headings", height=12)
+        for column, label, width in (
+            ("direction", "Dir", 70),
+            ("peer", "Instancia", 90),
+            ("kind", "Tipo", 85),
+            ("status", "Estado", 70),
+            ("created", "Fecha", 120),
+            ("preview", "Mensaje", 260),
+        ):
+            self.messages_tree.heading(column, text=label)
+            self.messages_tree.column(column, width=width, anchor="w", stretch=column == "preview")
+        self.messages_tree.grid(row=0, column=0, sticky="nsew")
+        messages_scroll = ttk.Scrollbar(inbox, orient="vertical", command=self.messages_tree.yview)
+        self.messages_tree.configure(yscrollcommand=messages_scroll.set)
+        messages_scroll.grid(row=0, column=1, sticky="ns")
+        inbox_buttons = ttk.Frame(inbox)
+        inbox_buttons.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(8, 0))
+        ttk.Button(inbox_buttons, text="Refrescar", command=self._refresh_instance_panels).pack(side="left")
+        ttk.Button(inbox_buttons, text="Responder", command=self._prepare_message_reply).pack(side="left", padx=(8, 0))
+        ttk.Button(inbox_buttons, text="Marcar leÃ­do", command=self._mark_selected_messages_read).pack(
+            side="left",
+            padx=(8, 0),
+        )
+
     def _build_context_view(self, parent):
         parent.columnconfigure(0, weight=1)
         parent.columnconfigure(1, weight=1)
@@ -1010,6 +1354,363 @@ class YarbisDesktop(tk.Tk):
         self._view_frames[name].tkraise()
         for view_name, button in self._nav_buttons.items():
             button.configure(style="Active.Nav.TButton" if view_name == name else "Nav.TButton")
+
+    def _selected_instance_id(self) -> str:
+        if "instances_tree" not in self.__dict__:
+            return yarbis_instance.current_instance_id()
+        selection = self.instances_tree.selection()
+        if not selection:
+            return yarbis_instance.current_instance_id()
+        return str(selection[0]).strip() or yarbis_instance.current_instance_id()
+
+    def _selected_archive_id(self) -> str:
+        if "archived_tree" not in self.__dict__:
+            return ""
+        selection = self.archived_tree.selection()
+        return str(selection[0]).strip() if selection else ""
+
+    def _refresh_instance_panels(self):
+        rows, warnings = _instance_overview_rows()
+        self._instance_rows = rows
+        self.instance_chip_var.set(_current_instance_chip_text(rows))
+        self.instance_warning_var.set(" | ".join(warnings) if warnings else "Sin advertencias entre instancias activas.")
+
+        if "instances_tree" in self.__dict__:
+            selected = self._selected_instance_id()
+            for item_id in self.instances_tree.get_children():
+                self.instances_tree.delete(item_id)
+            for row in rows:
+                self.instances_tree.insert(
+                    "",
+                    "end",
+                    iid=row["id"],
+                    values=(
+                        row["display_name"],
+                        row["id"],
+                        row["active_text"],
+                        row["service_name"],
+                        row["mobile_port"],
+                        row["pending_messages"],
+                        row["state_file"],
+                    ),
+                )
+            if selected in self.instances_tree.get_children():
+                self.instances_tree.selection_set(selected)
+                self.instances_tree.focus(selected)
+            elif rows:
+                self.instances_tree.selection_set(rows[0]["id"])
+                self.instances_tree.focus(rows[0]["id"])
+
+        if "message_target_combo" in self.__dict__:
+            current = yarbis_instance.current_instance_id()
+            targets = [row["id"] for row in rows if row["id"] != current]
+            self.message_target_combo.configure(values=targets)
+            if self.message_target_var.get() not in targets:
+                self.message_target_var.set(targets[0] if targets else "")
+
+        if "archived_tree" in self.__dict__:
+            self._archived_rows = {
+                item["archive_id"]: item
+                for item in yarbis_instance.list_archived_instances()
+            }
+            selected_archive = self._selected_archive_id()
+            for item_id in self.archived_tree.get_children():
+                self.archived_tree.delete(item_id)
+            for archive_id, item in self._archived_rows.items():
+                self.archived_tree.insert(
+                    "",
+                    "end",
+                    iid=archive_id,
+                    values=(
+                        item["display_name"],
+                        item["id"],
+                        item["archived_at"],
+                        item["archive_dir"],
+                    ),
+                )
+            if selected_archive in self.archived_tree.get_children():
+                self.archived_tree.selection_set(selected_archive)
+
+        self._refresh_messages_view()
+        self._update_instance_action_states()
+
+    def _refresh_messages_view(self):
+        if "messages_tree" not in self.__dict__:
+            return
+        current = yarbis_instance.current_instance_id()
+        self._message_rows = {}
+        for item_id in self.messages_tree.get_children():
+            self.messages_tree.delete(item_id)
+        for message in yarbis_bus.list_instance_messages(instance_id=current, limit=80):
+            message_id = str(message.get("id", "")).strip()
+            if not message_id:
+                continue
+            sender = str(message.get("from_instance", "")).strip()
+            receiver = str(message.get("to_instance", "")).strip()
+            outgoing = sender == current
+            peer = receiver if outgoing else sender
+            preview = str(message.get("response") or message.get("content", "")).replace("\n", " ").strip()
+            if len(preview) > 160:
+                preview = preview[:157].rstrip() + "..."
+            self._message_rows[message_id] = message
+            self.messages_tree.insert(
+                "",
+                "end",
+                iid=message_id,
+                values=(
+                    "enviado" if outgoing else "recibido",
+                    peer,
+                    message.get("kind", ""),
+                    message.get("status", ""),
+                    str(message.get("created_at", ""))[:19],
+                    preview,
+                ),
+            )
+
+    def _update_instance_action_states(self):
+        if "instances_tree" not in self.__dict__:
+            return
+        selected_id = self._selected_instance_id()
+        row = next((item for item in self._instance_rows if item["id"] == selected_id), None)
+        has_row = row is not None
+        can_archive = bool(row and row.get("can_archive"))
+        has_archived = bool(self._selected_archive_id())
+        for button_name, enabled in (
+            ("open_instance_button", has_row),
+            ("rename_instance_button", has_row),
+            ("copy_instance_path_button", has_row),
+            ("copy_instance_command_button", has_row),
+            ("start_instance_service_button", has_row),
+            ("stop_instance_service_button", has_row),
+            ("autostart_instance_service_button", has_row),
+            ("archive_instance_button", can_archive),
+            ("restore_instance_button", has_archived),
+        ):
+            button = getattr(self, button_name, None)
+            if button is not None:
+                button.configure(state="normal" if enabled and not self._busy else "disabled")
+
+    def _create_instance_from_panel(self):
+        raw_id = simpledialog.askstring("Nueva instancia", "Id corto para la nueva instancia:", parent=self)
+        if raw_id is None:
+            return
+        display_name = simpledialog.askstring(
+            "Nueva instancia",
+            "Nombre visible opcional:",
+            parent=self,
+        )
+        try:
+            created = yarbis_instance.create_instance(raw_id, display_name=display_name or "")
+        except Exception as exc:
+            messagebox.showwarning("Yarbis", f"No pude crear la instancia: {exc}", parent=self)
+            return
+        self._append_activity("Instancias", f"Instancia creada: {created['display_name']} ({created['id']}).")
+        self._refresh_instance_panels()
+
+    def _rename_selected_instance(self):
+        instance_id = self._selected_instance_id()
+        row = next((item for item in self._instance_rows if item["id"] == instance_id), {})
+        display_name = simpledialog.askstring(
+            "Renombrar instancia",
+            "Nombre visible:",
+            initialvalue=row.get("display_name", instance_id),
+            parent=self,
+        )
+        if display_name is None:
+            return
+        try:
+            renamed = yarbis_instance.rename_instance(instance_id, display_name)
+        except Exception as exc:
+            messagebox.showwarning("Yarbis", f"No pude renombrar la instancia: {exc}", parent=self)
+            return
+        self._append_activity("Instancias", f"Instancia renombrada: {renamed['display_name']} ({renamed['id']}).")
+        self._refresh_instance_panels()
+
+    def _open_selected_instance(self):
+        instance_id = self._selected_instance_id()
+        if instance_id == yarbis_instance.current_instance_id():
+            messagebox.showinfo("Yarbis", "Esa instancia ya esta abierta en esta ventana.", parent=self)
+            return
+        try:
+            _launch_desktop_instance(instance_id)
+        except Exception as exc:
+            messagebox.showwarning("Yarbis", f"No pude abrir la instancia: {exc}", parent=self)
+            return
+        self._append_activity("Instancias", f"Abriendo instancia {instance_id}.")
+
+    def _copy_to_clipboard(self, label: str, text: str):
+        try:
+            self.clipboard_clear()
+            self.clipboard_append(text)
+            self.update()
+        except tk.TclError as exc:
+            messagebox.showwarning("Yarbis", f"No pude copiar {label}: {exc}", parent=self)
+            return
+        self.status_var.set(f"{label} copiado.")
+
+    def _copy_selected_instance_path(self):
+        instance_id = self._selected_instance_id()
+        path = str(yarbis_instance.instance_root(instance_id))
+        self._copy_to_clipboard("Ruta de instancia", path)
+
+    def _copy_selected_instance_command(self):
+        instance_id = self._selected_instance_id()
+        command = f'"{_python_window_path()}" "{_WORKSPACE_ROOT / "yarbis_desktop.py"}" --instance "{instance_id}"'
+        self._copy_to_clipboard("Comando de instancia", command)
+
+    def _start_selected_instance_service(self):
+        self._start_background_job(
+            f"Servicio {self._selected_instance_id()}",
+            start_service,
+            instance_id=self._selected_instance_id(),
+        )
+
+    def _stop_selected_instance_service(self):
+        self._start_background_job(
+            f"Servicio {self._selected_instance_id()}",
+            stop_service,
+            instance_id=self._selected_instance_id(),
+        )
+
+    @staticmethod
+    def _toggle_instance_autostart(instance_id: str) -> str:
+        status = get_service_status(force=True, instance_id=instance_id)
+        enabled = not bool(status.get("autostart_enabled"))
+        return set_autostart_enabled(enabled, instance_id=instance_id)
+
+    def _toggle_selected_instance_autostart(self):
+        self._start_background_job(
+            f"Autostart {self._selected_instance_id()}",
+            self._toggle_instance_autostart,
+            self._selected_instance_id(),
+        )
+
+    @staticmethod
+    def _archive_instance_with_service_cleanup(instance_id: str) -> str:
+        status = get_service_status(force=True, instance_id=instance_id)
+        service_text = ""
+        if status.get("installed"):
+            service_text = remove_service(instance_id=instance_id)
+        archived = yarbis_instance.archive_instance(instance_id)
+        archive_text = f"Instancia {instance_id} archivada en {archived['archive_dir']}."
+        return "\n".join(part for part in (service_text, archive_text) if part)
+
+    def _archive_selected_instance(self):
+        instance_id = self._selected_instance_id()
+        row = next((item for item in self._instance_rows if item["id"] == instance_id), {})
+        if not _instance_archive_enabled(row):
+            messagebox.showinfo("Yarbis", "Esta instancia no se puede archivar ahora.", parent=self)
+            return
+        confirmation = simpledialog.askstring(
+            "Archivar instancia",
+            f"Escribe {instance_id} para archivar la instancia. Sus datos se moveran a _archived.",
+            parent=self,
+        )
+        if confirmation != instance_id:
+            return
+        self._start_background_job(
+            f"Archivar {instance_id}",
+            self._archive_instance_with_service_cleanup,
+            instance_id,
+        )
+
+    def _restore_selected_archive(self):
+        archive_id = self._selected_archive_id()
+        if not archive_id:
+            return
+        self._start_background_job(
+            "Restaurar instancia",
+            lambda archive=archive_id: (
+                f"Instancia restaurada: "
+                f"{yarbis_instance.restore_archived_instance(archive)['id']}"
+            ),
+        )
+
+    @staticmethod
+    def _send_instance_message_for_ui(target_instance: str, message: str, timeout_seconds: int) -> str:
+        result = yarbis_bus.send_message(
+            target_instance,
+            message,
+            wait_for_reply=True,
+            timeout_seconds=timeout_seconds,
+        )
+        status = str(result.get("status", "")).strip()
+        message_id = str(result.get("id", "")).strip()
+        if status == yarbis_bus.STATUS_DONE:
+            response = str(result.get("response", "")).strip() or "Sin respuesta visible."
+            return f"Mensaje entregado a {target_instance} ({message_id}).\n\nRespuesta:\n{response}"
+        if status == yarbis_bus.STATUS_ERROR:
+            return f"Mensaje con error en {target_instance} ({message_id}): {result.get('error', '')}"
+        if result.get("status_text") == "timeout":
+            return f"Mensaje enviado a {target_instance} ({message_id}), pero no llego respuesta antes del timeout."
+        return f"Mensaje en cola para {target_instance} ({message_id})."
+
+    def _send_instance_message(self):
+        target = self.message_target_var.get().strip()
+        if not target:
+            messagebox.showinfo("Yarbis", "Elige una instancia destino.", parent=self)
+            return
+        if target == yarbis_instance.current_instance_id():
+            messagebox.showinfo("Yarbis", "Elige una instancia distinta a la actual.", parent=self)
+            return
+        content = self.message_text.get("1.0", "end-1c").strip()
+        if not content:
+            messagebox.showinfo("Yarbis", "Escribe un mensaje para enviar.", parent=self)
+            return
+        try:
+            timeout_seconds = max(0, min(600, int(self.message_timeout_var.get() or "120")))
+        except ValueError:
+            timeout_seconds = 120
+            self.message_timeout_var.set("120")
+        self._start_background_job(
+            f"Mensaje a {target}",
+            self._send_instance_message_for_ui,
+            target,
+            content,
+            timeout_seconds,
+        )
+
+    def _prepare_message_reply(self):
+        if "messages_tree" not in self.__dict__:
+            return
+        selection = self.messages_tree.selection()
+        if not selection:
+            return
+        message = self._message_rows.get(str(selection[0]))
+        if not message:
+            return
+        current = yarbis_instance.current_instance_id()
+        sender = str(message.get("from_instance", "")).strip()
+        receiver = str(message.get("to_instance", "")).strip()
+        peer = sender if sender != current else receiver
+        if peer and peer != current:
+            self.message_target_var.set(peer)
+        content = str(message.get("response") or message.get("content", "")).strip()
+        if content:
+            self.message_text.delete("1.0", "end")
+            self.message_text.insert("1.0", f"Sobre tu mensaje: {content[:500]}\n\n")
+        self.message_text.focus_set()
+
+    def _mark_selected_messages_read(self):
+        if "messages_tree" not in self.__dict__:
+            return
+        message_ids = [str(item) for item in self.messages_tree.selection()]
+        marked = yarbis_bus.mark_messages_read(message_ids)
+        self._append_activity("Mensajes Yarbis", f"Mensajes marcados como leidos: {marked}.")
+        self._refresh_instance_panels()
+
+    def _open_message_target_instance(self):
+        target = self.message_target_var.get().strip()
+        if not target:
+            messagebox.showinfo("Yarbis", "Elige una instancia destino.", parent=self)
+            return
+        if target == yarbis_instance.current_instance_id():
+            messagebox.showinfo("Yarbis", "Esa instancia ya esta abierta en esta ventana.", parent=self)
+            return
+        try:
+            _launch_desktop_instance(target)
+        except Exception as exc:
+            messagebox.showwarning("Yarbis", f"No pude abrir la instancia: {exc}", parent=self)
 
     def _create_scrolled_text(self, parent, **text_options):
         frame = tk.Frame(parent, bd=0, highlightthickness=0)
@@ -1185,6 +1886,8 @@ class YarbisDesktop(tk.Tk):
             style_text_widget(widget, palette)
         style_text_widget(self.activity_text, palette)
         style_text_widget(self.reply_text, palette)
+        if "message_text" in self.__dict__:
+            style_text_widget(self.message_text, palette)
         self._style_service_autostart_toggle()
         if self._current_view:
             self._show_view(self._current_view)
@@ -1726,6 +2429,7 @@ class YarbisDesktop(tk.Tk):
             self._last_summary_text = summary_text
         self._refresh_last_result_widgets(state)
         self._refresh_activity_view()
+        self._refresh_instance_panels()
 
     def _maybe_show_first_run(self):
         if self._first_run_checked:
@@ -1940,7 +2644,10 @@ class YarbisDesktop(tk.Tk):
         for button in self._action_buttons:
             button.configure(state=state)
         self._set_service_controls_state(self._cached_service_status())
+        self._update_instance_action_states()
         self.reply_text.configure(state=state)
+        if "message_text" in self.__dict__:
+            self.message_text.configure(state=state)
         if status_text:
             self.status_var.set(status_text)
         elif not self._busy:

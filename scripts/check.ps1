@@ -33,7 +33,12 @@ function Copy-ProtectedPath([string]$SourceRoot, [string]$DestinationRoot, [stri
 
     $item = Get-Item -LiteralPath $source -Force
     if ($item.PSIsContainer) {
-        Copy-Item -LiteralPath $source -Destination $destinationParent -Recurse -Force
+        New-Item -ItemType Directory -Force -Path $destination | Out-Null
+        & robocopy $source $destination /E /XD service_host /NFL /NDL /NJH /NJS /NP | Out-Null
+        $robocopyExitCode = $LASTEXITCODE
+        if ($robocopyExitCode -gt 7) {
+            throw "No pude copiar ruta protegida $source a $destination (robocopy exit=$robocopyExitCode)."
+        }
     }
     else {
         Copy-Item -LiteralPath $source -Destination $destination -Force
