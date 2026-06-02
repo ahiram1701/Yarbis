@@ -5,10 +5,10 @@ import time
 import re
 import uuid
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Any, Callable
 
 import activity
+import yarbis_instance
 from memory import (
     DEFAULT_OLLAMA_CLOUD_HOST,
     DEFAULT_OPENROUTER_API_KEY_ENV_VAR,
@@ -67,9 +67,7 @@ from session import (
 
 _POLL_IDLE_SECONDS = 3
 _TELEGRAM_THINKING_PULSE_SECONDS = 4.0
-DEFERRED_TELEGRAM_REPLIES_FILE = (
-    Path(__file__).resolve().parent / ".yarbis_runtime" / "telegram_deferred_replies.json"
-)
+DEFERRED_TELEGRAM_REPLIES_FILE = yarbis_instance.runtime_dir() / "telegram_deferred_replies.json"
 MAX_DEFERRED_TELEGRAM_REPLIES = 20
 TELEGRAM_OPERATION_LABELS = {
     "Ciclo",

@@ -5,9 +5,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from secrets_redaction import build_secret_redactor
+import yarbis_instance
 
 WORKSPACE_ROOT = Path(__file__).resolve().parent
-RUNTIME_DIR = WORKSPACE_ROOT / ".yarbis_runtime"
+RUNTIME_DIR = yarbis_instance.runtime_dir()
 ACTIVITY_LOG_FILE = RUNTIME_DIR / "activity.log"
 EVENTS_FILE = RUNTIME_DIR / "events.jsonl"
 DEFAULT_ACTIVITY_MAX_BYTES = 256 * 1024

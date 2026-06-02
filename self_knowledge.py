@@ -39,6 +39,7 @@ IGNORED_DIR_NAMES = {
     ".git",
     ".venv",
     ".yarbis_runtime",
+    ".yarbis_instances",
     ".yarbis_checkpoints",
     "__pycache__",
     "bin",

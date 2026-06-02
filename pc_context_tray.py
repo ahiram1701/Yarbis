@@ -4,6 +4,11 @@ import time
 import traceback
 from pathlib import Path
 
+import yarbis_instance
+
+yarbis_instance.configure_from_argv()
+yarbis_instance.ensure_instance_registered()
+
 import activity
 from memory import load_state
 from pc_context import (
@@ -244,7 +249,7 @@ def _run_with_tray() -> None:
         pystray.MenuItem("Salir", quit_helper),
     )
     icon = pystray.Icon(
-        "YarbisLocalContext",
+        pc_context_runtime.TASK_NAME,
         _make_icon_image("pausado"),
         "Yarbis contexto local: pausado",
         menu,

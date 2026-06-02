@@ -8,6 +8,7 @@ import time
 from pathlib import Path
 
 import memory_backup
+import yarbis_instance
 
 try:
     import msvcrt
@@ -21,11 +22,11 @@ except ImportError:  # pragma: no cover - POSIX fallback only.
 
 WORKSPACE_ROOT = Path(__file__).resolve().parent
 DEFAULT_STATE_FILE = Path("state.json")
-STATE_FILE = DEFAULT_STATE_FILE
-STATE_LOCK_FILE = WORKSPACE_ROOT / ".yarbis_runtime" / "state.lock"
-DEFAULT_MEMORY_BACKUPS_DIR = WORKSPACE_ROOT / ".yarbis_memory_backups"
+STATE_FILE = yarbis_instance.state_file()
+STATE_LOCK_FILE = yarbis_instance.state_lock_file()
+DEFAULT_MEMORY_BACKUPS_DIR = yarbis_instance.memory_backups_dir()
 MEMORY_BACKUPS_DIR = DEFAULT_MEMORY_BACKUPS_DIR
-DEFAULT_MEMORY_PROTECTION_CONFIG_FILE = WORKSPACE_ROOT / ".yarbis_runtime" / "memory_protection.json"
+DEFAULT_MEMORY_PROTECTION_CONFIG_FILE = yarbis_instance.runtime_dir() / "memory_protection.json"
 MEMORY_PROTECTION_CONFIG_FILE = DEFAULT_MEMORY_PROTECTION_CONFIG_FILE
 STATE_LOCK = threading.RLock()
 _STATE_TRANSACTION_LOCAL = threading.local()
@@ -346,7 +347,7 @@ def default_state():
             },
             "mobile_ui": {
                 "enabled": False,
-                "port": DEFAULT_MOBILE_UI_PORT,
+                "port": yarbis_instance.default_mobile_ui_port(),
                 "job_timeout_seconds": DEFAULT_MOBILE_UI_JOB_TIMEOUT_SECONDS,
                 "pin_hash": "",
                 "pin_salt": "",

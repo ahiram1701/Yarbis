@@ -8,6 +8,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 import activity
+import yarbis_instance
 from memory import (
     DEFAULT_MODEL_PROVIDER,
     DEFAULT_OLLAMA_API_KEY_ENV_VAR,
@@ -25,7 +26,8 @@ from memory import (
 )
 
 WORKSPACE_ROOT = Path(__file__).resolve().parent
-RUNTIME_DIR = WORKSPACE_ROOT / ".yarbis_runtime"
+INSTANCE_ID = yarbis_instance.current_instance_id()
+RUNTIME_DIR = yarbis_instance.runtime_dir()
 PID_FILE = RUNTIME_DIR / "service.pid"
 STOP_FILE = RUNTIME_DIR / "service.stop"
 LOG_FILE = RUNTIME_DIR / "service.log"
@@ -35,9 +37,9 @@ SERVICE_HOST_PROJECT = WORKSPACE_ROOT / "service_host" / "YarbisServiceHost.cspr
 SERVICE_HOST_OUTPUT_DIR = RUNTIME_DIR / "service_host"
 SERVICE_HOST_EXE = SERVICE_HOST_OUTPUT_DIR / "YarbisServiceHost.exe"
 
-SERVICE_NAME = "Yarbis"
-SERVICE_DISPLAY_NAME = "Yarbis"
-SERVICE_DESCRIPTION = "Yarbis local agent background service."
+SERVICE_NAME = yarbis_instance.service_name()
+SERVICE_DISPLAY_NAME = yarbis_instance.service_display_name()
+SERVICE_DESCRIPTION = yarbis_instance.service_description()
 SERVICE_DEFAULT_ACCOUNT = "LocalSystem"
 BUILTIN_SERVICE_ACCOUNTS = {
     "localsystem",
@@ -77,7 +79,14 @@ def _quote(value: str | Path) -> str:
 
 
 def _service_binary_path() -> str:
-    return " ".join((_quote(SERVICE_HOST_EXE), _quote(WORKSPACE_ROOT)))
+    return " ".join((
+        _quote(SERVICE_HOST_EXE),
+        _quote(WORKSPACE_ROOT),
+        "--instance",
+        _quote(INSTANCE_ID),
+        "--service-name",
+        _quote(SERVICE_NAME),
+    ))
 
 
 def _sc_exe() -> str:

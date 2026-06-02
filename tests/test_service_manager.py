@@ -157,6 +157,16 @@ class ServiceManagerTestCase(unittest.TestCase):
         self.assertIn("start=", sc_mock.call_args_list[1].args[0])
         self.assertIn("auto", sc_mock.call_args_list[1].args[0])
 
+    def test_service_binary_path_includes_instance_arguments(self):
+        with patch.object(service_manager, "INSTANCE_ID", "worker"):
+            with patch.object(service_manager, "SERVICE_NAME", "Yarbis-worker"):
+                rendered = service_manager._service_binary_path()
+
+        self.assertIn("--instance", rendered)
+        self.assertIn('"worker"', rendered)
+        self.assertIn("--service-name", rendered)
+        self.assertIn('"Yarbis-worker"', rendered)
+
     def test_install_service_can_set_service_account(self):
         missing = completed(
             returncode=1060,

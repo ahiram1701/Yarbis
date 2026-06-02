@@ -7,7 +7,9 @@ from pathlib import Path
 from urllib.parse import quote, urlencode
 from uuid import uuid4
 
-DEFAULT_CALENDAR_DIR = ".yarbis_runtime/calendar"
+import yarbis_instance
+
+DEFAULT_CALENDAR_DIR = str(yarbis_instance.runtime_dir() / "calendar")
 
 
 def _split_items(value: str) -> list[str]:

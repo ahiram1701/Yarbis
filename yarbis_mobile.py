@@ -17,6 +17,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 import activity
+import yarbis_instance
 import voice as yarbis_voice
 from secrets_redaction import build_secret_redactor
 from memory import (
@@ -84,7 +85,7 @@ from tools import (
 )
 
 WORKSPACE_ROOT = Path(__file__).resolve().parent
-RUNTIME_DIR = WORKSPACE_ROOT / ".yarbis_runtime"
+RUNTIME_DIR = yarbis_instance.runtime_dir()
 MOBILE_SESSION_SECONDS = 7 * 24 * 60 * 60
 MOBILE_COOKIE_NAME = "yarbis_mobile"
 PIN_HASH_ITERATIONS = 200_000

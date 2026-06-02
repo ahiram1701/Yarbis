@@ -10,9 +10,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from secrets_redaction import redact_secrets
+import yarbis_instance
 
 WORKSPACE_ROOT = Path(__file__).resolve().parent
-RUNTIME_DIR = WORKSPACE_ROOT / ".yarbis_runtime"
+RUNTIME_DIR = yarbis_instance.runtime_dir()
 SNAPSHOT_FILE = RUNTIME_DIR / "pc_context_latest.json"
 EVENTS_FILE = RUNTIME_DIR / "pc_context_events.jsonl"
 
@@ -27,6 +28,7 @@ IGNORED_WORKSPACE_DIRS = {
     ".git",
     ".venv",
     ".yarbis_runtime",
+    ".yarbis_instances",
     ".yarbis_checkpoints",
     ".ruff_cache",
     "__pycache__",

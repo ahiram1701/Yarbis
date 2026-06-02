@@ -1,3 +1,8 @@
+import yarbis_instance
+
+yarbis_instance.configure_from_argv()
+yarbis_instance.ensure_instance_registered()
+
 from memory import load_state, render_state_summary
 from session import (
     coding_apply_proposal_text,

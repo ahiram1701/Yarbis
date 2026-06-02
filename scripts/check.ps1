@@ -13,6 +13,7 @@ $ProtectedLocalPaths = @(
     ".yarbis_runtime\calendar",
     ".yarbis_runtime\browser",
     ".yarbis_runtime\voice",
+    ".yarbis_instances",
     ".yarbis_checkpoints"
 )
 $ProtectedPathExists = @{}

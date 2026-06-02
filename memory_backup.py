@@ -6,8 +6,10 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from uuid import uuid4
 
+import yarbis_instance
+
 WORKSPACE_ROOT = Path(__file__).resolve().parent
-BACKUPS_DIR = WORKSPACE_ROOT / ".yarbis_memory_backups"
+BACKUPS_DIR = yarbis_instance.memory_backups_dir()
 BACKUP_FORMAT = "yarbis.memory_backup"
 SCHEMA_VERSION = 1
 REDACTED_VALUE = "[redacted]"

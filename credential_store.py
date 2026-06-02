@@ -7,8 +7,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
 
+import yarbis_instance
+
 WORKSPACE_ROOT = Path(__file__).resolve().parent
-CREDENTIALS_DIR = WORKSPACE_ROOT / ".yarbis_runtime" / "credentials"
+CREDENTIALS_DIR = yarbis_instance.runtime_dir() / "credentials"
 
 
 class CredentialStoreError(ValueError):

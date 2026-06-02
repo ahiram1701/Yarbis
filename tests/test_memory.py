@@ -700,7 +700,8 @@ class MemoryTestCase(unittest.TestCase):
         mobile_ui = normalized["service"]["mobile_ui"]
 
         self.assertTrue(mobile_ui["enabled"])
-        self.assertEqual(mobile_ui["port"], memory.DEFAULT_MOBILE_UI_PORT)
+        expected_port = memory.default_state()["service"]["mobile_ui"]["port"]
+        self.assertEqual(mobile_ui["port"], expected_port)
         self.assertEqual(mobile_ui["job_timeout_seconds"], memory.DEFAULT_MOBILE_UI_JOB_TIMEOUT_SECONDS)
         self.assertEqual(len(mobile_ui["pin_hash"]), memory.MAX_MOBILE_UI_HASH_CHARS)
         self.assertEqual(len(mobile_ui["pin_salt"]), memory.MAX_MOBILE_UI_SALT_CHARS)

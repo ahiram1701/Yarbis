@@ -1,5 +1,6 @@
 import ctypes
 import json
+import os
 import sys
 import queue
 import subprocess
@@ -11,7 +12,14 @@ from datetime import datetime
 from pathlib import Path
 from tkinter import filedialog, messagebox, simpledialog, ttk
 
+import yarbis_instance
+
+_PRECONFIGURED_INSTANCE = os.environ.get(yarbis_instance.ENV_INSTANCE, "").strip()
+yarbis_instance.configure_from_argv()
+yarbis_instance.ensure_instance_registered()
+
 import activity
+import yarbis_bus
 import memory as memory_store
 import voice as yarbis_voice
 from memory import (
@@ -121,7 +129,7 @@ from ui_theme import (
 )
 from yarbis_mobile import get_mobile_ui_settings, public_mobile_ui_status, update_mobile_ui_settings
 
-_SINGLE_INSTANCE_MUTEX_NAME = "Local\\YarbisDesktopSingleInstance"
+_SINGLE_INSTANCE_MUTEX_NAME = yarbis_instance.desktop_mutex_name()
 _SINGLE_INSTANCE_MUTEX_HANDLE = None
 _ERROR_ALREADY_EXISTS = 183
 
@@ -192,9 +200,11 @@ _STATE_SYNC_INTERVAL_MS = 1000
 _EVENT_SYNC_INTERVAL_MS = 500
 _STATUS_REFRESH_INTERVAL_MS = 15000
 _CONTEXT_HELPER_SYNC_MS = 10000
+_YARBIS_MESSAGE_SYNC_MS = 5000
 _SERVICE_RUNTIME_EVENT_LABELS = {"pulso proactivo"}
 _WORKSPACE_ROOT = Path(__file__).resolve().parent
-_RUNTIME_DIR = _WORKSPACE_ROOT / ".yarbis_runtime"
+_RUNTIME_DIR = yarbis_instance.runtime_dir()
+_DESKTOP_PID_FILE = _RUNTIME_DIR / "desktop.pid"
 _UPDATE_SCRIPT = _WORKSPACE_ROOT / "scripts" / "update.ps1"
 _DESKTOP_OPERATION_TIMEOUT_SECONDS = 30 * 60
 _DESKTOP_SESSION_OPERATION_SCRIPT = r"""
@@ -282,6 +292,146 @@ def _launch_update_process(needs_admin: bool) -> None:
         stderr=subprocess.DEVNULL,
         creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
     )
+
+
+def _write_desktop_pid() -> None:
+    try:
+        _RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
+        _DESKTOP_PID_FILE.write_text(str(os.getpid()), encoding="utf-8")
+    except OSError:
+        pass
+
+
+def _clear_desktop_pid() -> None:
+    try:
+        if _DESKTOP_PID_FILE.read_text(encoding="utf-8").strip() == str(os.getpid()):
+            _DESKTOP_PID_FILE.unlink()
+    except (FileNotFoundError, OSError):
+        pass
+
+
+def _has_explicit_instance() -> bool:
+    if _PRECONFIGURED_INSTANCE:
+        return True
+    for arg in sys.argv[1:]:
+        if arg == "--instance" or arg.startswith("--instance="):
+            return True
+    return False
+
+
+def _python_window_path() -> Path:
+    executable = Path(sys.executable)
+    if executable.name.lower() == "python.exe":
+        pythonw = executable.with_name("pythonw.exe")
+        if pythonw.exists():
+            return pythonw
+    candidate = _WORKSPACE_ROOT / ".venv" / "Scripts" / "pythonw.exe"
+    if candidate.exists():
+        return candidate
+    return executable
+
+
+def _launch_desktop_instance(instance_id: str) -> None:
+    normalized = yarbis_instance.normalize_instance_id(instance_id)
+    env = yarbis_instance.with_instance_env(normalized)
+    subprocess.Popen(
+        [
+            str(_python_window_path()),
+            str(_WORKSPACE_ROOT / "yarbis_desktop.py"),
+            "--instance",
+            normalized,
+        ],
+        cwd=str(_WORKSPACE_ROOT),
+        env=env,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+    )
+
+
+def _launch_instance_selector() -> None:
+    env = dict(os.environ)
+    env.pop(yarbis_instance.ENV_INSTANCE, None)
+    env.pop(yarbis_instance.ENV_SERVICE_NAME, None)
+    subprocess.Popen(
+        [
+            str(_python_window_path()),
+            str(_WORKSPACE_ROOT / "yarbis_desktop.py"),
+        ],
+        cwd=str(_WORKSPACE_ROOT),
+        env=env,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+    )
+
+
+def _select_instance_before_launch() -> bool:
+    if _has_explicit_instance():
+        return True
+
+    selected = {"id": "", "continue": False}
+    root = tk.Tk()
+    root.title("Abrir Yarbis")
+    root.resizable(False, False)
+
+    frame = ttk.Frame(root, padding=18)
+    frame.grid(row=0, column=0, sticky="nsew")
+    ttk.Label(frame, text="Elige una instancia de Yarbis").grid(row=0, column=0, columnspan=3, sticky="w")
+
+    instance_var = tk.StringVar(value=yarbis_instance.DEFAULT_INSTANCE_ID)
+    instances = yarbis_instance.list_instances()
+    values = [item["id"] for item in instances]
+    combo = ttk.Combobox(frame, textvariable=instance_var, values=values, state="readonly", width=28)
+    combo.grid(row=1, column=0, columnspan=3, sticky="ew", pady=(10, 12))
+    if values:
+        combo.set(values[0])
+
+    def refresh_values(select_id: str = ""):
+        refreshed = [item["id"] for item in yarbis_instance.list_instances()]
+        combo.configure(values=refreshed)
+        if select_id:
+            combo.set(select_id)
+
+    def create_instance_from_dialog():
+        raw_id = simpledialog.askstring(
+            "Nueva instancia",
+            "Id corto para la nueva instancia:",
+            parent=root,
+        )
+        if raw_id is None:
+            return
+        try:
+            created = yarbis_instance.create_instance(raw_id)
+        except Exception as exc:
+            messagebox.showwarning("Yarbis", f"No pude crear la instancia: {exc}", parent=root)
+            return
+        refresh_values(created["id"])
+
+    def open_selected():
+        selected["id"] = instance_var.get().strip() or yarbis_instance.DEFAULT_INSTANCE_ID
+        selected["continue"] = True
+        root.destroy()
+
+    def cancel():
+        selected["continue"] = False
+        root.destroy()
+
+    ttk.Button(frame, text="Abrir", command=open_selected).grid(row=2, column=0, sticky="ew", padx=(0, 6))
+    ttk.Button(frame, text="Crear", command=create_instance_from_dialog).grid(row=2, column=1, sticky="ew", padx=6)
+    ttk.Button(frame, text="Cancelar", command=cancel).grid(row=2, column=2, sticky="ew", padx=(6, 0))
+    root.protocol("WM_DELETE_WINDOW", cancel)
+    root.mainloop()
+
+    if not selected["continue"]:
+        return False
+    normalized = yarbis_instance.normalize_instance_id(selected["id"])
+    if normalized == yarbis_instance.current_instance_id():
+        return True
+    _launch_desktop_instance(normalized)
+    return False
 
 
 def _python_console_path() -> Path:
@@ -395,7 +545,8 @@ def _session_operation_subprocess(operation: str, **payload) -> str:
 class YarbisDesktop(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("Yarbis")
+        instance_id = yarbis_instance.current_instance_id()
+        self.title("Yarbis" if instance_id == yarbis_instance.DEFAULT_INSTANCE_ID else f"Yarbis - {instance_id}")
         self.geometry("1120x760")
         self.minsize(900, 620)
 
@@ -452,6 +603,7 @@ class YarbisDesktop(tk.Tk):
         self._voice_recording = False
         self._voice_record_stop_event = None
         self._voice_record_thread = None
+        self._yarbis_message_worker_running = False
 
         self._build_ui()
         self._apply_theme(self.current_theme_name)
@@ -460,6 +612,7 @@ class YarbisDesktop(tk.Tk):
         self.after(250, self._maybe_show_first_run)
         self.after(150, self._poll_worker_queue)
         self.after(750, self._ensure_context_helper)
+        self.after(_YARBIS_MESSAGE_SYNC_MS, self._process_yarbis_messages)
         self.after(_EVENT_SYNC_INTERVAL_MS, self._sync_runtime_events)
         self.after(_STATE_SYNC_INTERVAL_MS, self._sync_state_view)
 
@@ -505,6 +658,11 @@ class YarbisDesktop(tk.Tk):
             disable_when_busy=False,
         )
         ttk.Button(quick, text="Ver respuestas", command=lambda: self._show_view("activity")).pack(
+            fill="x",
+            padx=8,
+            pady=3,
+        )
+        ttk.Button(quick, text="Abrir otra instancia", command=self._open_another_instance).pack(
             fill="x",
             padx=8,
             pady=3,
@@ -1721,6 +1879,31 @@ class YarbisDesktop(tk.Tk):
             start_telegram_polling(event_callback=self._handle_telegram_event)
             self._local_telegram_polling = True
 
+    def _process_yarbis_messages(self):
+        if self._closing:
+            return
+
+        try:
+            service_status = self._cached_service_status()
+            service_running = bool(service_status.get("running")) if isinstance(service_status, dict) else False
+            if not service_running and not self._yarbis_message_worker_running:
+                self._yarbis_message_worker_running = True
+
+                def worker():
+                    try:
+                        processed = yarbis_bus.process_pending_messages(limit=1)
+                        self._result_queue.put(("yarbis_messages_done", "Mensajes Yarbis", processed))
+                    except Exception as exc:
+                        self._result_queue.put(("yarbis_messages_error", "Mensajes Yarbis", str(exc)))
+
+                threading.Thread(
+                    target=worker,
+                    name="yarbis-desktop-message-processor",
+                    daemon=True,
+                ).start()
+        finally:
+            self.after(_YARBIS_MESSAGE_SYNC_MS, self._process_yarbis_messages)
+
     def _sync_context_helper_once(self, ensure_task: bool = False):
         try:
             local_context_settings = self._load_state_for_view(force_reload=False).get("local_context", {})
@@ -1849,6 +2032,14 @@ class YarbisDesktop(tk.Tk):
                     self._set_busy(False, source="local")
                     source_path, summary = payload
                     self._continue_memory_import(str(source_path), str(summary))
+                elif kind == "yarbis_messages_done":
+                    self._yarbis_message_worker_running = False
+                    if payload:
+                        self._append_activity(label, f"Mensajes directos procesados: {payload}.")
+                        self.refresh_state_view()
+                elif kind == "yarbis_messages_error":
+                    self._yarbis_message_worker_running = False
+                    self._append_activity(f"{label} (error)", str(payload))
                 elif kind == "event":
                     self._append_activity(label, str(payload))
                     self.refresh_state_view()
@@ -1977,6 +2168,14 @@ class YarbisDesktop(tk.Tk):
         self._apply_theme(next_theme)
         self._append_activity("Tema", result)
         self.status_var.set("Listo.")
+
+    def _open_another_instance(self):
+        try:
+            _launch_instance_selector()
+        except Exception as exc:
+            messagebox.showwarning("Yarbis", f"No pude abrir el selector de instancias: {exc}", parent=self)
+            return
+        self._append_activity("Instancias", "Selector de instancias abierto.")
 
     def _edit_ollama_settings(self):
         dialog = OllamaSettingsDialog(self, initial_settings=get_model_provider_settings())
@@ -2732,11 +2931,15 @@ class YarbisDesktop(tk.Tk):
 
 
 def main():
+    if not _select_instance_before_launch():
+        return
+
     if not _acquire_single_instance_lock():
         _show_already_running_message()
         return
 
     try:
+        _write_desktop_pid()
         clear_activity_for_first_run_if_needed()
         startup_message = run_startup_self_analysis(force=False, background=True)
         app = YarbisDesktop()
@@ -2751,6 +2954,7 @@ def main():
         app._append_activity("Estado inicial", get_status_text())
         app.mainloop()
     finally:
+        _clear_desktop_pid()
         _release_single_instance_lock()
 
 

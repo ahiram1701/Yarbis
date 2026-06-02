@@ -3,7 +3,8 @@ using System.Runtime.InteropServices;
 
 internal static class Program
 {
-    private const string ServiceName = "Yarbis";
+    private const string DefaultServiceName = "Yarbis";
+    private const string DefaultInstanceId = "default";
     private const int ServiceWin32OwnProcess = 0x00000010;
     private const int ServiceStopped = 0x00000001;
     private const int ServiceStartPending = 0x00000002;
@@ -21,12 +22,16 @@ internal static class Program
 
     private static IntPtr _serviceStatusHandle = IntPtr.Zero;
     private static string _workspaceRoot = "";
+    private static string _serviceName = DefaultServiceName;
+    private static string _instanceId = DefaultInstanceId;
     private static Process? _childProcess;
     private static int _checkpoint = 1;
 
     public static int Main(string[] args)
     {
         _workspaceRoot = ResolveWorkspaceRoot(args);
+        _instanceId = ResolveOption(args, "--instance") ?? Environment.GetEnvironmentVariable("YARBIS_INSTANCE") ?? DefaultInstanceId;
+        _serviceName = ResolveOption(args, "--service-name") ?? Environment.GetEnvironmentVariable("YARBIS_SERVICE_NAME") ?? DefaultServiceName;
 
         if (args.Any(item => string.Equals(item, "--console", StringComparison.OrdinalIgnoreCase)))
         {
@@ -37,7 +42,7 @@ internal static class Program
         {
             new ServiceTableEntry
             {
-                ServiceName = ServiceName,
+                ServiceName = _serviceName,
                 ServiceMain = ServiceMainCallback,
             },
             new ServiceTableEntry
@@ -86,6 +91,26 @@ internal static class Program
         return Directory.GetCurrentDirectory();
     }
 
+    private static string? ResolveOption(string[] args, string name)
+    {
+        for (var index = 0; index < args.Length; index++)
+        {
+            var arg = args[index];
+            if (string.Equals(arg, name, StringComparison.OrdinalIgnoreCase) && index + 1 < args.Length)
+            {
+                return args[index + 1];
+            }
+
+            var prefix = name + "=";
+            if (arg.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+            {
+                return arg[prefix.Length..];
+            }
+        }
+
+        return null;
+    }
+
     private static int RunConsole()
     {
         try
@@ -104,7 +129,7 @@ internal static class Program
 
     private static void ServiceMain(int argc, IntPtr argv)
     {
-        _serviceStatusHandle = RegisterServiceCtrlHandlerEx(ServiceName, HandlerCallback, IntPtr.Zero);
+        _serviceStatusHandle = RegisterServiceCtrlHandlerEx(_serviceName, HandlerCallback, IntPtr.Zero);
         if (_serviceStatusHandle == IntPtr.Zero)
         {
             return;
@@ -166,15 +191,23 @@ internal static class Program
             throw new FileNotFoundException("No encontre yarbis_service.py.", scriptPath);
         }
 
-        Log($"Iniciando proceso Python: {pythonPath} \"{scriptPath}\"");
-        _childProcess = Process.Start(new ProcessStartInfo
+        Log($"Iniciando proceso Python: {pythonPath} \"{scriptPath}\" --instance \"{_instanceId}\" --service-name \"{_serviceName}\"");
+        var startInfo = new ProcessStartInfo
         {
             FileName = pythonPath,
-            Arguments = $"\"{scriptPath}\"",
             WorkingDirectory = _workspaceRoot,
             UseShellExecute = false,
             CreateNoWindow = true,
-        });
+        };
+        startInfo.ArgumentList.Add(scriptPath);
+        startInfo.ArgumentList.Add("--instance");
+        startInfo.ArgumentList.Add(_instanceId);
+        startInfo.ArgumentList.Add("--service-name");
+        startInfo.ArgumentList.Add(_serviceName);
+        startInfo.Environment["YARBIS_INSTANCE"] = _instanceId;
+        startInfo.Environment["YARBIS_SERVICE_NAME"] = _serviceName;
+
+        _childProcess = Process.Start(startInfo);
 
         if (_childProcess is null)
         {
@@ -235,7 +268,12 @@ internal static class Program
 
     private static string RuntimeDir()
     {
-        return Path.Combine(_workspaceRoot, ".yarbis_runtime");
+        if (string.Equals(_instanceId, DefaultInstanceId, StringComparison.OrdinalIgnoreCase))
+        {
+            return Path.Combine(_workspaceRoot, ".yarbis_runtime");
+        }
+
+        return Path.Combine(_workspaceRoot, ".yarbis_instances", _instanceId, ".yarbis_runtime");
     }
 
     private static string StopFile()

@@ -20,7 +20,8 @@ $DefaultSourceRepo = "C:\DEV\Github\yarbis"
 $LocalConfigRoots = @(
     ".yarbis_runtime",
     ".yarbis_checkpoints",
-    ".yarbis_memory_backups"
+    ".yarbis_memory_backups",
+    ".yarbis_instances"
 )
 $StashPathspec = @(
     ".",
@@ -30,6 +31,7 @@ $StashPathspec = @(
     ":(exclude).yarbis_runtime/**",
     ":(exclude).yarbis_checkpoints/**",
     ":(exclude).yarbis_memory_backups/**",
+    ":(exclude).yarbis_instances/**",
     ":(exclude)tests_runtime/**"
 )
 
@@ -191,7 +193,7 @@ function Save-LocalChangesForUpdate {
     Write-Step "Guardando cambios locales"
     $script:stashMessage = "yarbis-update-$(Get-Date -Format 'yyyyMMdd-HHmmss')"
     Write-Host "Cambios detectados; se guardaran temporalmente con git stash."
-    Write-Host "La memoria local de Yarbis queda fuera del stash: state.json, runtime y respaldos."
+    Write-Host "La memoria local de Yarbis queda fuera del stash: state.json, runtime, respaldos e instancias."
     $statusLines | ForEach-Object { Write-Host "  $_" }
 
     $stashArguments = @(

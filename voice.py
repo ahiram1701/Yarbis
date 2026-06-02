@@ -26,9 +26,10 @@ from memory import (
     normalize_state,
     state_transaction,
 )
+import yarbis_instance
 
 WORKSPACE_ROOT = Path(__file__).resolve().parent
-VOICE_RUNTIME_DIR = WORKSPACE_ROOT / ".yarbis_runtime" / "voice"
+VOICE_RUNTIME_DIR = yarbis_instance.runtime_dir() / "voice"
 KOKORO_DOWNLOAD_PAGE_URL = "https://huggingface.co/hexgrad/Kokoro-82M"
 KOKORO_VOICES = (
     ("ef_dora", "Dora - Espanol femenino", ("es",)),

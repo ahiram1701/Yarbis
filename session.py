@@ -7,7 +7,6 @@ import shutil
 import threading
 import time
 from datetime import datetime, timezone
-from pathlib import Path
 
 try:
     import msvcrt
@@ -20,6 +19,7 @@ except ImportError:  # pragma: no cover - POSIX fallback only.
     fcntl = None
 
 import activity
+import yarbis_instance
 from intent_text import (
     looks_like_affirmative_action_reply as _looks_like_affirmative_action_reply,
     normalize_intent_text as _normalize_intent_text,
@@ -92,7 +92,7 @@ from tools import (
 from service_manager import format_readiness_status, readiness_status
 
 SESSION_LOCK = threading.RLock()
-OPERATION_LOCK_FILE = Path(__file__).resolve().parent / ".yarbis_runtime" / "session.lock"
+OPERATION_LOCK_FILE = yarbis_instance.operation_lock_file()
 _OPERATION_LOCK_LOCAL = threading.local()
 _OPERATION_LOCK_POLL_SECONDS = 0.25
 _WINDOWS_SYNCHRONIZE = 0x00100000

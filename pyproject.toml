@@ -43,6 +43,9 @@ exclude = [
 select = ["E4", "E7", "E9", "F"]
 
 [tool.ruff.lint.per-file-ignores]
+"main.py" = ["E402"]
+"pc_context_tray.py" = ["E402"]
+"yarbis_desktop.py" = ["E402"]
 "yarbis_service.py" = ["E402"]
 
 [tool.setuptools]
@@ -78,7 +81,9 @@ py-modules = [
   "ui_settings_dialogs",
   "ui_theme",
   "voice",
+  "yarbis_bus",
   "yarbis_desktop",
+  "yarbis_instance",
   "yarbis_mobile",
   "yarbis_service",
 ]

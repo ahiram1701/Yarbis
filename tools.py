@@ -19,6 +19,8 @@ from integrations import (
 from internet import fetch_web_page as fetch_public_web_page
 from internet import search_web as search_public_web
 import memory_transfer
+import yarbis_bus
+import yarbis_instance
 from memory import (
     VALID_INTERNET_MODES,
     VALID_SEARCH_PROVIDERS,
@@ -36,7 +38,7 @@ from social_oauth import SocialOAuthError, connect_social_account
 from social_publishing import SocialPublishError, facebook_assisted_url, publish_publication
 
 WORKSPACE_ROOT = Path(__file__).resolve().parent
-RUNTIME_DIR = WORKSPACE_ROOT / ".yarbis_runtime"
+RUNTIME_DIR = yarbis_instance.runtime_dir()
 CHECKPOINTS_DIR = WORKSPACE_ROOT / ".yarbis_checkpoints"
 CODING_PROPOSALS_DIR = RUNTIME_DIR / "coding_proposals"
 MAX_LIST_ITEMS = 200
@@ -62,6 +64,7 @@ IGNORED_LISTING_NAMES = {
     "tests_runtime",
     ".yarbis_checkpoints",
     ".yarbis_memory_backups",
+    ".yarbis_instances",
     ".yarbis_runtime",
 }
 PROTECTED_WRITE_ROOT_NAMES = {
@@ -70,6 +73,7 @@ PROTECTED_WRITE_ROOT_NAMES = {
     "__pycache__",
     ".yarbis_checkpoints",
     ".yarbis_memory_backups",
+    ".yarbis_instances",
     ".yarbis_runtime",
 }
 PROTECTED_WRITE_PATHS = {"state.json"}
@@ -167,6 +171,7 @@ def _validate_coding_write_path(relative_path: Path) -> str | None:
         "__pycache__",
         ".yarbis_checkpoints",
         ".yarbis_memory_backups",
+        ".yarbis_instances",
         ".yarbis_runtime",
     }
     parts = relative_path.parts
@@ -2707,6 +2712,117 @@ def self_overview(refresh: bool = False) -> str:
             ),
         )
     return summary
+
+
+def list_yarbis_instances() -> str:
+    """
+    Lista las instancias locales de Yarbis conocidas en esta PC.
+
+    Returns:
+        str: Instancias con id, servicio, actividad y rutas principales.
+    """
+    instances = yarbis_instance.list_instances()
+    lines = [f"Instancia actual: {yarbis_instance.current_instance_id()}"]
+    active_tokens = {}
+    for item in instances:
+        instance_id = item["id"]
+        active = yarbis_bus.instance_is_active(instance_id)
+        if active:
+            try:
+                state_payload = json.loads(Path(item["state_file"]).read_text(encoding="utf-8"))
+                telegram = state_payload.get("notifications", {}).get("telegram", {})
+                token = str(telegram.get("bot_token", "")).strip()
+                if token:
+                    active_tokens.setdefault(token, []).append(instance_id)
+            except Exception:
+                pass
+        lines.append(
+            f"- {instance_id}: servicio={item['service_name']}, "
+            f"{'activa' if active else 'inactiva'}, "
+            f"estado={item['state_file']}"
+        )
+    duplicate_sets = [ids for ids in active_tokens.values() if len(ids) > 1]
+    if duplicate_sets:
+        lines.append(
+            "Advertencia: hay instancias activas compartiendo el mismo bot token de Telegram: "
+            + "; ".join(", ".join(ids) for ids in duplicate_sets)
+        )
+    return "\n".join(lines)
+
+
+def send_yarbis_message(
+    target_instance: str,
+    message: str,
+    wait_for_reply: bool = True,
+    timeout_seconds: int = 120,
+) -> str:
+    """
+    Envia un mensaje directo a otra instancia local de Yarbis.
+
+    Args:
+        target_instance (str): Id de la instancia destino.
+        message (str): Mensaje directo para esa instancia.
+        wait_for_reply (bool): Si True, espera respuesta cuando el destino esta activo.
+        timeout_seconds (int): Tiempo maximo de espera por respuesta.
+
+    Returns:
+        str: Estado de entrega y respuesta si estuvo disponible.
+    """
+    try:
+        result = yarbis_bus.send_message(
+            target_instance,
+            message,
+            wait_for_reply=bool(wait_for_reply),
+            timeout_seconds=int(timeout_seconds or 120),
+        )
+    except Exception as exc:
+        return f"No pude enviar el mensaje a Yarbis: {exc}"
+
+    status = str(result.get("status", "")).strip()
+    status_text = str(result.get("status_text", "")).strip()
+    target = str(result.get("to_instance", target_instance)).strip()
+    message_id = str(result.get("id", "")).strip()
+    if status == yarbis_bus.STATUS_DONE:
+        response = str(result.get("response", "")).strip() or "Sin respuesta visible."
+        return f"Mensaje entregado a {target} ({message_id}).\n\nRespuesta:\n{response}"
+    if status == yarbis_bus.STATUS_ERROR:
+        error = str(result.get("error", "")).strip() or "Error desconocido."
+        return f"Mensaje procesado con error en {target} ({message_id}): {error}"
+    if status_text == "timeout":
+        return f"Mensaje enviado a {target} ({message_id}), pero no llego respuesta antes del timeout."
+    return f"Mensaje en cola para {target} ({message_id})."
+
+
+def read_yarbis_messages(limit: int = 20, unread_only: bool = True) -> str:
+    """
+    Lee mensajes directos recibidos por esta instancia de Yarbis.
+
+    Args:
+        limit (int): Numero maximo de mensajes.
+        unread_only (bool): Si True, muestra solo mensajes pendientes o respuestas no leidas.
+
+    Returns:
+        str: Resumen de mensajes recibidos.
+    """
+    messages = yarbis_bus.list_messages(
+        limit=limit,
+        unread_only=bool(unread_only),
+        mark_read=True,
+    )
+    if not messages:
+        return "No hay mensajes directos para esta instancia."
+
+    lines = []
+    for message in messages:
+        kind = str(message.get("kind", "")).strip()
+        sender = str(message.get("from_instance", "")).strip()
+        status = str(message.get("status", "")).strip()
+        content = str(message.get("response") or message.get("content", "")).strip()
+        lines.append(
+            f"- {message.get('id', '')} de {sender} ({kind}, {status}): "
+            f"{content[:600] or '-'}"
+        )
+    return "\n".join(lines)
 
 
 def update_profile(

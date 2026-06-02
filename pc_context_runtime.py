@@ -11,16 +11,17 @@ from pathlib import Path
 
 from pc_context import local_context_enabled, normalize_local_context_settings
 from memory import load_state
+import yarbis_instance
 
 WORKSPACE_ROOT = Path(__file__).resolve().parent
-RUNTIME_DIR = WORKSPACE_ROOT / ".yarbis_runtime"
+RUNTIME_DIR = yarbis_instance.runtime_dir()
 HELPER_SCRIPT = WORKSPACE_ROOT / "pc_context_tray.py"
 DESKTOP_SCRIPT = WORKSPACE_ROOT / "yarbis_desktop.py"
 HELPER_PID_FILE = RUNTIME_DIR / "pc_context_helper.pid"
 HELPER_STOP_FILE = RUNTIME_DIR / "pc_context_helper.stop"
 HELPER_STATUS_FILE = RUNTIME_DIR / "pc_context_helper.status.json"
-TASK_NAME = "YarbisLocalContext"
-HELPER_MUTEX_NAME = "Local\\YarbisPcContextHelper"
+TASK_NAME = yarbis_instance.pc_context_task_name()
+HELPER_MUTEX_NAME = yarbis_instance.pc_context_mutex_name()
 HELPER_STOP_WAIT_SECONDS = 6.0
 
 _HELPER_MUTEX_HANDLE = None
@@ -61,7 +62,7 @@ def _pythonw_path() -> Path:
 
 
 def _helper_command() -> str:
-    return f"{_quote(_pythonw_path())} {_quote(HELPER_SCRIPT)}"
+    return f"{_quote(_pythonw_path())} {_quote(HELPER_SCRIPT)} --instance {_quote(yarbis_instance.current_instance_id())}"
 
 
 def _schtasks_exe() -> str:
@@ -146,10 +147,10 @@ def ensure_context_task() -> str:
     completed = _run_schtasks(_task_create_args())
     if completed.returncode != 0:
         raise RuntimeError(
-            "No pude crear/actualizar la tarea programada YarbisLocalContext.\n"
+            f"No pude crear/actualizar la tarea programada {TASK_NAME}.\n"
             + (_completed_output(completed) or f"exit={completed.returncode}")
         )
-    return "Tarea programada YarbisLocalContext lista para iniciar con tu sesion de Windows."
+    return f"Tarea programada {TASK_NAME} lista para iniciar con tu sesion de Windows."
 
 
 def remove_context_task() -> str:
@@ -158,11 +159,11 @@ def remove_context_task() -> str:
 
     completed = _run_schtasks(_task_delete_args())
     if completed.returncode == 0:
-        return "Tarea programada YarbisLocalContext eliminada."
+        return f"Tarea programada {TASK_NAME} eliminada."
     if _task_missing(completed):
-        return "La tarea programada YarbisLocalContext no estaba registrada."
+        return f"La tarea programada {TASK_NAME} no estaba registrada."
     raise RuntimeError(
-        "No pude eliminar la tarea programada YarbisLocalContext.\n"
+        f"No pude eliminar la tarea programada {TASK_NAME}.\n"
         + (_completed_output(completed) or f"exit={completed.returncode}")
     )
 
@@ -266,8 +267,9 @@ def start_context_helper() -> str:
     clear_helper_stop_request()
     pythonw = _pythonw_path()
     subprocess.Popen(
-        [str(pythonw), str(HELPER_SCRIPT)],
+        [str(pythonw), str(HELPER_SCRIPT), "--instance", yarbis_instance.current_instance_id()],
         cwd=str(WORKSPACE_ROOT),
+        env=yarbis_instance.with_instance_env(),
         stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
@@ -426,8 +428,9 @@ def release_helper_instance_lock() -> None:
 def open_desktop_app() -> str:
     pythonw = _pythonw_path()
     subprocess.Popen(
-        [str(pythonw), str(DESKTOP_SCRIPT)],
+        [str(pythonw), str(DESKTOP_SCRIPT), "--instance", yarbis_instance.current_instance_id()],
         cwd=str(WORKSPACE_ROOT),
+        env=yarbis_instance.with_instance_env(),
         stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,

@@ -1,8 +1,10 @@
 import json
 from pathlib import Path
 
+import yarbis_instance
+
 MAX_BROWSER_TEXT_CHARS = 12_000
-DEFAULT_SCREENSHOT_DIR = ".yarbis_runtime/browser"
+DEFAULT_SCREENSHOT_DIR = str(yarbis_instance.runtime_dir() / "browser")
 
 
 def _bounded_text(text: str, limit: int = MAX_BROWSER_TEXT_CHARS) -> str:

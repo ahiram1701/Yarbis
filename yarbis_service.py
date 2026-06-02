@@ -10,7 +10,13 @@ from pathlib import Path
 WORKSPACE_ROOT = Path(__file__).resolve().parent
 os.chdir(WORKSPACE_ROOT)
 
+import yarbis_instance
+
+yarbis_instance.configure_from_argv()
+yarbis_instance.ensure_instance_registered()
+
 import activity
+import yarbis_bus
 from service_manager import LOG_FILE, PID_FILE, RUNTIME_DIR, STOP_FILE
 from memory import (
     DEFAULT_SERVICE_PROACTIVE_CYCLES,
@@ -633,6 +639,13 @@ def run_service_loop(should_stop=None):
                 process_deferred_telegram_replies(limit=1)
             except Exception:
                 _log("Error procesando respuestas diferidas de Telegram:\n" + traceback.format_exc())
+
+            try:
+                processed_messages = yarbis_bus.process_pending_messages(limit=1)
+                if processed_messages:
+                    _log(f"Mensajes directos procesados: {processed_messages}.")
+            except Exception:
+                _log("Error procesando mensajes directos entre Yarbis:\n" + traceback.format_exc())
 
             try:
                 recovered_output = _recover_unanswered_user_message()
