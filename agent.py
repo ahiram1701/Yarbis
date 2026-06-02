@@ -185,6 +185,19 @@ NON_ACTIONABLE_RETRY_MESSAGE = (
     "de procesador."
 )
 MAX_NON_ACTIONABLE_RETRIES = 1
+DEFAULT_AUTO_RUN_SAFETY_CYCLES = 5
+AUTONOMOUS_FINAL_STATUSES = {"final", "empty", "error"}
+AUTONOMOUS_LOOP_CLOSING_PHRASES = (
+    "silencio total",
+    "no tengo nada mas que anadir",
+    "no tengo absolutamente nada mas que anadir",
+    "no hay nada mas que decir",
+    "no tengo nada mas que decir",
+    "corto aqui",
+    "caso cerrado",
+    "no mas respuestas",
+    "no voy a anadir",
+)
 _CANCEL_WATCH_INTERVAL_SECONDS = 0.25
 _SPANISH_WEEKDAYS = (
     "lunes",
@@ -2445,25 +2458,49 @@ def run_one_cycle(max_steps=None, model_override: str | None = None):
     }
 
 
+def _autonomous_response_signature(text: object) -> str:
+    normalized = _normalize_intent_text(str(text or ""))
+    if not normalized:
+        return ""
+    words = normalized.split()
+    return " ".join(words[:80])
+
+
+def _looks_like_autonomous_closure_loop(text: object) -> bool:
+    normalized = _normalize_intent_text(str(text or ""))
+    if not normalized:
+        return False
+    return any(phrase in normalized for phrase in AUTONOMOUS_LOOP_CLOSING_PHRASES)
+
+
 def run_autonomous_session(cycles=None, model_override: str | None = None):
     state = load_state()
+    using_safety_cycle_limit = False
     if cycles is None:
         cycle_limit = normalize_cycle_count(state["autonomy"]["auto_cycles_default"])
+        if cycle_limit is None:
+            cycle_limit = DEFAULT_AUTO_RUN_SAFETY_CYCLES
+            using_safety_cycle_limit = True
     else:
         cycle_limit = normalize_cycle_count(cycles, default=0)
 
     completed_cycles = 0
     saw_tasks = bool(state["tasks"])
+    previous_final_signature = ""
+    repeated_final_signatures = 0
+    stop_reason = ""
 
     while cycle_limit is None or completed_cycles < cycle_limit:
         current_state = load_state()
         if _stop_requested_for_operation(current_state):
             print("\nYarbis: operacion detenida por solicitud del usuario.")
+            stop_reason = "cancelled"
             break
 
         if _is_waiting_for_user_input(current_state):
             print("\nYarbis: estoy esperando una respuesta del usuario antes de continuar.")
             print(f"Pregunta pendiente: {current_state['awaiting_user_input']['question']}")
+            stop_reason = "waiting_for_user"
             break
 
         cycle_result = run_one_cycle(model_override=model_override)
@@ -2472,6 +2509,7 @@ def run_autonomous_session(cycles=None, model_override: str | None = None):
                 "status": "error",
                 "content": str(cycle_result),
                 "used_tools": False,
+                "action_tools_used": False,
                 "looks_meta": False,
                 "needs_user_input": False,
             }
@@ -2481,26 +2519,74 @@ def run_autonomous_session(cycles=None, model_override: str | None = None):
         saw_tasks = saw_tasks or bool(updated_state["tasks"])
         if cycle_result.get("status") == "cancelled" or _stop_requested_for_operation(updated_state):
             print("\nYarbis: operacion detenida por solicitud del usuario.")
+            stop_reason = "cancelled"
             break
 
         if cycle_result.get("needs_user_input") or _is_waiting_for_user_input(updated_state):
             print("\nYarbis: falta informacion del usuario. Deteniendo modo autonomo.")
+            stop_reason = "waiting_for_user"
             break
 
         if saw_tasks and not _has_open_tasks(updated_state):
             print("\nYarbis: no quedan tareas abiertas. Deteniendo modo autonomo.")
+            stop_reason = "tasks_done"
+            break
+
+        cycle_status = str(cycle_result.get("status", "")).strip()
+        cycle_content = str(cycle_result.get("content", ""))
+        action_tools_used = bool(cycle_result.get("action_tools_used"))
+        final_signature = (
+            _autonomous_response_signature(cycle_content)
+            if cycle_status in AUTONOMOUS_FINAL_STATUSES
+            else ""
+        )
+        if final_signature and final_signature == previous_final_signature:
+            repeated_final_signatures += 1
+        elif final_signature:
+            previous_final_signature = final_signature
+            repeated_final_signatures = 1
+        else:
+            previous_final_signature = ""
+            repeated_final_signatures = 0
+
+        if cycle_status in AUTONOMOUS_FINAL_STATUSES and _looks_like_autonomous_closure_loop(cycle_content):
+            print("\nYarbis: respuesta repetitiva de cierre detectada. Deteniendo modo autonomo para evitar bucles.")
+            stop_reason = "repetitive_closure"
+            break
+
+        if repeated_final_signatures >= 2:
+            print("\nYarbis: respuesta final repetida detectada. Deteniendo modo autonomo para evitar bucles.")
+            stop_reason = "repeated_final"
+            break
+
+        if cycle_status in AUTONOMOUS_FINAL_STATUSES and not action_tools_used:
+            print("\nYarbis: no hubo acciones nuevas verificables. Deteniendo modo autonomo para evitar bucles.")
+            stop_reason = "no_action"
             break
 
         if (
             not _has_open_tasks(updated_state)
-            and cycle_result["status"] in {"final", "empty", "error"}
+            and cycle_status in AUTONOMOUS_FINAL_STATUSES
             and not cycle_result["used_tools"]
         ):
             print("\nYarbis: no hay tareas abiertas y este ciclo ya cerro sin seguimiento adicional.")
+            stop_reason = "no_open_tasks"
             break
 
         if cycle_result["looks_meta"] and not _has_open_tasks(updated_state):
             print("\nYarbis: el modelo se quedo describiendo el proceso sin abrir tareas. Deteniendo modo autonomo.")
+            stop_reason = "meta"
             break
+
+    if (
+        not stop_reason
+        and using_safety_cycle_limit
+        and cycle_limit is not None
+        and completed_cycles >= cycle_limit
+    ):
+        print(
+            "\nYarbis: limite seguro de "
+            f"{cycle_limit} ciclo(s) alcanzado. Deteniendo modo autonomo para evitar bucles."
+        )
 
     return completed_cycles

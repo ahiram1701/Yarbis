@@ -1210,6 +1210,111 @@ class AgentTestCase(unittest.TestCase):
 
         self.assertEqual(completed_cycles, 1)
 
+    def test_run_autonomous_session_stops_after_final_without_action_even_with_open_tasks(self):
+        state = memory.default_state()
+        state["tasks"] = [{
+            "id": "task-1",
+            "title": "Revisar manana",
+            "status": "pending",
+            "priority": "media",
+            "details": "",
+            "result": "",
+        }]
+
+        with patch.object(agent, "load_state", return_value=state):
+            with patch.object(agent, "run_one_cycle", return_value={
+                "status": "final",
+                "content": "Silencio total.",
+                "used_tools": False,
+                "action_tools_used": False,
+                "looks_meta": False,
+                "needs_user_input": False,
+            }) as cycle_mock:
+                completed_cycles = agent.run_autonomous_session(cycles=5)
+
+        self.assertEqual(completed_cycles, 1)
+        self.assertEqual(cycle_mock.call_count, 1)
+
+    def test_run_autonomous_session_without_cycle_limit_uses_safety_cap(self):
+        state = memory.default_state()
+        state["tasks"] = [{
+            "id": "task-1",
+            "title": "Demo",
+            "status": "pending",
+            "priority": "media",
+            "details": "",
+            "result": "",
+        }]
+
+        cycle_results = [
+            {
+                "status": "final",
+                "content": f"Avance distinto {index}.",
+                "used_tools": True,
+                "action_tools_used": True,
+                "looks_meta": False,
+                "needs_user_input": False,
+            }
+            for index in range(agent.DEFAULT_AUTO_RUN_SAFETY_CYCLES + 1)
+        ]
+
+        with patch.object(agent, "load_state", return_value=state):
+            with patch.object(agent, "run_one_cycle", side_effect=cycle_results) as cycle_mock:
+                completed_cycles = agent.run_autonomous_session(cycles=None)
+
+        self.assertEqual(completed_cycles, agent.DEFAULT_AUTO_RUN_SAFETY_CYCLES)
+        self.assertEqual(cycle_mock.call_count, agent.DEFAULT_AUTO_RUN_SAFETY_CYCLES)
+
+    def test_run_autonomous_session_stops_on_repetitive_closing_response(self):
+        state = memory.default_state()
+        state["tasks"] = [{
+            "id": "task-1",
+            "title": "Demo",
+            "status": "pending",
+            "priority": "media",
+            "details": "",
+            "result": "",
+        }]
+
+        with patch.object(agent, "load_state", return_value=state):
+            with patch.object(agent, "run_one_cycle", return_value={
+                "status": "final",
+                "content": "No tengo nada mas que anadir. Silencio total.",
+                "used_tools": True,
+                "action_tools_used": True,
+                "looks_meta": False,
+                "needs_user_input": False,
+            }) as cycle_mock:
+                completed_cycles = agent.run_autonomous_session(cycles=5)
+
+        self.assertEqual(completed_cycles, 1)
+        self.assertEqual(cycle_mock.call_count, 1)
+
+    def test_run_autonomous_session_stops_on_repeated_final_signature(self):
+        state = memory.default_state()
+        state["tasks"] = [{
+            "id": "task-1",
+            "title": "Demo",
+            "status": "pending",
+            "priority": "media",
+            "details": "",
+            "result": "",
+        }]
+
+        with patch.object(agent, "load_state", return_value=state):
+            with patch.object(agent, "run_one_cycle", return_value={
+                "status": "final",
+                "content": "Avance repetido sin nueva informacion.",
+                "used_tools": True,
+                "action_tools_used": True,
+                "looks_meta": False,
+                "needs_user_input": False,
+            }) as cycle_mock:
+                completed_cycles = agent.run_autonomous_session(cycles=5)
+
+        self.assertEqual(completed_cycles, 2)
+        self.assertEqual(cycle_mock.call_count, 2)
+
     def test_run_autonomous_session_without_cycle_limit_runs_until_natural_stop(self):
         open_state = memory.default_state()
         open_state["tasks"] = [{
@@ -1239,6 +1344,7 @@ class AgentTestCase(unittest.TestCase):
                 "status": "final",
                 "content": "Avance hecho.",
                 "used_tools": True,
+                "action_tools_used": True,
                 "looks_meta": False,
                 "needs_user_input": False,
             }) as cycle_mock:
@@ -1263,6 +1369,7 @@ class AgentTestCase(unittest.TestCase):
                 "status": "final",
                 "content": "Avance hecho.",
                 "used_tools": True,
+                "action_tools_used": True,
                 "looks_meta": False,
                 "needs_user_input": False,
             }) as cycle_mock:
