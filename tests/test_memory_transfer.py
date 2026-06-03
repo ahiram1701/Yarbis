@@ -38,6 +38,14 @@ class MemoryTransferTestCase(unittest.TestCase):
                 "status": "pending",
                 "priority": "media",
             }],
+            "idea_projects": [{
+                "id": f"idea-{label.casefold()}",
+                "title": f"Idea {label}",
+                "kind": "mixto",
+                "status": "exploring",
+                "summary": f"Proyecto {label}",
+                "next_steps": [f"Paso idea {label}"],
+            }],
             "current_plan": [f"Plan {label}"],
             "runtime": {
                 "thinking": {
@@ -197,6 +205,10 @@ class MemoryTransferTestCase(unittest.TestCase):
         self.assertEqual(
             [task["id"] for task in state["tasks"]],
             ["task-destino", "task-origen"],
+        )
+        self.assertEqual(
+            [project["id"] for project in state["idea_projects"]],
+            ["idea-destino", "idea-origen"],
         )
         self.assertEqual(
             [message["content"] for message in state["messages"]],

@@ -152,6 +152,13 @@ def _desktop_app_stub(service_status=None):
 
 
 class YarbisDesktopTestCase(unittest.TestCase):
+    def test_first_run_templates_prioritize_ideas_and_projects(self):
+        joined_templates = "\n".join(yarbis_desktop.FirstRunDialog.GOAL_TEMPLATES)
+
+        self.assertIn("ideas de producto", joined_templates)
+        self.assertIn("proyectos personales", joined_templates)
+        self.assertIn("alternativas creativas", joined_templates)
+
     def test_instance_overview_rows_include_selector_columns_and_warnings(self):
         root = TEST_RUNTIME_DIR / f"desktop_instances_overview-{uuid4().hex[:8]}"
         with patch.object(yarbis_instance, "INSTANCES_ROOT", root):

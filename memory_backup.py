@@ -92,6 +92,7 @@ def state_counts(state: dict) -> dict:
         "notes": len(state.get("notes", [])),
         "tasks": len(state.get("tasks", [])),
         "plan_items": len(state.get("current_plan", [])),
+        "idea_projects": len(state.get("idea_projects", [])),
     }
 
 

@@ -1,4 +1,5 @@
 import difflib
+import html
 import json
 import os
 import re
@@ -22,11 +23,17 @@ import memory_transfer
 import yarbis_bus
 import yarbis_instance
 from memory import (
+    MAX_VISUAL_BOARD_EDGES,
+    MAX_VISUAL_BOARD_NODES,
+    MAX_VISUAL_BOARDS_PER_PROJECT,
+    VALID_IDEA_PROJECT_KIND,
+    VALID_IDEA_PROJECT_STATUS,
     VALID_INTERNET_MODES,
     VALID_SEARCH_PROVIDERS,
     VALID_SOCIAL_PLATFORMS,
     VALID_TASK_PRIORITY,
     VALID_TASK_STATUS,
+    VALID_VISUAL_BOARD_KIND,
     load_state,
     memory_protection_status as memory_protection_status_data,
     render_state_summary,
@@ -41,6 +48,7 @@ WORKSPACE_ROOT = Path(__file__).resolve().parent
 RUNTIME_DIR = yarbis_instance.runtime_dir()
 CHECKPOINTS_DIR = WORKSPACE_ROOT / ".yarbis_checkpoints"
 CODING_PROPOSALS_DIR = RUNTIME_DIR / "coding_proposals"
+VISUAL_BOARDS_DIR = RUNTIME_DIR / "visual_boards"
 MAX_LIST_ITEMS = 200
 MAX_READ_BYTES = 16_000
 MAX_WRITE_BYTES = 64_000
@@ -1751,6 +1759,7 @@ def _format_memory_backup_counts(counts: dict) -> str:
         f"mensajes={counts.get('messages', 0)}, "
         f"notas={counts.get('notes', 0)}, "
         f"tareas={counts.get('tasks', 0)}, "
+        f"proyectos={counts.get('idea_projects', 0)}, "
         f"plan={counts.get('plan_items', 0)}"
     )
 
@@ -2640,6 +2649,492 @@ def _find_task(tasks: list[dict], task_id: str) -> dict | None:
     return None
 
 
+def _find_idea_project(projects: list[dict], project_id: str) -> dict | None:
+    cleaned = str(project_id).strip().lower()
+    if not cleaned:
+        return None
+
+    for project in projects:
+        if project["id"].lower() == cleaned:
+            return project
+
+    prefix_matches = [project for project in projects if project["id"].lower().startswith(cleaned)]
+    if len(prefix_matches) == 1:
+        return prefix_matches[0]
+
+    title_matches = [project for project in projects if project["title"].strip().lower() == cleaned]
+    if len(title_matches) == 1:
+        return title_matches[0]
+
+    return None
+
+
+def _idea_project_text(value: str, *, current: str = "") -> str:
+    cleaned = str(value).strip()
+    if cleaned == CLEAR_VALUE:
+        return ""
+    return cleaned if cleaned else current
+
+
+def _idea_project_items(value: str, *, current: list[str] | None = None) -> list[str]:
+    cleaned = str(value).strip()
+    if cleaned == CLEAR_VALUE:
+        return []
+    return _split_text_items(cleaned) if cleaned else list(current or [])
+
+
+def _format_idea_project(project: dict) -> str:
+    lines = [
+        f"[{project['id']}] {project['title']}",
+        f"Tipo: {project['kind']}",
+        f"Estado: {project['status']}",
+    ]
+    for label, key in (
+        ("Resumen", "summary"),
+        ("Audiencia", "audience"),
+        ("Resultado deseado", "desired_outcome"),
+        ("Problema", "problem"),
+        ("Direccion elegida", "selected_direction"),
+    ):
+        if project.get(key):
+            lines.append(f"{label}: {project[key]}")
+
+    for label, key in (
+        ("Direcciones creativas", "creative_directions"),
+        ("Criterios de exito", "success_criteria"),
+        ("Restricciones", "constraints"),
+        ("Riesgos", "risks"),
+        ("Preguntas abiertas", "open_questions"),
+        ("Proximos pasos", "next_steps"),
+    ):
+        items = project.get(key) or []
+        if items:
+            lines.append(label + ":")
+            lines.extend(f"- {item}" for item in items)
+
+    if project.get("created_at"):
+        lines.append(f"Creado: {project['created_at']}")
+    if project.get("updated_at"):
+        lines.append(f"Actualizado: {project['updated_at']}")
+    return "\n".join(lines)
+
+
+VISUAL_BOARD_KIND_LABELS = {
+    "idea_canvas": "Canvas de idea",
+    "decision_matrix": "Matriz de decision",
+    "roadmap_kanban": "Roadmap/Kanban",
+    "mind_map": "Mapa mental",
+}
+
+
+def _utc_timestamp() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _visual_lines(items: list[str], fallback: str = "Por definir") -> str:
+    cleaned_items = [str(item).strip() for item in items if str(item).strip()]
+    if not cleaned_items:
+        return fallback
+    return "\n".join(f"- {item}" for item in cleaned_items)
+
+
+def _visual_text(value: str, fallback: str = "Por definir") -> str:
+    cleaned = str(value or "").strip()
+    return cleaned or fallback
+
+
+def _visual_node(
+    node_id: str,
+    title: str,
+    text: str,
+    x: int,
+    y: int,
+    *,
+    width: int = 240,
+    height: int = 132,
+    node_type: str = "note",
+    lane: str = "",
+    color: str = "",
+    meta: dict | None = None,
+) -> dict:
+    return {
+        "id": node_id,
+        "type": node_type,
+        "title": title,
+        "text": text,
+        "x": x,
+        "y": y,
+        "width": width,
+        "height": height,
+        "lane": lane,
+        "color": color,
+        "meta": meta or {},
+    }
+
+
+def _visual_edge(source: str, target: str, label: str = "") -> dict:
+    edge_id = re.sub(r"[^a-zA-Z0-9_.:-]+", "-", f"edge-{source}-{target}").strip("-")
+    return {
+        "id": edge_id[:80],
+        "source": source,
+        "target": target,
+        "label": label,
+    }
+
+
+def _default_visual_board_title(project: dict, board_kind: str) -> str:
+    label = VISUAL_BOARD_KIND_LABELS.get(board_kind, board_kind.replace("_", " ").title())
+    return f"{label}: {project.get('title', 'Proyecto')}"
+
+
+def _idea_canvas_template(project: dict) -> tuple[list[dict], list[dict], list[dict], dict]:
+    nodes = [
+        _visual_node("problem", "Problema", _visual_text(project.get("problem", "")), 40, 50),
+        _visual_node("audience", "Audiencia", _visual_text(project.get("audience", "")), 320, 50),
+        _visual_node("outcome", "Resultado", _visual_text(project.get("desired_outcome", "")), 600, 50),
+        _visual_node(
+            "direction",
+            "Direccion elegida",
+            _visual_text(project.get("selected_direction", "") or "\n".join(project.get("creative_directions", [])[:3])),
+            320,
+            230,
+            width=280,
+            height=150,
+            node_type="focus",
+        ),
+        _visual_node("criteria", "Criterios", _visual_lines(project.get("success_criteria", [])), 40, 430),
+        _visual_node("constraints", "Restricciones", _visual_lines(project.get("constraints", [])), 320, 430),
+        _visual_node("risks", "Riesgos", _visual_lines(project.get("risks", [])), 600, 430),
+        _visual_node("questions", "Preguntas", _visual_lines(project.get("open_questions", [])), 40, 610),
+        _visual_node("next_steps", "Proximos pasos", _visual_lines(project.get("next_steps", [])), 320, 610, width=520),
+    ]
+    edges = [
+        _visual_edge("problem", "direction"),
+        _visual_edge("audience", "direction"),
+        _visual_edge("outcome", "direction"),
+        _visual_edge("direction", "criteria"),
+        _visual_edge("direction", "risks"),
+        _visual_edge("direction", "next_steps"),
+    ]
+    return nodes, edges, [], {"x": 0, "y": 0, "zoom": 1}
+
+
+def _decision_matrix_template(project: dict) -> tuple[list[dict], list[dict], list[dict], dict]:
+    lanes = [
+        {"id": "quick_wins", "title": "Alto impacto / bajo esfuerzo", "x": 40, "y": 50, "width": 300, "height": 260},
+        {"id": "strategic_bets", "title": "Alto impacto / alto esfuerzo", "x": 370, "y": 50, "width": 300, "height": 260},
+        {"id": "fill_ins", "title": "Bajo impacto / bajo esfuerzo", "x": 40, "y": 340, "width": 300, "height": 260},
+        {"id": "reconsider", "title": "Bajo impacto / alto esfuerzo", "x": 370, "y": 340, "width": 300, "height": 260},
+    ]
+    directions = [
+        str(item).strip()
+        for item in project.get("creative_directions", [])
+        if str(item).strip()
+    ]
+    if project.get("selected_direction"):
+        directions.insert(0, str(project["selected_direction"]).strip())
+    if not directions:
+        directions = [project.get("summary") or project.get("title") or "Alternativa por definir"]
+
+    nodes = []
+    for index, direction in enumerate(directions[:12]):
+        lane = lanes[index % len(lanes)]
+        row = index // len(lanes)
+        nodes.append(_visual_node(
+            f"option-{index + 1}",
+            f"Alternativa {index + 1}",
+            (
+                f"{direction}\n\n"
+                "Impacto: por estimar\n"
+                "Esfuerzo: por estimar\n"
+                "Confianza: por validar\n"
+                "Riesgo: por revisar"
+            ),
+            int(lane["x"]) + 20,
+            int(lane["y"]) + 52 + (row * 120),
+            width=260,
+            height=108,
+            node_type="option",
+            lane=str(lane["id"]),
+            meta={
+                "impact": "",
+                "effort": "",
+                "confidence": "",
+                "risk": "",
+            },
+        ))
+    return nodes, [], lanes, {"x": 0, "y": 0, "zoom": 1}
+
+
+def _roadmap_kanban_template(project: dict) -> tuple[list[dict], list[dict], list[dict], dict]:
+    lane_specs = [
+        ("backlog", "Backlog"),
+        ("now", "Ahora"),
+        ("next", "Siguiente"),
+        ("later", "Despues"),
+        ("done", "Hecho"),
+    ]
+    lanes = [
+        {"id": lane_id, "title": title, "x": 40 + (index * 250), "y": 50, "width": 220, "height": 560}
+        for index, (lane_id, title) in enumerate(lane_specs)
+    ]
+    steps = [str(item).strip() for item in project.get("next_steps", []) if str(item).strip()]
+    if not steps:
+        steps = [project.get("selected_direction") or project.get("summary") or "Definir primer paso"]
+
+    nodes = []
+    for index, step in enumerate(steps[:20]):
+        lane_id = "now" if index == 0 else "next" if index == 1 else "later"
+        lane = next(item for item in lanes if item["id"] == lane_id)
+        lane_count = sum(1 for node in nodes if node["lane"] == lane_id)
+        nodes.append(_visual_node(
+            f"step-{index + 1}",
+            f"Paso {index + 1}",
+            step,
+            int(lane["x"]) + 14,
+            int(lane["y"]) + 52 + (lane_count * 122),
+            width=192,
+            height=96,
+            node_type="task",
+            lane=lane_id,
+        ))
+    return nodes, [], lanes, {"x": 0, "y": 0, "zoom": 0.85}
+
+
+def _mind_map_template(project: dict) -> tuple[list[dict], list[dict], list[dict], dict]:
+    center_text = project.get("summary") or project.get("selected_direction") or project.get("title", "")
+    nodes = [
+        _visual_node(
+            "center",
+            project.get("title", "Idea"),
+            _visual_text(center_text),
+            420,
+            300,
+            width=260,
+            height=140,
+            node_type="center",
+        ),
+        _visual_node("problem", "Problema", _visual_text(project.get("problem", "")), 80, 120),
+        _visual_node("audience", "Audiencia", _visual_text(project.get("audience", "")), 760, 120),
+        _visual_node("directions", "Direcciones", _visual_lines(project.get("creative_directions", [])), 80, 500),
+        _visual_node("risks", "Riesgos", _visual_lines(project.get("risks", [])), 760, 500),
+        _visual_node("questions", "Preguntas", _visual_lines(project.get("open_questions", [])), 420, 70),
+        _visual_node("steps", "Proximos pasos", _visual_lines(project.get("next_steps", [])), 420, 560),
+    ]
+    edges = [
+        _visual_edge("center", "problem"),
+        _visual_edge("center", "audience"),
+        _visual_edge("center", "directions"),
+        _visual_edge("center", "risks"),
+        _visual_edge("center", "questions"),
+        _visual_edge("center", "steps"),
+    ]
+    return nodes, edges, [], {"x": 0, "y": 0, "zoom": 0.9}
+
+
+def _build_visual_board(project: dict, board_kind: str, title: str = "") -> dict:
+    cleaned_kind = str(board_kind).strip().lower()
+    if cleaned_kind not in VALID_VISUAL_BOARD_KIND:
+        raise ValueError("Tipo de board visual invalido. Usa uno de: " + ", ".join(sorted(VALID_VISUAL_BOARD_KIND)))
+
+    template = {
+        "idea_canvas": _idea_canvas_template,
+        "decision_matrix": _decision_matrix_template,
+        "roadmap_kanban": _roadmap_kanban_template,
+        "mind_map": _mind_map_template,
+    }[cleaned_kind]
+    nodes, edges, lanes, viewport = template(project)
+    now = _utc_timestamp()
+    return {
+        "id": _new_id("board"),
+        "kind": cleaned_kind,
+        "title": str(title).strip() or _default_visual_board_title(project, cleaned_kind),
+        "nodes": nodes,
+        "edges": edges,
+        "lanes": lanes,
+        "viewport": viewport,
+        "export_paths": {},
+        "created_at": now,
+        "updated_at": now,
+    }
+
+
+def _find_visual_board(project: dict, board_id: str) -> dict | None:
+    cleaned = str(board_id).strip().lower()
+    if not cleaned:
+        return None
+
+    boards = project.get("visual_boards", []) or []
+    for board in boards:
+        if str(board.get("id", "")).lower() == cleaned:
+            return board
+
+    prefix_matches = [board for board in boards if str(board.get("id", "")).lower().startswith(cleaned)]
+    if len(prefix_matches) == 1:
+        return prefix_matches[0]
+
+    title_matches = [board for board in boards if str(board.get("title", "")).strip().lower() == cleaned]
+    if len(title_matches) == 1:
+        return title_matches[0]
+
+    return None
+
+
+def _visual_board_summary(board: dict) -> str:
+    return (
+        f"[{board.get('id', '')}] {board.get('title', 'Board visual')} "
+        f"(tipo={board.get('kind', '-')}, nodos={len(board.get('nodes', []) or [])}, "
+        f"edges={len(board.get('edges', []) or [])})"
+    )
+
+
+def _visual_export_dir(project_id: str) -> Path:
+    safe_project_id = re.sub(r"[^a-zA-Z0-9_.:-]+", "-", str(project_id).strip()).strip("-") or "project"
+    export_dir = VISUAL_BOARDS_DIR / safe_project_id
+    export_dir.mkdir(parents=True, exist_ok=True)
+    return export_dir
+
+
+def _visual_board_bounds(board: dict) -> tuple[float, float, float, float]:
+    min_x = 0.0
+    min_y = 0.0
+    max_x = 960.0
+    max_y = 720.0
+    items = list(board.get("lanes", []) or []) + list(board.get("nodes", []) or [])
+    if not items:
+        return min_x, min_y, max_x, max_y
+
+    min_x = min(float(item.get("x", 0)) for item in items)
+    min_y = min(float(item.get("y", 0)) for item in items)
+    max_x = max(float(item.get("x", 0)) + float(item.get("width", 220)) for item in items)
+    max_y = max(float(item.get("y", 0)) + float(item.get("height", 120)) for item in items)
+    margin = 60.0
+    return min_x - margin, min_y - margin, max_x + margin, max_y + margin
+
+
+def _wrap_svg_lines(value: str, line_chars: int = 30, max_lines: int = 6) -> list[str]:
+    words = str(value or "").replace("\r", "").split()
+    lines = []
+    current = ""
+    for word in words:
+        candidate = f"{current} {word}".strip()
+        if current and len(candidate) > line_chars:
+            lines.append(current)
+            current = word
+        else:
+            current = candidate
+        if len(lines) >= max_lines:
+            break
+    if current and len(lines) < max_lines:
+        lines.append(current)
+    if not lines:
+        lines = [""]
+    return lines[:max_lines]
+
+
+def _svg_text_block(lines: list[str], x: float, y: float, *, css_class: str, line_height: int = 17) -> str:
+    rendered = []
+    for index, line in enumerate(lines):
+        rendered.append(
+            f'<text class="{css_class}" x="{x:.1f}" y="{(y + index * line_height):.1f}">'
+            f"{html.escape(line)}</text>"
+        )
+    return "\n".join(rendered)
+
+
+def _render_visual_board_svg(board: dict) -> str:
+    min_x, min_y, max_x, max_y = _visual_board_bounds(board)
+    width = max(320.0, max_x - min_x)
+    height = max(240.0, max_y - min_y)
+    nodes_by_id = {str(node.get("id", "")): node for node in board.get("nodes", []) or []}
+    parts = [
+        '<?xml version="1.0" encoding="UTF-8"?>',
+        (
+            f'<svg xmlns="http://www.w3.org/2000/svg" width="{width:.0f}" height="{height:.0f}" '
+            f'viewBox="{min_x:.1f} {min_y:.1f} {width:.1f} {height:.1f}" role="img">'
+        ),
+        "<defs>",
+        '<marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">',
+        '<path d="M 0 0 L 10 5 L 0 10 z" fill="#6d7a8d" />',
+        "</marker>",
+        "</defs>",
+        "<style>",
+        ".background{fill:#0f1115}.lane{fill:#151b24;stroke:#2f3948;stroke-width:1.2}.laneTitle{fill:#d9e2ef;font:700 15px system-ui}.edge{stroke:#6d7a8d;stroke-width:2;fill:none}.node{fill:#202838;stroke:#526074;stroke-width:1.4}.node.focus,.node.center{fill:#243552;stroke:#6fa1ff}.node.option{fill:#223247}.node.task{fill:#20362d}.title{fill:#f7f9fc;font:700 15px system-ui}.body{fill:#c0c9d6;font:12px system-ui}",
+        "</style>",
+        f'<rect class="background" x="{min_x:.1f}" y="{min_y:.1f}" width="{width:.1f}" height="{height:.1f}" />',
+    ]
+
+    for lane in board.get("lanes", []) or []:
+        x = float(lane.get("x", 0))
+        y = float(lane.get("y", 0))
+        lane_width = float(lane.get("width", 260))
+        lane_height = float(lane.get("height", 420))
+        parts.append(
+            f'<rect class="lane" x="{x:.1f}" y="{y:.1f}" width="{lane_width:.1f}" '
+            f'height="{lane_height:.1f}" rx="8" />'
+        )
+        parts.append(
+            f'<text class="laneTitle" x="{x + 14:.1f}" y="{y + 28:.1f}">'
+            f"{html.escape(str(lane.get('title', 'Lane')))}</text>"
+        )
+
+    for edge in board.get("edges", []) or []:
+        source = nodes_by_id.get(str(edge.get("source", "")))
+        target = nodes_by_id.get(str(edge.get("target", "")))
+        if not source or not target:
+            continue
+        x1 = float(source.get("x", 0)) + float(source.get("width", 220)) / 2
+        y1 = float(source.get("y", 0)) + float(source.get("height", 120)) / 2
+        x2 = float(target.get("x", 0)) + float(target.get("width", 220)) / 2
+        y2 = float(target.get("y", 0)) + float(target.get("height", 120)) / 2
+        parts.append(
+            f'<line class="edge" x1="{x1:.1f}" y1="{y1:.1f}" x2="{x2:.1f}" y2="{y2:.1f}" '
+            'marker-end="url(#arrow)" />'
+        )
+
+    for node in board.get("nodes", []) or []:
+        x = float(node.get("x", 0))
+        y = float(node.get("y", 0))
+        node_width = float(node.get("width", 220))
+        node_height = float(node.get("height", 120))
+        node_type = html.escape(str(node.get("type", "note")))
+        parts.append(
+            f'<rect class="node {node_type}" x="{x:.1f}" y="{y:.1f}" width="{node_width:.1f}" '
+            f'height="{node_height:.1f}" rx="8" />'
+        )
+        parts.append(_svg_text_block([str(node.get("title", "Nodo"))], x + 14, y + 26, css_class="title"))
+        body_lines = _wrap_svg_lines(str(node.get("text", "")), max(18, int(node_width // 8)), 6)
+        parts.append(_svg_text_block(body_lines, x + 14, y + 52, css_class="body"))
+
+    parts.append("</svg>")
+    return "\n".join(parts)
+
+
+def _render_visual_board_html(project: dict, board: dict, svg_text: str) -> str:
+    data = json.dumps({"project": project, "board": board}, ensure_ascii=False, indent=2)
+    return "\n".join([
+        "<!doctype html>",
+        '<html lang="es">',
+        "<head>",
+        '<meta charset="utf-8">',
+        '<meta name="viewport" content="width=device-width, initial-scale=1">',
+        f"<title>{html.escape(str(board.get('title', 'Board visual')))}</title>",
+        "<style>",
+        "body{margin:0;background:#0f1115;color:#f5f7fa;font-family:system-ui,-apple-system,Segoe UI,sans-serif}main{max-width:1200px;margin:0 auto;padding:18px}h1{font-size:22px}pre{white-space:pre-wrap;background:#171d27;border:1px solid #2f3948;border-radius:8px;padding:12px;overflow:auto}svg{max-width:100%;height:auto;border:1px solid #2f3948;border-radius:8px}",
+        "</style>",
+        "</head>",
+        "<body>",
+        "<main>",
+        f"<h1>{html.escape(str(board.get('title', 'Board visual')))}</h1>",
+        svg_text,
+        "<h2>Datos</h2>",
+        f"<pre>{html.escape(data)}</pre>",
+        "</main>",
+        "</body>",
+        "</html>",
+    ])
+
+
 def agent_overview() -> str:
     """
     Devuelve un resumen del estado personal y operativo del agente.
@@ -2684,6 +3179,486 @@ def update_goal(new_goal: str) -> str:
 
     state_transaction("update_goal", mutate)
     return "Objetivo actualizado. Contexto operativo reiniciado para el nuevo objetivo."
+
+
+def create_idea_project(
+    title: str,
+    kind: str = "mixto",
+    summary: str = "",
+    audience: str = "",
+    desired_outcome: str = "",
+    problem: str = "",
+    creative_directions: str = "",
+    selected_direction: str = "",
+    success_criteria: str = "",
+    constraints: str = "",
+    risks: str = "",
+    open_questions: str = "",
+    next_steps: str = "",
+    status: str = "exploring",
+) -> str:
+    """
+    Crea un proyecto de idea para explorar producto, negocio o proyectos personales.
+
+    Args:
+        title (str): Nombre breve de la idea o proyecto.
+        kind (str): producto_negocio, vida_proyecto, mixto u otro.
+        summary (str): Brief corto de la idea.
+        audience (str): Audiencia o personas beneficiarias.
+        desired_outcome (str): Resultado deseado.
+        problem (str): Problema u oportunidad que se busca resolver.
+        creative_directions (str): Direcciones alternativas separadas por lineas, comas o punto y coma.
+        selected_direction (str): Direccion elegida, si ya existe.
+        success_criteria (str): Criterios de exito separados por lineas, comas o punto y coma.
+        constraints (str): Restricciones separadas por lineas, comas o punto y coma.
+        risks (str): Riesgos separados por lineas, comas o punto y coma.
+        open_questions (str): Preguntas abiertas separadas por lineas, comas o punto y coma.
+        next_steps (str): Proximos pasos separados por lineas, comas o punto y coma.
+        status (str): exploring, planned, active, paused, done o archived.
+
+    Returns:
+        str: Confirmacion con el proyecto creado.
+    """
+    cleaned_title = str(title).strip()
+    if not cleaned_title:
+        return "Debes indicar un titulo para el proyecto de idea."
+
+    cleaned_kind = str(kind).strip().lower() or "mixto"
+    if cleaned_kind not in VALID_IDEA_PROJECT_KIND:
+        return "Tipo invalido. Usa uno de: " + ", ".join(sorted(VALID_IDEA_PROJECT_KIND))
+
+    cleaned_status = str(status).strip().lower() or "exploring"
+    if cleaned_status not in VALID_IDEA_PROJECT_STATUS:
+        return "Estado invalido. Usa uno de: " + ", ".join(sorted(VALID_IDEA_PROJECT_STATUS))
+
+    now = datetime.now(timezone.utc).isoformat()
+    project = {
+        "id": _new_id("idea"),
+        "title": cleaned_title,
+        "kind": cleaned_kind,
+        "status": cleaned_status,
+        "summary": str(summary).strip(),
+        "audience": str(audience).strip(),
+        "desired_outcome": str(desired_outcome).strip(),
+        "problem": str(problem).strip(),
+        "creative_directions": _split_text_items(creative_directions),
+        "selected_direction": str(selected_direction).strip(),
+        "success_criteria": _split_text_items(success_criteria),
+        "constraints": _split_text_items(constraints),
+        "risks": _split_text_items(risks),
+        "open_questions": _split_text_items(open_questions),
+        "next_steps": _split_text_items(next_steps),
+        "created_at": now,
+        "updated_at": now,
+    }
+
+    state_transaction("create_idea_project", lambda state: state["idea_projects"].append(project))
+    return "Proyecto de idea creado.\n" + _format_idea_project(project)
+
+
+def list_idea_projects(status: str = "open", limit: int = 20) -> str:
+    """
+    Lista proyectos de ideas guardados.
+
+    Args:
+        status (str): open, all o un estado concreto.
+        limit (int): Maximo de proyectos a mostrar.
+
+    Returns:
+        str: Listado resumido de proyectos.
+    """
+    state = load_state()
+    projects = state.get("idea_projects", [])
+    cleaned_status = str(status).strip().lower() or "open"
+    if cleaned_status == "open":
+        projects = [project for project in projects if project["status"] not in {"done", "archived"}]
+    elif cleaned_status != "all":
+        if cleaned_status not in VALID_IDEA_PROJECT_STATUS:
+            return "Estado invalido. Usa open, all o uno de: " + ", ".join(sorted(VALID_IDEA_PROJECT_STATUS))
+        projects = [project for project in projects if project["status"] == cleaned_status]
+
+    if not projects:
+        return "No hay proyectos de ideas que coincidan."
+
+    try:
+        normalized_limit = max(1, min(50, int(limit)))
+    except (TypeError, ValueError):
+        normalized_limit = 20
+
+    lines = []
+    for project in projects[:normalized_limit]:
+        summary = project["summary"][:180]
+        if len(project["summary"]) > 180:
+            summary += "..."
+        lines.append(
+            f"[{project['id']}] {project['title']} "
+            f"(tipo={project['kind']}, estado={project['status']})"
+            + (f" - {summary}" if summary else "")
+        )
+    return "\n".join(lines)
+
+
+def get_idea_project(project_id: str) -> str:
+    """
+    Muestra un proyecto de idea completo por id, prefijo unico o titulo exacto.
+
+    Args:
+        project_id (str): Id, prefijo o titulo exacto.
+
+    Returns:
+        str: Proyecto completo.
+    """
+    state = load_state()
+    project = _find_idea_project(state.get("idea_projects", []), project_id)
+    if not project:
+        return f"No encontre un proyecto de idea con id, prefijo o titulo: {project_id}"
+    return _format_idea_project(project)
+
+
+def update_idea_project(
+    project_id: str,
+    title: str = "",
+    kind: str = "",
+    status: str = "",
+    summary: str = "",
+    audience: str = "",
+    desired_outcome: str = "",
+    problem: str = "",
+    creative_directions: str = "",
+    selected_direction: str = "",
+    success_criteria: str = "",
+    constraints: str = "",
+    risks: str = "",
+    open_questions: str = "",
+    next_steps: str = "",
+) -> str:
+    """
+    Actualiza un proyecto de idea. Usa [clear] para limpiar un campo o lista.
+
+    Args:
+        project_id (str): Id, prefijo o titulo exacto del proyecto.
+
+    Returns:
+        str: Proyecto actualizado.
+    """
+    cleaned_kind = str(kind).strip().lower()
+    if cleaned_kind and cleaned_kind != CLEAR_VALUE and cleaned_kind not in VALID_IDEA_PROJECT_KIND:
+        return "Tipo invalido. Usa uno de: " + ", ".join(sorted(VALID_IDEA_PROJECT_KIND))
+
+    cleaned_status = str(status).strip().lower()
+    if cleaned_status and cleaned_status != CLEAR_VALUE and cleaned_status not in VALID_IDEA_PROJECT_STATUS:
+        return "Estado invalido. Usa uno de: " + ", ".join(sorted(VALID_IDEA_PROJECT_STATUS))
+
+    def mutate(state):
+        project = _find_idea_project(state.get("idea_projects", []), project_id)
+        if not project:
+            return f"No encontre un proyecto de idea con id, prefijo o titulo: {project_id}"
+
+        if str(title).strip():
+            project["title"] = str(title).strip()
+        if cleaned_kind and cleaned_kind != CLEAR_VALUE:
+            project["kind"] = cleaned_kind
+        if cleaned_status and cleaned_status != CLEAR_VALUE:
+            project["status"] = cleaned_status
+
+        for field_name, value in (
+            ("summary", summary),
+            ("audience", audience),
+            ("desired_outcome", desired_outcome),
+            ("problem", problem),
+            ("selected_direction", selected_direction),
+        ):
+            project[field_name] = _idea_project_text(value, current=project.get(field_name, ""))
+
+        for field_name, value in (
+            ("creative_directions", creative_directions),
+            ("success_criteria", success_criteria),
+            ("constraints", constraints),
+            ("risks", risks),
+            ("open_questions", open_questions),
+            ("next_steps", next_steps),
+        ):
+            project[field_name] = _idea_project_items(value, current=project.get(field_name, []))
+
+        project["updated_at"] = datetime.now(timezone.utc).isoformat()
+        return "Proyecto de idea actualizado.\n" + _format_idea_project(project)
+
+    return state_transaction("update_idea_project", mutate)
+
+
+def promote_idea_project_to_work(project_id: str, priority: str = "media") -> str:
+    """
+    Convierte los proximos pasos de un proyecto de idea en plan actual y tareas.
+
+    Args:
+        project_id (str): Id, prefijo o titulo exacto del proyecto.
+        priority (str): Prioridad para tareas nuevas: alta, media o baja.
+
+    Returns:
+        str: Resumen del plan y tareas creadas.
+    """
+    cleaned_priority = str(priority).strip().lower() or "media"
+    if cleaned_priority not in VALID_TASK_PRIORITY:
+        cleaned_priority = "media"
+
+    def mutate(state):
+        project = _find_idea_project(state.get("idea_projects", []), project_id)
+        if not project:
+            return f"No encontre un proyecto de idea con id, prefijo o titulo: {project_id}"
+
+        next_steps = [step for step in project.get("next_steps", []) if str(step).strip()]
+        if not next_steps:
+            return "El proyecto no tiene proximos pasos para convertir en plan o tareas."
+
+        now = datetime.now(timezone.utc).isoformat()
+        project["status"] = "active"
+        project["updated_at"] = now
+        state["current_plan"] = next_steps
+
+        existing_titles = {
+            str(task.get("title", "")).strip().casefold()
+            for task in state.get("tasks", [])
+        }
+        created_tasks = []
+        for step in next_steps:
+            marker = step.casefold()
+            if marker in existing_titles:
+                continue
+            task = {
+                "id": _new_id("task"),
+                "title": step,
+                "details": f"Proyecto de idea: {project['title']} ({project['id']})",
+                "status": "pending",
+                "priority": cleaned_priority,
+                "result": "",
+            }
+            state["tasks"].append(task)
+            created_tasks.append(task)
+            existing_titles.add(marker)
+
+        lines = [
+            "Proyecto de idea activado.",
+            f"Proyecto: [{project['id']}] {project['title']}",
+            f"Plan actual: {len(next_steps)} paso(s)",
+            f"Tareas nuevas: {len(created_tasks)}",
+        ]
+        for task in created_tasks:
+            lines.append(f"- [{task['id']}] {task['title']}")
+        return "\n".join(lines)
+
+    return state_transaction("promote_idea_project_to_work", mutate)
+
+
+def create_project_visual_board(project_id: str, board_kind: str, title: str = "") -> str:
+    """
+    Crea un board visual ligado a un proyecto de idea.
+
+    Args:
+        project_id (str): Id, prefijo o titulo exacto del proyecto.
+        board_kind (str): idea_canvas, decision_matrix, roadmap_kanban o mind_map.
+        title (str): Titulo opcional del board.
+
+    Returns:
+        str: Confirmacion con el board creado.
+    """
+    cleaned_kind = str(board_kind).strip().lower()
+    if cleaned_kind not in VALID_VISUAL_BOARD_KIND:
+        return "Tipo de board visual invalido. Usa uno de: " + ", ".join(sorted(VALID_VISUAL_BOARD_KIND))
+
+    def mutate(state):
+        project = _find_idea_project(state.get("idea_projects", []), project_id)
+        if not project:
+            return f"No encontre un proyecto de idea con id, prefijo o titulo: {project_id}"
+
+        boards = project.setdefault("visual_boards", [])
+        if len(boards) >= MAX_VISUAL_BOARDS_PER_PROJECT:
+            return f"El proyecto ya tiene el maximo de {MAX_VISUAL_BOARDS_PER_PROJECT} boards visuales."
+
+        board = _build_visual_board(project, cleaned_kind, title=title)
+        boards.append(board)
+        project["updated_at"] = _utc_timestamp()
+        return "Board visual creado.\n" + _visual_board_summary(board)
+
+    return state_transaction("create_project_visual_board", mutate)
+
+
+def list_project_visual_boards(project_id: str) -> str:
+    """
+    Lista los boards visuales de un proyecto de idea.
+
+    Args:
+        project_id (str): Id, prefijo o titulo exacto del proyecto.
+
+    Returns:
+        str: Listado resumido de boards.
+    """
+    state = load_state()
+    project = _find_idea_project(state.get("idea_projects", []), project_id)
+    if not project:
+        return f"No encontre un proyecto de idea con id, prefijo o titulo: {project_id}"
+
+    boards = project.get("visual_boards", []) or []
+    if not boards:
+        return f"El proyecto [{project['id']}] {project['title']} no tiene boards visuales."
+
+    lines = [f"Boards visuales de [{project['id']}] {project['title']}:"]
+    lines.extend(f"- {_visual_board_summary(board)}" for board in boards)
+    return "\n".join(lines)
+
+
+def get_project_visual_board(project_id: str, board_id: str) -> str:
+    """
+    Devuelve un board visual completo como JSON.
+
+    Args:
+        project_id (str): Id, prefijo o titulo exacto del proyecto.
+        board_id (str): Id, prefijo o titulo exacto del board.
+
+    Returns:
+        str: JSON del board visual.
+    """
+    state = load_state()
+    project = _find_idea_project(state.get("idea_projects", []), project_id)
+    if not project:
+        return f"No encontre un proyecto de idea con id, prefijo o titulo: {project_id}"
+
+    board = _find_visual_board(project, board_id)
+    if not board:
+        return f"No encontre un board visual con id, prefijo o titulo: {board_id}"
+
+    return json.dumps(board, ensure_ascii=False, indent=2)
+
+
+def update_project_visual_board(project_id: str, board_id: str, board_json: str) -> str:
+    """
+    Actualiza un board visual con JSON generado por la UI o por el agente.
+
+    Args:
+        project_id (str): Id, prefijo o titulo exacto del proyecto.
+        board_id (str): Id, prefijo o titulo exacto del board.
+        board_json (str): JSON del board con nodes, edges, lanes y viewport.
+
+    Returns:
+        str: Confirmacion de actualizacion.
+    """
+    try:
+        parsed = json.loads(str(board_json or "{}"))
+    except json.JSONDecodeError as exc:
+        return f"JSON de board visual invalido: {exc}"
+    if not isinstance(parsed, dict):
+        return "JSON de board visual invalido: debe ser un objeto."
+
+    def mutate(state):
+        project = _find_idea_project(state.get("idea_projects", []), project_id)
+        if not project:
+            return f"No encontre un proyecto de idea con id, prefijo o titulo: {project_id}"
+
+        boards = project.get("visual_boards", []) or []
+        board = _find_visual_board(project, board_id)
+        if not board:
+            return f"No encontre un board visual con id, prefijo o titulo: {board_id}"
+
+        try:
+            board_index = boards.index(board)
+        except ValueError:
+            return f"No encontre un board visual con id, prefijo o titulo: {board_id}"
+
+        now = _utc_timestamp()
+        next_board = {**board, **parsed}
+        next_board["id"] = board.get("id", "")
+        requested_kind = str(parsed.get("kind", board.get("kind", "idea_canvas"))).strip().lower()
+        next_board["kind"] = requested_kind if requested_kind in VALID_VISUAL_BOARD_KIND else board.get("kind", "idea_canvas")
+        next_board["created_at"] = board.get("created_at", "") or now
+        next_board["updated_at"] = now
+        boards[board_index] = next_board
+        project["visual_boards"] = boards
+        project["updated_at"] = now
+        return "Board visual actualizado.\n" + _visual_board_summary(next_board)
+
+    return state_transaction("update_project_visual_board", mutate)
+
+
+def export_project_visual_board(
+    project_id: str,
+    board_id: str,
+    formats: str = "html,svg,json",
+    open_file: bool = False,
+) -> str:
+    """
+    Exporta un board visual a archivos locales HTML, SVG y/o JSON.
+
+    Args:
+        project_id (str): Id, prefijo o titulo exacto del proyecto.
+        board_id (str): Id, prefijo o titulo exacto del board.
+        formats (str): Formatos separados por coma: html, svg, json.
+        open_file (bool): Si es True, abre el HTML exportado o el primer archivo generado.
+
+    Returns:
+        str: Rutas exportadas.
+    """
+    requested_formats = {
+        item.strip().lower()
+        for item in re.split(r"[\n,;]+", str(formats or "html,svg,json"))
+        if item.strip()
+    }
+    if not requested_formats:
+        requested_formats = {"html", "svg", "json"}
+    invalid_formats = requested_formats - {"html", "svg", "json"}
+    if invalid_formats:
+        return "Formato de exportacion invalido. Usa html, svg o json."
+
+    state = load_state()
+    project = _find_idea_project(state.get("idea_projects", []), project_id)
+    if not project:
+        return f"No encontre un proyecto de idea con id, prefijo o titulo: {project_id}"
+    board = _find_visual_board(project, board_id)
+    if not board:
+        return f"No encontre un board visual con id, prefijo o titulo: {board_id}"
+
+    export_dir = _visual_export_dir(project["id"])
+    safe_board_id = re.sub(r"[^a-zA-Z0-9_.:-]+", "-", str(board.get("id", "board"))).strip("-") or "board"
+    exported_paths = {}
+    svg_text = _render_visual_board_svg(board)
+
+    if "json" in requested_formats:
+        json_path = export_dir / f"{safe_board_id}.json"
+        json_path.write_text(json.dumps(board, ensure_ascii=False, indent=2), encoding="utf-8")
+        exported_paths["json"] = str(json_path)
+    if "svg" in requested_formats:
+        svg_path = export_dir / f"{safe_board_id}.svg"
+        svg_path.write_text(svg_text, encoding="utf-8")
+        exported_paths["svg"] = str(svg_path)
+    if "html" in requested_formats:
+        html_path = export_dir / f"{safe_board_id}.html"
+        html_path.write_text(_render_visual_board_html(project, board, svg_text), encoding="utf-8")
+        exported_paths["html"] = str(html_path)
+
+    now = _utc_timestamp()
+
+    def record_export_paths(state):
+        current_project = _find_idea_project(state.get("idea_projects", []), project_id)
+        if not current_project:
+            return None
+        current_board = _find_visual_board(current_project, board_id)
+        if not current_board:
+            return None
+        current_board["export_paths"] = {**(current_board.get("export_paths", {}) or {}), **exported_paths}
+        current_board["updated_at"] = now
+        current_project["updated_at"] = now
+        return None
+
+    state_transaction("export_project_visual_board", record_export_paths)
+
+    opened_text = ""
+    if open_file and exported_paths:
+        preferred_path = exported_paths.get("html") or next(iter(exported_paths.values()))
+        opened_text = "\n" + open_system_target_impl(preferred_path)
+
+    lines = ["Board visual exportado:"]
+    lines.extend(f"- {key}: {path}" for key, path in exported_paths.items())
+    if opened_text:
+        lines.append(opened_text.strip())
+    return "\n".join(lines)
 
 
 def self_overview(refresh: bool = False) -> str:

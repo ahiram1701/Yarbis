@@ -115,6 +115,7 @@ class SessionTestCase(unittest.TestCase):
             "messages": [{"role": "assistant", "content": "avance previo"}],
             "tasks": [{"id": "task-1", "title": "Vieja tarea", "status": "pending"}],
             "current_plan": ["Paso 1"],
+            "idea_projects": [{"id": "idea-1", "title": "Idea viva", "status": "exploring"}],
             "last_result": "resultado anterior",
             "awaiting_user_input": {
                 "pending": True,
@@ -131,6 +132,7 @@ class SessionTestCase(unittest.TestCase):
         self.assertEqual(state["goal"], "Nuevo objetivo claro")
         self.assertEqual(state["tasks"], [])
         self.assertEqual(state["current_plan"], [])
+        self.assertEqual(state["idea_projects"][0]["title"], "Idea viva")
         self.assertEqual(state["last_result"], "")
         self.assertFalse(state["awaiting_user_input"]["pending"])
         self.assertEqual(len(state["messages"]), 1)

@@ -58,10 +58,26 @@ MAX_TASK_DETAILS_CHARS = 1_200
 MAX_TASK_RESULT_CHARS = 600
 MAX_PLAN_ITEMS = 12
 MAX_PLAN_ITEM_CHARS = 220
+MAX_IDEA_PROJECTS = 40
+MAX_IDEA_PROJECT_TITLE_CHARS = 160
+MAX_IDEA_PROJECT_TEXT_CHARS = 1_200
+MAX_IDEA_PROJECT_ITEM_CHARS = 320
+MAX_IDEA_PROJECT_ITEMS = 12
+MAX_IDEA_PROJECT_TIMESTAMP_CHARS = 80
+MAX_VISUAL_BOARDS_PER_PROJECT = 8
+MAX_VISUAL_BOARD_TITLE_CHARS = 160
+MAX_VISUAL_BOARD_ID_CHARS = 80
+MAX_VISUAL_BOARD_KIND_CHARS = 40
+MAX_VISUAL_BOARD_NODES = 80
+MAX_VISUAL_BOARD_EDGES = 120
+MAX_VISUAL_BOARD_LANES = 20
+MAX_VISUAL_BOARD_NODE_TEXT_CHARS = 400
+MAX_VISUAL_BOARD_META_ITEMS = 16
+MAX_VISUAL_BOARD_EXPORT_PATH_CHARS = 1_000
 MAX_AWAITING_INPUT_QUESTION_CHARS = 280
 MAX_AWAITING_INPUT_REASON_CHARS = 240
 MAX_AWAITING_INPUT_FIELDS = 8
-STATE_SCHEMA_VERSION = 3
+STATE_SCHEMA_VERSION = 5
 DEFAULT_MAX_STEPS_PER_CYCLE = None
 LEGACY_DEFAULT_AUTO_CYCLES = 5
 DEFAULT_AUTO_CYCLES = None
@@ -107,6 +123,9 @@ MAX_OPENROUTER_API_KEY_ENV_VAR_CHARS = MAX_OLLAMA_API_KEY_ENV_VAR_CHARS
 MAX_OPENROUTER_FALLBACK_MODELS = MAX_OLLAMA_FALLBACK_MODELS
 VALID_TASK_STATUS = {"pending", "in_progress", "blocked", "done"}
 VALID_TASK_PRIORITY = {"alta", "media", "baja"}
+VALID_IDEA_PROJECT_STATUS = {"exploring", "planned", "active", "paused", "done", "archived"}
+VALID_IDEA_PROJECT_KIND = {"producto_negocio", "vida_proyecto", "mixto", "otro"}
+VALID_VISUAL_BOARD_KIND = {"idea_canvas", "decision_matrix", "roadmap_kanban", "mind_map"}
 VALID_UI_THEME = {"light", "dark"}
 VALID_NOTIFICATION_CHANNELS = {"windows", "ntfy", "telegram"}
 VALID_NTFY_PRIORITIES = {"", "min", "low", "default", "high", "urgent", "1", "2", "3", "4", "5"}
@@ -271,6 +290,7 @@ def default_state():
         "notes": [],
         "tasks": [],
         "current_plan": [],
+        "idea_projects": [],
         "awaiting_user_input": {
             "pending": False,
             "question": "",
@@ -600,6 +620,8 @@ def _normalize_string_list(value, item_limit: int, char_limit: int) -> list[str]
 
         normalized.append(normalized_item)
         seen.add(lowered)
+        if len(normalized) >= item_limit:
+            break
 
     return normalized
 
@@ -657,6 +679,289 @@ def _normalize_task(task):
         "status": status,
         "priority": priority,
         "result": result,
+    }
+
+
+def _visual_text(value, limit: int, *, strip: bool = True) -> str:
+    text = _coerce_text(value, limit)
+    if strip:
+        text = text.strip()
+    if limit > 0 and len(text) > limit:
+        return text[:limit]
+    return text
+
+
+def _visual_number(value, default: float, minimum: float, maximum: float) -> float:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        parsed = default
+    return max(minimum, min(maximum, parsed))
+
+
+def _visual_id(value, fallback_prefix: str, fallback_seed: str, seen: set[str] | None = None) -> str:
+    cleaned = _visual_text(value, MAX_VISUAL_BOARD_ID_CHARS).strip()
+    cleaned = re.sub(r"[^a-zA-Z0-9_.:-]+", "-", cleaned).strip("-")
+    if not cleaned:
+        cleaned = _fallback_id(fallback_prefix, fallback_seed)
+    if len(cleaned) > MAX_VISUAL_BOARD_ID_CHARS:
+        cleaned = cleaned[:MAX_VISUAL_BOARD_ID_CHARS].rstrip("-")
+
+    if seen is None or cleaned not in seen:
+        return cleaned
+
+    base = cleaned[: max(1, MAX_VISUAL_BOARD_ID_CHARS - 8)].rstrip("-") or fallback_prefix
+    suffix = 2
+    candidate = f"{base}-{suffix}"
+    while candidate in seen:
+        suffix += 1
+        candidate = f"{base}-{suffix}"
+    return candidate[:MAX_VISUAL_BOARD_ID_CHARS]
+
+
+def _normalize_visual_meta(meta) -> dict:
+    if not isinstance(meta, dict):
+        return {}
+
+    normalized = {}
+    for raw_key, raw_value in meta.items():
+        key = _visual_text(raw_key, 80)
+        if not key:
+            continue
+
+        if isinstance(raw_value, bool) or raw_value is None:
+            value = raw_value
+        elif isinstance(raw_value, (int, float)):
+            value = raw_value
+        elif isinstance(raw_value, list):
+            value = [
+                _visual_text(item, MAX_VISUAL_BOARD_NODE_TEXT_CHARS)
+                for item in raw_value[:MAX_VISUAL_BOARD_META_ITEMS]
+            ]
+        else:
+            value = _visual_text(raw_value, MAX_VISUAL_BOARD_NODE_TEXT_CHARS)
+
+        normalized[key] = value
+        if len(normalized) >= MAX_VISUAL_BOARD_META_ITEMS:
+            break
+
+    return normalized
+
+
+def _normalize_visual_node(node, seen: set[str]) -> dict | None:
+    if not isinstance(node, dict):
+        return None
+
+    title = _visual_text(node.get("title", node.get("label", "")), MAX_VISUAL_BOARD_TITLE_CHARS)
+    text = _visual_text(node.get("text", ""), MAX_VISUAL_BOARD_NODE_TEXT_CHARS)
+    node_type = _visual_text(node.get("type", "note"), 40).lower() or "note"
+    node_type = re.sub(r"[^a-z0-9_-]+", "-", node_type).strip("-") or "note"
+    node_id = _visual_id(node.get("id", ""), "node", title or text or node_type, seen)
+    seen.add(node_id)
+
+    return {
+        "id": node_id,
+        "type": node_type,
+        "title": title or "Nodo",
+        "text": text,
+        "x": _visual_number(node.get("x", 0), 0, -20_000, 20_000),
+        "y": _visual_number(node.get("y", 0), 0, -20_000, 20_000),
+        "width": _visual_number(node.get("width", 220), 220, 80, 800),
+        "height": _visual_number(node.get("height", 120), 120, 60, 600),
+        "lane": _visual_text(node.get("lane", ""), MAX_VISUAL_BOARD_ID_CHARS),
+        "color": _visual_text(node.get("color", ""), 40),
+        "meta": _normalize_visual_meta(node.get("meta", {})),
+    }
+
+
+def _normalize_visual_edge(edge, node_ids: set[str], seen: set[str]) -> dict | None:
+    if not isinstance(edge, dict):
+        return None
+
+    source = _visual_text(edge.get("source", ""), MAX_VISUAL_BOARD_ID_CHARS)
+    target = _visual_text(edge.get("target", ""), MAX_VISUAL_BOARD_ID_CHARS)
+    if not source or not target or source == target:
+        return None
+    if source not in node_ids or target not in node_ids:
+        return None
+
+    edge_id = _visual_id(edge.get("id", ""), "edge", f"{source}-{target}", seen)
+    seen.add(edge_id)
+    return {
+        "id": edge_id,
+        "source": source,
+        "target": target,
+        "label": _visual_text(edge.get("label", ""), 120),
+    }
+
+
+def _normalize_visual_lane(lane, seen: set[str]) -> dict | None:
+    if not isinstance(lane, dict):
+        return None
+
+    title = _visual_text(lane.get("title", lane.get("label", "")), MAX_VISUAL_BOARD_TITLE_CHARS)
+    lane_id = _visual_id(lane.get("id", ""), "lane", title or "lane", seen)
+    seen.add(lane_id)
+    return {
+        "id": lane_id,
+        "title": title or "Lane",
+        "x": _visual_number(lane.get("x", 0), 0, -20_000, 20_000),
+        "y": _visual_number(lane.get("y", 0), 0, -20_000, 20_000),
+        "width": _visual_number(lane.get("width", 260), 260, 120, 1_200),
+        "height": _visual_number(lane.get("height", 420), 420, 120, 2_000),
+        "color": _visual_text(lane.get("color", ""), 40),
+    }
+
+
+def _normalize_visual_viewport(viewport) -> dict:
+    if not isinstance(viewport, dict):
+        viewport = {}
+    return {
+        "x": _visual_number(viewport.get("x", 0), 0, -20_000, 20_000),
+        "y": _visual_number(viewport.get("y", 0), 0, -20_000, 20_000),
+        "zoom": _visual_number(viewport.get("zoom", 1), 1, 0.2, 3),
+    }
+
+
+def _normalize_visual_export_paths(export_paths) -> dict:
+    if not isinstance(export_paths, dict):
+        return {}
+
+    normalized = {}
+    for key in ("json", "svg", "html"):
+        value = _visual_text(export_paths.get(key, ""), MAX_VISUAL_BOARD_EXPORT_PATH_CHARS)
+        if value:
+            normalized[key] = value
+    return normalized
+
+
+def _normalize_visual_board(board):
+    if not isinstance(board, dict):
+        return None
+
+    raw_kind = _visual_text(board.get("kind", "idea_canvas"), MAX_VISUAL_BOARD_KIND_CHARS).lower()
+    kind = raw_kind if raw_kind in VALID_VISUAL_BOARD_KIND else "idea_canvas"
+    title = _visual_text(board.get("title", ""), MAX_VISUAL_BOARD_TITLE_CHARS)
+    board_id = _visual_id(board.get("id", ""), "board", title or kind)
+
+    node_seen = set()
+    nodes = []
+    raw_nodes = board.get("nodes", [])
+    if isinstance(raw_nodes, list):
+        for raw_node in raw_nodes:
+            normalized_node = _normalize_visual_node(raw_node, node_seen)
+            if normalized_node:
+                nodes.append(normalized_node)
+                if len(nodes) >= MAX_VISUAL_BOARD_NODES:
+                    break
+
+    node_ids = {node["id"] for node in nodes}
+    edge_seen = set()
+    edges = []
+    raw_edges = board.get("edges", [])
+    if isinstance(raw_edges, list):
+        for raw_edge in raw_edges:
+            normalized_edge = _normalize_visual_edge(raw_edge, node_ids, edge_seen)
+            if normalized_edge:
+                edges.append(normalized_edge)
+                if len(edges) >= MAX_VISUAL_BOARD_EDGES:
+                    break
+
+    lane_seen = set()
+    lanes = []
+    raw_lanes = board.get("lanes", [])
+    if isinstance(raw_lanes, list):
+        for raw_lane in raw_lanes:
+            normalized_lane = _normalize_visual_lane(raw_lane, lane_seen)
+            if normalized_lane:
+                lanes.append(normalized_lane)
+                if len(lanes) >= MAX_VISUAL_BOARD_LANES:
+                    break
+
+    return {
+        "id": board_id,
+        "kind": kind,
+        "title": title or kind.replace("_", " ").title(),
+        "nodes": nodes,
+        "edges": edges,
+        "lanes": lanes,
+        "viewport": _normalize_visual_viewport(board.get("viewport", {})),
+        "export_paths": _normalize_visual_export_paths(board.get("export_paths", {})),
+        "created_at": _visual_text(board.get("created_at", ""), MAX_IDEA_PROJECT_TIMESTAMP_CHARS),
+        "updated_at": _visual_text(board.get("updated_at", ""), MAX_IDEA_PROJECT_TIMESTAMP_CHARS),
+    }
+
+
+def _normalize_idea_project(project):
+    if not isinstance(project, dict):
+        return None
+
+    title = _coerce_text(project.get("title", ""), MAX_IDEA_PROJECT_TITLE_CHARS).strip()
+    if not title:
+        return None
+
+    raw_kind = _coerce_text(project.get("kind", "mixto"), 40).strip().lower()
+    raw_status = _coerce_text(project.get("status", "exploring"), 40).strip().lower()
+    kind = raw_kind if raw_kind in VALID_IDEA_PROJECT_KIND else "mixto"
+    status = raw_status if raw_status in VALID_IDEA_PROJECT_STATUS else "exploring"
+    project_id = _coerce_text(project.get("id") or _fallback_id("idea", title), 40).strip()
+
+    visual_boards = []
+    raw_visual_boards = project.get("visual_boards", [])
+    if isinstance(raw_visual_boards, list):
+        for raw_board in raw_visual_boards:
+            normalized_board = _normalize_visual_board(raw_board)
+            if normalized_board:
+                visual_boards.append(normalized_board)
+                if len(visual_boards) >= MAX_VISUAL_BOARDS_PER_PROJECT:
+                    break
+
+    return {
+        "id": project_id,
+        "title": title,
+        "kind": kind,
+        "status": status,
+        "summary": _coerce_text(project.get("summary", ""), MAX_IDEA_PROJECT_TEXT_CHARS).strip(),
+        "audience": _coerce_text(project.get("audience", ""), MAX_IDEA_PROJECT_TEXT_CHARS).strip(),
+        "desired_outcome": _coerce_text(project.get("desired_outcome", ""), MAX_IDEA_PROJECT_TEXT_CHARS).strip(),
+        "problem": _coerce_text(project.get("problem", ""), MAX_IDEA_PROJECT_TEXT_CHARS).strip(),
+        "creative_directions": _normalize_string_list(
+            project.get("creative_directions", []),
+            item_limit=MAX_IDEA_PROJECT_ITEMS,
+            char_limit=MAX_IDEA_PROJECT_ITEM_CHARS,
+        ),
+        "selected_direction": _coerce_text(
+            project.get("selected_direction", ""),
+            MAX_IDEA_PROJECT_TEXT_CHARS,
+        ).strip(),
+        "success_criteria": _normalize_string_list(
+            project.get("success_criteria", []),
+            item_limit=MAX_IDEA_PROJECT_ITEMS,
+            char_limit=MAX_IDEA_PROJECT_ITEM_CHARS,
+        ),
+        "constraints": _normalize_string_list(
+            project.get("constraints", []),
+            item_limit=MAX_IDEA_PROJECT_ITEMS,
+            char_limit=MAX_IDEA_PROJECT_ITEM_CHARS,
+        ),
+        "risks": _normalize_string_list(
+            project.get("risks", []),
+            item_limit=MAX_IDEA_PROJECT_ITEMS,
+            char_limit=MAX_IDEA_PROJECT_ITEM_CHARS,
+        ),
+        "open_questions": _normalize_string_list(
+            project.get("open_questions", []),
+            item_limit=MAX_IDEA_PROJECT_ITEMS,
+            char_limit=MAX_IDEA_PROJECT_ITEM_CHARS,
+        ),
+        "next_steps": _normalize_string_list(
+            project.get("next_steps", []),
+            item_limit=MAX_IDEA_PROJECT_ITEMS,
+            char_limit=MAX_IDEA_PROJECT_ITEM_CHARS,
+        ),
+        "created_at": _coerce_text(project.get("created_at", ""), MAX_IDEA_PROJECT_TIMESTAMP_CHARS).strip(),
+        "updated_at": _coerce_text(project.get("updated_at", ""), MAX_IDEA_PROJECT_TIMESTAMP_CHARS).strip(),
+        "visual_boards": visual_boards,
     }
 
 
@@ -1939,6 +2244,15 @@ def normalize_state(state):
             if normalized_task:
                 normalized["tasks"].append(normalized_task)
 
+    raw_idea_projects = state.get("idea_projects", [])
+    if isinstance(raw_idea_projects, list):
+        for project in raw_idea_projects:
+            normalized_project = _normalize_idea_project(project)
+            if normalized_project:
+                normalized["idea_projects"].append(normalized_project)
+                if len(normalized["idea_projects"]) >= MAX_IDEA_PROJECTS:
+                    break
+
     return sanitize_unicode_value(normalized)
 
 
@@ -2078,6 +2392,39 @@ def render_state_summary(
             lines.append(f"{index}. {item}")
     else:
         lines.append("Plan actual: sin plan explicito.")
+
+    open_projects = [
+        project for project in normalized["idea_projects"]
+        if project["status"] not in {"done", "archived"}
+    ]
+    if open_projects:
+        lines.append("Proyectos de ideas abiertos:")
+        for project in open_projects[:5]:
+            lines.append(
+                f"- [{project['id']}] {project['title']} "
+                f"(tipo={project['kind']}, estado={project['status']})"
+            )
+            if project["summary"]:
+                lines.append(f"  Resumen: {project['summary']}")
+            if project["selected_direction"]:
+                lines.append(f"  Direccion elegida: {project['selected_direction']}")
+            elif project["creative_directions"]:
+                lines.append(
+                    "  Direcciones creativas: "
+                    + "; ".join(project["creative_directions"][:3])
+                )
+            if project["open_questions"]:
+                lines.append(
+                    "  Preguntas abiertas: "
+                    + "; ".join(project["open_questions"][:3])
+                )
+            if project["next_steps"]:
+                lines.append(
+                    "  Proximos pasos: "
+                    + "; ".join(project["next_steps"][:3])
+                )
+    else:
+        lines.append("Proyectos de ideas abiertos: ninguno.")
 
     awaiting_user_input = normalized["awaiting_user_input"]
     if awaiting_user_input["pending"]:

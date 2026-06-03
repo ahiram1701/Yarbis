@@ -1,5 +1,6 @@
 import json
 import io
+import os
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -14,6 +15,43 @@ TEST_RUNTIME_DIR = Path.cwd() / "tests_runtime"
 
 
 class AgentTestCase(unittest.TestCase):
+    def test_agent_registers_idea_project_tools_and_prompt_behavior(self):
+        tool_names = {getattr(tool, "__name__", "") for tool in agent.tool_definitions}
+
+        for name in {
+            "create_idea_project",
+            "list_idea_projects",
+            "get_idea_project",
+            "update_idea_project",
+            "promote_idea_project_to_work",
+            "create_project_visual_board",
+            "list_project_visual_boards",
+            "get_project_visual_board",
+            "update_project_visual_board",
+            "export_project_visual_board",
+        }:
+            self.assertIn(name, tool_names)
+            self.assertIn(name, agent.available_functions)
+
+        self.assertIn("taller de ideas", agent.SYSTEM_PROMPT)
+        self.assertIn("direcciones creativas", agent.SYSTEM_PROMPT)
+        self.assertIn("promote_idea_project_to_work", agent.ACTION_PROOF_TOOL_NAMES)
+        self.assertIn("export_project_visual_board", agent.ACTION_PROOF_TOOL_NAMES)
+
+    def test_agent_visual_board_tools_respect_proactive_safe_mode(self):
+        with patch.dict(os.environ, {"YARBIS_PROACTIVE_SAFE_MODE": "1"}):
+            safe_tool_names = {getattr(tool, "__name__", "") for tool in agent._current_tool_definitions()}
+
+        for name in {
+            "create_project_visual_board",
+            "list_project_visual_boards",
+            "get_project_visual_board",
+            "update_project_visual_board",
+        }:
+            self.assertIn(name, safe_tool_names)
+
+        self.assertNotIn("export_project_visual_board", safe_tool_names)
+
     def test_run_one_cycle_counter_increment_skips_auto_backup(self):
         seeded_state = memory.default_state()
         calls = []

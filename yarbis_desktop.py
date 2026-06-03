@@ -8,6 +8,7 @@ import threading
 import tkinter as tk
 import time
 import traceback
+import webbrowser
 from datetime import datetime
 from pathlib import Path
 from tkinter import filedialog, messagebox, simpledialog, ttk
@@ -98,6 +99,7 @@ from service_manager import (
 from telegram_inbox import start_telegram_polling, stop_telegram_polling
 from ui_dialogs import (
     FirstRunDialog,
+    IdeaProjectsDialog,
     MemoryImportModeDialog,
     MultilineTextDialog,
     NoteDialog,
@@ -1253,6 +1255,7 @@ class YarbisDesktop(tk.Tk):
             "Objetivo y memoria de trabajo",
             (
                 {"text": "Cambiar objetivo", "command": self._change_goal, "style": "Accent.TButton"},
+                {"text": "Ideas/proyectos", "command": self._manage_idea_projects},
                 {"text": "Editar perfil", "command": self._edit_profile},
                 {"text": "Ver notas", "command": self._manage_notes},
                 {"text": "Crear tarea", "command": self._create_task},
@@ -3303,6 +3306,32 @@ class YarbisDesktop(tk.Tk):
 
         self._append_activity("Objetivo actualizado", result)
         self.refresh_state_view()
+
+    def _manage_idea_projects(self):
+        dialog = IdeaProjectsDialog(self, visual_callback=self._open_visual_workspace)
+        if dialog.result:
+            self._append_activity("Ideas/proyectos", dialog.result)
+        self.refresh_state_view()
+
+    def _open_visual_workspace(self):
+        status = public_mobile_ui_status(load_state().get("service", {}).get("mobile_ui", {}))
+        if not status.get("enabled"):
+            messagebox.showinfo(
+                "Yarbis",
+                "Activa la UI movil en Servicio -> UI movil para abrir la mesa visual web.",
+                parent=self,
+            )
+            return
+
+        active_urls = status.get("active_urls") or []
+        base_url = (active_urls[0] if active_urls else "") or status.get("tailscale_url") or status.get("local_url")
+        if not base_url:
+            messagebox.showwarning("Yarbis", "No encontre URL disponible para la UI movil.", parent=self)
+            return
+
+        url = base_url.rstrip("/") + "/#visual"
+        webbrowser.open(url)
+        self._append_activity("Visual web", f"Mesa visual abierta: {url}")
 
     def _choose_coding_workspace(self):
         state = load_state()

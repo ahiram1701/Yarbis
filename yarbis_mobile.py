@@ -55,16 +55,23 @@ from session import (
     coding_run_validation_text,
     coding_set_workspace_text,
     coding_update_validation_command_text,
+    create_idea_project_text,
     create_memory_backup_text,
+    create_project_visual_board_text,
+    export_project_visual_board_text,
     factory_reset_yarbis,
+    get_project_visual_board_text,
     get_notification_settings,
     import_memory_backup_text,
     inspect_memory_backup_text,
+    list_project_visual_boards_text,
+    promote_idea_project_to_work_text,
     request_stop_current_operation,
     save_note_text,
     send_test_notification,
     start_social_oauth_text,
     update_goal,
+    update_idea_project_text,
     update_local_context_settings,
     update_memory_protection_settings_text,
     update_model_provider,
@@ -73,6 +80,7 @@ from session import (
     update_openrouter_settings,
     update_profile_text,
     update_service_proactive_settings,
+    update_project_visual_board_text,
     verify_memory_backups_text,
 )
 from tools import (
@@ -941,11 +949,18 @@ def _public_context_state(state: dict) -> dict:
         "tasks": state.get("tasks", []),
         "notes": state.get("notes", []),
         "current_plan": state.get("current_plan", []),
+        "idea_projects": state.get("idea_projects", []),
         "autonomy": state.get("autonomy", {}),
         "coding": {
             **coding,
             "proposals_text": _mobile_coding_proposals_text(state),
         },
+    }
+
+
+def _public_visual_state(state: dict) -> dict:
+    return {
+        "idea_projects": state.get("idea_projects", []),
     }
 
 
@@ -981,7 +996,7 @@ def _public_activity_state(state: dict) -> dict:
 
 def _public_state(view: str = "") -> dict:
     normalized_view = str(view or "").strip().lower()
-    if normalized_view not in {"", "home", "run", "context", "settings", "activity"}:
+    if normalized_view not in {"", "home", "run", "context", "visual", "settings", "activity"}:
         raise ValueError("Vista movil invalida.")
 
     state = load_state()
@@ -989,6 +1004,8 @@ def _public_state(view: str = "") -> dict:
     view_state = {}
     if normalized_view == "context":
         view_state = _public_context_state(state)
+    elif normalized_view == "visual":
+        view_state = _public_visual_state(state)
     elif normalized_view == "settings":
         view_state = _public_settings_state(state)
     elif normalized_view == "activity":
@@ -1108,6 +1125,78 @@ def _execute_action(action: str, payload: dict | None = None) -> dict:
             title=_payload_text(payload, "title"),
             details=_payload_text(payload, "details"),
             priority=_payload_text(payload, "priority", "media") or "media",
+        )}
+    if action == "create_idea_project":
+        return {"result": create_idea_project_text(
+            title=_payload_text(payload, "title"),
+            kind=_payload_text(payload, "kind", "mixto") or "mixto",
+            summary=_payload_text(payload, "summary"),
+            audience=_payload_text(payload, "audience"),
+            desired_outcome=_payload_text(payload, "desired_outcome"),
+            problem=_payload_text(payload, "problem"),
+            creative_directions=_payload_text(payload, "creative_directions"),
+            selected_direction=_payload_text(payload, "selected_direction"),
+            success_criteria=_payload_text(payload, "success_criteria"),
+            constraints=_payload_text(payload, "constraints"),
+            risks=_payload_text(payload, "risks"),
+            open_questions=_payload_text(payload, "open_questions"),
+            next_steps=_payload_text(payload, "next_steps"),
+            status=_payload_text(payload, "status", "exploring") or "exploring",
+        )}
+    if action == "update_idea_project":
+        return {"result": update_idea_project_text(
+            project_id=_payload_text(payload, "project_id"),
+            title=_payload_text(payload, "title"),
+            kind=_payload_text(payload, "kind"),
+            status=_payload_text(payload, "status"),
+            summary=_payload_text(payload, "summary"),
+            audience=_payload_text(payload, "audience"),
+            desired_outcome=_payload_text(payload, "desired_outcome"),
+            problem=_payload_text(payload, "problem"),
+            creative_directions=_payload_text(payload, "creative_directions"),
+            selected_direction=_payload_text(payload, "selected_direction"),
+            success_criteria=_payload_text(payload, "success_criteria"),
+            constraints=_payload_text(payload, "constraints"),
+            risks=_payload_text(payload, "risks"),
+            open_questions=_payload_text(payload, "open_questions"),
+            next_steps=_payload_text(payload, "next_steps"),
+        )}
+    if action == "promote_idea_project":
+        return {"result": promote_idea_project_to_work_text(
+            project_id=_payload_text(payload, "project_id"),
+            priority=_payload_text(payload, "priority", "media") or "media",
+        )}
+    if action == "create_visual_board":
+        return {"result": create_project_visual_board_text(
+            project_id=_payload_text(payload, "project_id"),
+            board_kind=_payload_text(payload, "board_kind", "idea_canvas") or "idea_canvas",
+            title=_payload_text(payload, "title"),
+        )}
+    if action == "list_visual_boards":
+        return {"result": list_project_visual_boards_text(
+            project_id=_payload_text(payload, "project_id"),
+        )}
+    if action == "get_visual_board":
+        return {"result": get_project_visual_board_text(
+            project_id=_payload_text(payload, "project_id"),
+            board_id=_payload_text(payload, "board_id"),
+        )}
+    if action == "update_visual_board":
+        return {"result": update_project_visual_board_text(
+            project_id=_payload_text(payload, "project_id"),
+            board_id=_payload_text(payload, "board_id"),
+            board_json=(
+                payload.get("board_json")
+                if isinstance(payload.get("board_json"), str)
+                else json.dumps(payload.get("board", {}), ensure_ascii=False)
+            ),
+        )}
+    if action == "export_visual_board":
+        return {"result": export_project_visual_board_text(
+            project_id=_payload_text(payload, "project_id"),
+            board_id=_payload_text(payload, "board_id"),
+            formats=_payload_text(payload, "formats", "html,svg,json") or "html,svg,json",
+            open_file=bool(payload.get("open_file")),
         )}
     if action == "update_task_status":
         return {"result": update_task_status(
@@ -1399,6 +1488,85 @@ h3 { font-size: .98rem; margin-bottom: 8px; }
   padding: 12px;
   box-shadow: var(--shadow);
 }
+.visual-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 300px;
+  gap: 12px;
+  align-items: start;
+}
+.visual-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 10px;
+}
+.visual-toolbar select,
+.visual-toolbar input {
+  width: auto;
+  min-width: 150px;
+}
+.visual-board-shell {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #0b0e13;
+  min-height: 620px;
+  overflow: hidden;
+  position: relative;
+}
+.visual-canvas {
+  width: 100%;
+  height: min(68vh, 680px);
+  min-height: 520px;
+  display: block;
+  touch-action: none;
+  cursor: grab;
+}
+.visual-canvas.dragging {
+  cursor: grabbing;
+}
+.visual-node rect {
+  fill: #202838;
+  stroke: #526074;
+  stroke-width: 1.4;
+}
+.visual-node.selected rect {
+  stroke: #8eb6ff;
+  stroke-width: 2.4;
+}
+.visual-node .title {
+  fill: #f7f9fc;
+  font: 700 15px system-ui;
+  pointer-events: none;
+}
+.visual-node .body {
+  fill: #c0c9d6;
+  font: 12px system-ui;
+  pointer-events: none;
+}
+.visual-lane rect {
+  fill: #151b24;
+  stroke: #2f3948;
+  stroke-width: 1.2;
+}
+.visual-lane text {
+  fill: #d9e2ef;
+  font: 700 14px system-ui;
+  pointer-events: none;
+}
+.visual-edge {
+  stroke: #6d7a8d;
+  stroke-width: 2;
+  fill: none;
+  pointer-events: none;
+}
+.visual-inspector {
+  display: grid;
+  gap: 10px;
+}
+.visual-inspector textarea {
+  min-height: 132px;
+}
 .metric {
   min-height: 74px;
   display: flex;
@@ -1602,6 +1770,15 @@ pre {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
+@media (max-width: 900px) {
+  .visual-layout {
+    grid-template-columns: 1fr;
+  }
+  .visual-toolbar select,
+  .visual-toolbar input {
+    width: 100%;
+  }
+}
 @media (max-width: 520px) {
   .two, .actions, .actions.tight {
     grid-template-columns: 1fr;
@@ -1661,6 +1838,7 @@ pre {
     <div id="home" class="view active"></div>
     <div id="run" class="view"></div>
     <div id="context" class="view"></div>
+    <div id="visual" class="view"></div>
     <div id="settings" class="view"></div>
     <div id="activity" class="view"></div>
   </section>
@@ -1669,13 +1847,15 @@ pre {
   <button class="tab active" data-tab="home">Inicio</button>
   <button class="tab" data-tab="run">Ejecutar</button>
   <button class="tab" data-tab="context">Contexto</button>
+  <button class="tab" data-tab="visual">Visual</button>
   <button class="tab" data-tab="settings">Config</button>
   <button class="tab" data-tab="activity">Actividad</button>
 </nav>
 <script>
 let csrfToken = "";
 let appState = null;
-let currentTab = "home";
+const validTabs = new Set(["home", "run", "context", "visual", "settings", "activity"]);
+let currentTab = validTabs.has(window.location.hash.replace("#", "")) ? window.location.hash.replace("#", "") : "home";
 let refreshInFlight = false;
 const loadedViews = { home: true, run: true };
 let voiceRecorder = null;
@@ -1687,6 +1867,9 @@ let browserVoices = [];
 let voiceOptionsLoaded = false;
 let localSpeechAudio = null;
 let kokoroVoiceFilter = "";
+let visualSelection = { projectId: "", boardId: "", nodeId: "" };
+let visualDrag = null;
+let visualPan = null;
 const $ = (id) => document.getElementById(id);
 
 function escapeHtml(value) {
@@ -2067,6 +2250,8 @@ async function refresh(options = {}) {
     $("loginView").classList.add("hidden");
     $("appView").classList.remove("hidden");
     $("tabs").classList.remove("hidden");
+    document.querySelectorAll(".view").forEach(node => node.classList.toggle("active", node.id === currentTab));
+    document.querySelectorAll(".tab").forEach(node => node.classList.toggle("active", node.dataset.tab === currentTab));
     renderCurrent();
   } catch (error) {
     if (!options.silent) {
@@ -2108,6 +2293,7 @@ function renderCurrent() {
   if (currentTab === "home") renderHome();
   else if (currentTab === "run") renderRun();
   else if (currentTab === "context") renderContext();
+  else if (currentTab === "visual") renderVisual();
   else if (currentTab === "settings") renderSettings();
   else if (currentTab === "activity") renderActivity();
 }
@@ -2198,6 +2384,7 @@ function renderRun() {
 
 function renderContext() {
   const profile = appState.profile || {};
+  const ideaProjects = appState.idea_projects || [];
   $("context").innerHTML = `
     <section class="hero">
       <h2>Contexto que Yarbis usa para trabajar mejor.</h2>
@@ -2218,6 +2405,38 @@ function renderContext() {
         <div><label>Preferencias</label><textarea id="profilePrefs">${escapeHtml((profile.preferences || []).join("\n"))}</textarea></div>
         <div><label>Restricciones</label><textarea id="profileConstraints">${escapeHtml((profile.constraints || []).join("\n"))}</textarea></div>
         <button data-action="save-profile">Guardar perfil</button>
+      </div>
+    </section>
+    <section class="section">
+      <h2>Ideas/proyectos</h2>
+      <div class="form-grid wide">
+        <input id="ideaTitle" placeholder="Titulo de la idea">
+        <select id="ideaKind"><option value="mixto">mixto</option><option value="producto_negocio">producto_negocio</option><option value="vida_proyecto">vida_proyecto</option><option value="otro">otro</option></select>
+        <textarea id="ideaSummary" placeholder="Resumen o brief"></textarea>
+        <textarea id="ideaDirections" placeholder="Direcciones creativas, una por linea"></textarea>
+        <textarea id="ideaQuestions" placeholder="Preguntas abiertas"></textarea>
+        <textarea id="ideaSteps" placeholder="Proximos pasos"></textarea>
+        <button data-action="create-idea">Crear proyecto</button>
+      </div>
+      <div class="form-grid">
+        <input id="ideaProjectId" placeholder="Id para editar o activar">
+        <select id="ideaStatus"><option value="">estado sin cambio</option><option value="exploring">exploring</option><option value="planned">planned</option><option value="active">active</option><option value="paused">paused</option><option value="done">done</option><option value="archived">archived</option></select>
+        <textarea id="ideaSelected" placeholder="Direccion elegida"></textarea>
+        <textarea id="ideaNextStepsUpdate" placeholder="Reemplazar proximos pasos"></textarea>
+        <button data-action="update-idea">Actualizar</button>
+        <button data-action="promote-idea">Activar</button>
+      </div>
+      <div class="list">${ideaProjects.map(project => `
+        <div class="item">
+          <strong>${escapeHtml(project.title)}</strong>
+          <div class="muted">${escapeHtml(project.status)} - ${escapeHtml(project.kind)} - ${escapeHtml(project.id)}</div>
+          <pre>${escapeHtml(project.summary || project.selected_direction || "")}</pre>
+          ${(project.creative_directions || []).length ? `<pre>${escapeHtml((project.creative_directions || []).slice(0, 3).join("\n"))}</pre>` : ""}
+          <div class="actions tight">
+            <button data-action="select-idea" data-project-id="${escapeHtml(project.id)}">Editar</button>
+            <button data-action="promote-idea-card" data-project-id="${escapeHtml(project.id)}">Activar</button>
+          </div>
+        </div>`).join("") || `<div class="muted">Sin proyectos de ideas.</div>`}
       </div>
     </section>
     <section class="section">
@@ -2271,6 +2490,285 @@ function renderContext() {
       </div>
       <div class="panel"><pre>${escapeHtml((appState.coding || {}).proposals_text || "")}</pre></div>
     </section>`;
+}
+
+function fillIdeaProjectForm(projectId) {
+  const project = (appState.idea_projects || []).find(item => item.id === projectId);
+  if (!project) return;
+  if ($("ideaProjectId")) $("ideaProjectId").value = project.id || "";
+  if ($("ideaStatus")) $("ideaStatus").value = project.status || "";
+  if ($("ideaSelected")) $("ideaSelected").value = project.selected_direction || "";
+  if ($("ideaNextStepsUpdate")) $("ideaNextStepsUpdate").value = (project.next_steps || []).join("\n");
+  if ($("ideaTitle")) $("ideaTitle").value = project.title || "";
+  if ($("ideaKind")) $("ideaKind").value = project.kind || "mixto";
+  if ($("ideaSummary")) $("ideaSummary").value = project.summary || "";
+  if ($("ideaDirections")) $("ideaDirections").value = (project.creative_directions || []).join("\n");
+  if ($("ideaQuestions")) $("ideaQuestions").value = (project.open_questions || []).join("\n");
+  if ($("ideaSteps")) $("ideaSteps").value = (project.next_steps || []).join("\n");
+}
+
+function visualProjects() {
+  return appState ? (appState.idea_projects || []) : [];
+}
+
+function selectedVisualProject() {
+  const projects = visualProjects();
+  if (!projects.length) return null;
+  if (!visualSelection.projectId || !projects.some(project => project.id === visualSelection.projectId)) {
+    const withBoards = projects.find(project => (project.visual_boards || []).length);
+    visualSelection.projectId = (withBoards || projects[0]).id || "";
+    visualSelection.boardId = "";
+    visualSelection.nodeId = "";
+  }
+  return projects.find(project => project.id === visualSelection.projectId) || projects[0] || null;
+}
+
+function selectedVisualBoard(project = selectedVisualProject()) {
+  if (!project) return null;
+  const boards = project.visual_boards || [];
+  if (!boards.length) {
+    visualSelection.boardId = "";
+    visualSelection.nodeId = "";
+    return null;
+  }
+  if (!visualSelection.boardId || !boards.some(board => board.id === visualSelection.boardId)) {
+    visualSelection.boardId = boards[0].id || "";
+    visualSelection.nodeId = "";
+  }
+  return boards.find(board => board.id === visualSelection.boardId) || boards[0] || null;
+}
+
+function selectedVisualNode(board = selectedVisualBoard()) {
+  if (!board || !visualSelection.nodeId) return null;
+  return (board.nodes || []).find(node => node.id === visualSelection.nodeId) || null;
+}
+
+function visualProjectOptions(projects, selectedId) {
+  return projects.map(project => (
+    `<option value="${escapeHtml(project.id || "")}" ${project.id === selectedId ? "selected" : ""}>${escapeHtml(project.title || project.id || "Proyecto")}</option>`
+  )).join("");
+}
+
+function visualBoardOptions(boards, selectedId) {
+  return boards.map(board => (
+    `<option value="${escapeHtml(board.id || "")}" ${board.id === selectedId ? "selected" : ""}>${escapeHtml(board.title || board.id || "Board")}</option>`
+  )).join("");
+}
+
+function visualTextLines(value, maxChars = 30, maxLines = 6) {
+  const words = String(value || "").replace(/\r/g, "").split(/\s+/).filter(Boolean);
+  const lines = [];
+  let current = "";
+  for (const word of words) {
+    const candidate = `${current} ${word}`.trim();
+    if (current && candidate.length > maxChars) {
+      lines.push(current);
+      current = word;
+    } else {
+      current = candidate;
+    }
+    if (lines.length >= maxLines) break;
+  }
+  if (current && lines.length < maxLines) lines.push(current);
+  return lines.length ? lines.slice(0, maxLines) : [""];
+}
+
+function visualBounds(board) {
+  const items = [...(board.lanes || []), ...(board.nodes || [])];
+  if (!items.length) return { minX: 0, minY: 0, maxX: 1000, maxY: 700 };
+  const minX = Math.min(...items.map(item => Number(item.x || 0)));
+  const minY = Math.min(...items.map(item => Number(item.y || 0)));
+  const maxX = Math.max(...items.map(item => Number(item.x || 0) + Number(item.width || 220)));
+  const maxY = Math.max(...items.map(item => Number(item.y || 0) + Number(item.height || 120)));
+  return { minX, minY, maxX, maxY };
+}
+
+function visualFitBoard(board) {
+  if (!board) return;
+  const bounds = visualBounds(board);
+  const width = Math.max(120, bounds.maxX - bounds.minX);
+  const height = Math.max(120, bounds.maxY - bounds.minY);
+  const zoom = Math.max(0.2, Math.min(1.8, Math.min(1220 / (width + 160), 760 / (height + 160))));
+  board.viewport = {
+    x: (1400 - (bounds.minX + bounds.maxX) * zoom) / 2,
+    y: (900 - (bounds.minY + bounds.maxY) * zoom) / 2,
+    zoom
+  };
+}
+
+function visualAutoLayout(board) {
+  if (!board) return;
+  if ((board.lanes || []).length) {
+    const laneCounts = {};
+    for (const node of board.nodes || []) {
+      const lane = (board.lanes || []).find(item => item.id === node.lane) || (board.lanes || [])[0];
+      if (!lane) continue;
+      laneCounts[lane.id] = laneCounts[lane.id] || 0;
+      node.x = Number(lane.x || 0) + 16;
+      node.y = Number(lane.y || 0) + 54 + laneCounts[lane.id] * 122;
+      node.width = Math.max(120, Number(lane.width || 220) - 32);
+      node.height = Number(node.height || 104);
+      laneCounts[lane.id] += 1;
+    }
+  } else if ((board.kind || "") === "mind_map" && (board.nodes || []).length > 1) {
+    const center = (board.nodes || []).find(node => node.id === "center") || board.nodes[0];
+    center.x = 540;
+    center.y = 360;
+    const others = (board.nodes || []).filter(node => node !== center);
+    const radiusX = 430;
+    const radiusY = 260;
+    others.forEach((node, index) => {
+      const angle = (Math.PI * 2 * index) / Math.max(1, others.length);
+      node.x = Math.round(620 + Math.cos(angle) * radiusX - Number(node.width || 220) / 2);
+      node.y = Math.round(430 + Math.sin(angle) * radiusY - Number(node.height || 120) / 2);
+    });
+  } else {
+    (board.nodes || []).forEach((node, index) => {
+      node.x = 50 + (index % 3) * 280;
+      node.y = 60 + Math.floor(index / 3) * 180;
+    });
+  }
+  visualFitBoard(board);
+}
+
+function visualSvgText(lines, x, y, cssClass, lineHeight = 17) {
+  return lines.map((line, index) => (
+    `<text class="${cssClass}" x="${x}" y="${y + index * lineHeight}">${escapeHtml(line)}</text>`
+  )).join("");
+}
+
+function visualRenderCanvas(board) {
+  const svg = $("visualCanvas");
+  if (!svg || !board) return;
+  const viewport = board.viewport || { x: 0, y: 0, zoom: 1 };
+  const zoom = Number(viewport.zoom || 1);
+  const tx = Number(viewport.x || 0);
+  const ty = Number(viewport.y || 0);
+  const nodesById = {};
+  (board.nodes || []).forEach(node => nodesById[node.id] = node);
+  const lanes = (board.lanes || []).map(lane => `
+    <g class="visual-lane">
+      <rect x="${Number(lane.x || 0)}" y="${Number(lane.y || 0)}" width="${Number(lane.width || 260)}" height="${Number(lane.height || 420)}" rx="8"></rect>
+      <text x="${Number(lane.x || 0) + 14}" y="${Number(lane.y || 0) + 28}">${escapeHtml(lane.title || "Lane")}</text>
+    </g>`).join("");
+  const edges = (board.edges || []).map(edge => {
+    const source = nodesById[edge.source];
+    const target = nodesById[edge.target];
+    if (!source || !target) return "";
+    const x1 = Number(source.x || 0) + Number(source.width || 220) / 2;
+    const y1 = Number(source.y || 0) + Number(source.height || 120) / 2;
+    const x2 = Number(target.x || 0) + Number(target.width || 220) / 2;
+    const y2 = Number(target.y || 0) + Number(target.height || 120) / 2;
+    return `<line class="visual-edge" x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" marker-end="url(#visualArrow)"></line>`;
+  }).join("");
+  const nodes = (board.nodes || []).map(node => {
+    const width = Number(node.width || 220);
+    const titleLines = visualTextLines(node.title || "Nodo", Math.max(12, Math.floor(width / 9)), 1);
+    const bodyLines = visualTextLines(node.text || "", Math.max(16, Math.floor(width / 8)), 6);
+    return `
+      <g class="visual-node ${visualSelection.nodeId === node.id ? "selected" : ""}" data-visual-node-id="${escapeHtml(node.id || "")}">
+        <rect x="${Number(node.x || 0)}" y="${Number(node.y || 0)}" width="${width}" height="${Number(node.height || 120)}" rx="8"></rect>
+        ${visualSvgText(titleLines, Number(node.x || 0) + 14, Number(node.y || 0) + 27, "title")}
+        ${visualSvgText(bodyLines, Number(node.x || 0) + 14, Number(node.y || 0) + 54, "body")}
+      </g>`;
+  }).join("");
+  svg.innerHTML = `
+    <defs>
+      <marker id="visualArrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+        <path d="M 0 0 L 10 5 L 0 10 z" fill="#6d7a8d"></path>
+      </marker>
+    </defs>
+    <rect x="0" y="0" width="1400" height="900" fill="#0b0e13"></rect>
+    <g transform="translate(${tx} ${ty}) scale(${zoom})">${lanes}${edges}${nodes}</g>`;
+}
+
+function renderVisualInspector(board) {
+  const node = selectedVisualNode(board);
+  if (!board) return `<div class="panel muted">Crea o selecciona un board visual.</div>`;
+  return `
+    <div class="panel visual-inspector">
+      <h2>Inspector</h2>
+      <div><label>Titulo del board</label><input id="visualBoardTitle" value="${escapeHtml(board.title || "")}"></div>
+      <div><label>Nodo</label><input id="visualNodeTitle" value="${escapeHtml(node ? node.title || "" : "")}" ${node ? "" : "disabled"}></div>
+      <div><label>Texto</label><textarea id="visualNodeText" ${node ? "" : "disabled"}>${escapeHtml(node ? node.text || "" : "")}</textarea></div>
+      <div class="actions tight">
+        <button data-action="visual-update-node" ${node ? "" : "disabled"}>Aplicar nodo</button>
+        <button data-action="visual-delete-node" class="danger" ${node ? "" : "disabled"}>Eliminar nodo</button>
+        <button data-action="visual-add-node">Agregar nodo</button>
+      </div>
+      <pre>${escapeHtml(node ? `x:${Math.round(Number(node.x || 0))} y:${Math.round(Number(node.y || 0))}` : "Sin nodo seleccionado")}</pre>
+    </div>`;
+}
+
+function renderVisual() {
+  const projects = visualProjects();
+  const project = selectedVisualProject();
+  const board = selectedVisualBoard(project);
+  if (!projects.length) {
+    $("visual").innerHTML = `
+      <section class="hero"><h2>Mesa visual</h2><div class="muted">Crea un proyecto de idea en Contexto para empezar.</div></section>`;
+    return;
+  }
+  const boards = project ? (project.visual_boards || []) : [];
+  $("visual").innerHTML = `
+    <section class="hero">
+      <h2>Mesa visual de ideas y proyectos.</h2>
+      <div class="muted">Canvas, matrices, roadmap y mapas mentales ligados a proyectos guardados.</div>
+    </section>
+    <section class="section">
+      <div class="visual-toolbar">
+        <select id="visualProjectSelect">${visualProjectOptions(projects, project ? project.id : "")}</select>
+        <select id="visualBoardSelect">${boards.length ? visualBoardOptions(boards, board ? board.id : "") : `<option value="">sin boards</option>`}</select>
+        <select id="visualKind">
+          <option value="idea_canvas">idea_canvas</option>
+          <option value="decision_matrix">decision_matrix</option>
+          <option value="roadmap_kanban">roadmap_kanban</option>
+          <option value="mind_map">mind_map</option>
+        </select>
+        <input id="visualNewTitle" placeholder="Titulo opcional">
+        <button data-action="visual-create-board">Crear</button>
+        <button data-action="visual-regenerate" ${project ? "" : "disabled"}>Regenerar</button>
+        <button data-action="visual-save-board" ${board ? "" : "disabled"}>Guardar</button>
+        <button data-action="visual-export-board" ${board ? "" : "disabled"}>Exportar</button>
+        <button data-action="visual-fit" ${board ? "" : "disabled"}>Ajustar</button>
+        <button data-action="visual-autolayout" ${board ? "" : "disabled"}>Auto-layout</button>
+      </div>
+      <div class="visual-layout">
+        <div class="visual-board-shell">
+          <svg id="visualCanvas" class="visual-canvas" viewBox="0 0 1400 900" aria-label="Canvas visual"></svg>
+        </div>
+        ${renderVisualInspector(board)}
+      </div>
+    </section>`;
+  const kind = $("visualKind");
+  if (kind && board) kind.value = board.kind || "idea_canvas";
+  visualRenderCanvas(board);
+}
+
+function visualCanvasPoint(event, board) {
+  const svg = $("visualCanvas");
+  const rect = svg.getBoundingClientRect();
+  const svgX = ((event.clientX - rect.left) / Math.max(1, rect.width)) * 1400;
+  const svgY = ((event.clientY - rect.top) / Math.max(1, rect.height)) * 900;
+  const viewport = board.viewport || { x: 0, y: 0, zoom: 1 };
+  const zoom = Number(viewport.zoom || 1);
+  return {
+    x: (svgX - Number(viewport.x || 0)) / zoom,
+    y: (svgY - Number(viewport.y || 0)) / zoom,
+    svgX,
+    svgY
+  };
+}
+
+function applyVisualInspectorEdits() {
+  const board = selectedVisualBoard();
+  if (!board) return;
+  if ($("visualBoardTitle")) board.title = $("visualBoardTitle").value;
+  const node = selectedVisualNode(board);
+  if (node) {
+    if ($("visualNodeTitle")) node.title = $("visualNodeTitle").value;
+    if ($("visualNodeText")) node.text = $("visualNodeText").value;
+  }
 }
 
 function renderSettings() {
@@ -2487,6 +2985,7 @@ function renderActivity() {
 
 function showTab(name) {
   currentTab = name;
+  if (validTabs.has(name)) window.history.replaceState(null, "", `#${name}`);
   document.querySelectorAll(".view").forEach(node => node.classList.toggle("active", node.id === name));
   document.querySelectorAll(".tab").forEach(node => node.classList.toggle("active", node.dataset.tab === name));
   renderCurrent();
@@ -2547,6 +3046,122 @@ document.addEventListener("click", async (event) => {
       await action("save_note", { title: $("noteTitle").value, category: $("noteCategory").value, content: $("noteContent").value });
     } else if (name === "add-task") {
       await action("add_task", { title: $("taskTitle").value, details: $("taskDetails").value, priority: $("taskPriority").value });
+    } else if (name === "create-idea") {
+      await action("create_idea_project", {
+        title: $("ideaTitle").value,
+        kind: $("ideaKind").value,
+        summary: $("ideaSummary").value,
+        creative_directions: $("ideaDirections").value,
+        open_questions: $("ideaQuestions").value,
+        next_steps: $("ideaSteps").value
+      });
+    } else if (name === "select-idea") {
+      fillIdeaProjectForm(button.dataset.projectId || "");
+    } else if (name === "update-idea") {
+      await action("update_idea_project", {
+        project_id: $("ideaProjectId").value,
+        title: $("ideaTitle").value,
+        kind: $("ideaKind").value,
+        status: $("ideaStatus").value,
+        summary: $("ideaSummary").value,
+        creative_directions: $("ideaDirections").value,
+        selected_direction: $("ideaSelected").value,
+        open_questions: $("ideaQuestions").value,
+        next_steps: $("ideaNextStepsUpdate").value || $("ideaSteps").value
+      });
+    } else if (name === "promote-idea") {
+      await action("promote_idea_project", { project_id: $("ideaProjectId").value, priority: "media" });
+    } else if (name === "promote-idea-card") {
+      await action("promote_idea_project", { project_id: button.dataset.projectId || "", priority: "media" });
+    } else if (name === "visual-create-board") {
+      const project = selectedVisualProject();
+      if (!project) throw new Error("Selecciona un proyecto.");
+      await action("create_visual_board", {
+        project_id: project.id,
+        board_kind: $("visualKind").value,
+        title: $("visualNewTitle").value
+      });
+      loadedViews.visual = false;
+    } else if (name === "visual-regenerate") {
+      const project = selectedVisualProject();
+      if (!project) throw new Error("Selecciona un proyecto.");
+      const ok = await askConfirm(
+        "Regenerar board",
+        "Se creara un board nuevo desde los datos actuales del proyecto. El board existente no se borra.",
+        "Crear nuevo"
+      );
+      if (ok) {
+        await action("create_visual_board", {
+          project_id: project.id,
+          board_kind: $("visualKind").value,
+          title: $("visualNewTitle").value || "Regenerado"
+        });
+        loadedViews.visual = false;
+      }
+    } else if (name === "visual-save-board") {
+      const project = selectedVisualProject();
+      const board = selectedVisualBoard(project);
+      if (!project || !board) throw new Error("Selecciona un board visual.");
+      applyVisualInspectorEdits();
+      await action("update_visual_board", {
+        project_id: project.id,
+        board_id: board.id,
+        board
+      });
+      loadedViews.visual = false;
+    } else if (name === "visual-export-board") {
+      const project = selectedVisualProject();
+      const board = selectedVisualBoard(project);
+      if (!project || !board) throw new Error("Selecciona un board visual.");
+      applyVisualInspectorEdits();
+      await action("update_visual_board", { project_id: project.id, board_id: board.id, board });
+      await action("export_visual_board", {
+        project_id: project.id,
+        board_id: board.id,
+        formats: "html,svg,json",
+        open_file: false
+      });
+      loadedViews.visual = false;
+    } else if (name === "visual-fit") {
+      const board = selectedVisualBoard();
+      visualFitBoard(board);
+      renderVisual();
+    } else if (name === "visual-autolayout") {
+      const board = selectedVisualBoard();
+      visualAutoLayout(board);
+      renderVisual();
+    } else if (name === "visual-update-node") {
+      applyVisualInspectorEdits();
+      renderVisual();
+    } else if (name === "visual-delete-node") {
+      const board = selectedVisualBoard();
+      const node = selectedVisualNode(board);
+      if (board && node) {
+        board.nodes = (board.nodes || []).filter(item => item.id !== node.id);
+        board.edges = (board.edges || []).filter(edge => edge.source !== node.id && edge.target !== node.id);
+        visualSelection.nodeId = "";
+        renderVisual();
+      }
+    } else if (name === "visual-add-node") {
+      const board = selectedVisualBoard();
+      if (!board) throw new Error("Selecciona un board visual.");
+      const id = `node-${Date.now().toString(36)}`;
+      board.nodes = board.nodes || [];
+      board.nodes.push({
+        id,
+        type: "note",
+        title: "Nuevo nodo",
+        text: "",
+        x: 520,
+        y: 340,
+        width: 230,
+        height: 120,
+        lane: "",
+        color: "",
+        meta: {}
+      });
+      visualSelection.nodeId = id;
+      renderVisual();
     } else if (name === "save-coding-workspace") {
       await action("coding_workspace", { path: $("codingPath").value });
     } else if (name === "save-coding-validation") {
@@ -2664,6 +3279,22 @@ document.addEventListener("change", async (event) => {
     renderCurrent();
     return;
   }
+  if (input && input.id === "visualProjectSelect") {
+    visualSelection.projectId = input.value || "";
+    visualSelection.boardId = "";
+    visualSelection.nodeId = "";
+    renderVisual();
+    return;
+  }
+  if (input && input.id === "visualBoardSelect") {
+    visualSelection.boardId = input.value || "";
+    visualSelection.nodeId = "";
+    renderVisual();
+    return;
+  }
+  if (input && input.id === "visualKind") {
+    return;
+  }
   if (!input || input.id !== "voiceFileInput") return;
   const file = input.files && input.files[0];
   input.value = "";
@@ -2674,6 +3305,94 @@ document.addEventListener("change", async (event) => {
     toast(error.message);
   }
 });
+
+document.addEventListener("pointerdown", (event) => {
+  if (currentTab !== "visual") return;
+  const svg = event.target.closest && event.target.closest("#visualCanvas");
+  if (!svg) return;
+  const board = selectedVisualBoard();
+  if (!board) return;
+  const nodeGroup = event.target.closest("[data-visual-node-id]");
+  const point = visualCanvasPoint(event, board);
+  if (nodeGroup) {
+    const nodeId = nodeGroup.dataset.visualNodeId || "";
+    const node = (board.nodes || []).find(item => item.id === nodeId);
+    if (!node) return;
+    visualSelection.nodeId = nodeId;
+    visualDrag = {
+      nodeId,
+      offsetX: point.x - Number(node.x || 0),
+      offsetY: point.y - Number(node.y || 0)
+    };
+    svg.classList.add("dragging");
+    svg.setPointerCapture(event.pointerId);
+    visualRenderCanvas(board);
+    return;
+  }
+  visualPan = {
+    startX: point.svgX,
+    startY: point.svgY,
+    originX: Number((board.viewport || {}).x || 0),
+    originY: Number((board.viewport || {}).y || 0)
+  };
+  svg.classList.add("dragging");
+  svg.setPointerCapture(event.pointerId);
+});
+
+document.addEventListener("pointermove", (event) => {
+  if (currentTab !== "visual") return;
+  const board = selectedVisualBoard();
+  const svg = $("visualCanvas");
+  if (!board || !svg) return;
+  if (visualDrag) {
+    const node = (board.nodes || []).find(item => item.id === visualDrag.nodeId);
+    if (!node) return;
+    const point = visualCanvasPoint(event, board);
+    node.x = Math.round(point.x - visualDrag.offsetX);
+    node.y = Math.round(point.y - visualDrag.offsetY);
+    visualRenderCanvas(board);
+    return;
+  }
+  if (visualPan) {
+    const rect = svg.getBoundingClientRect();
+    const svgX = ((event.clientX - rect.left) / Math.max(1, rect.width)) * 1400;
+    const svgY = ((event.clientY - rect.top) / Math.max(1, rect.height)) * 900;
+    board.viewport = board.viewport || { x: 0, y: 0, zoom: 1 };
+    board.viewport.x = visualPan.originX + (svgX - visualPan.startX);
+    board.viewport.y = visualPan.originY + (svgY - visualPan.startY);
+    visualRenderCanvas(board);
+  }
+});
+
+document.addEventListener("pointerup", (event) => {
+  const svg = $("visualCanvas");
+  if (svg && event.pointerId !== undefined) {
+    try { svg.releasePointerCapture(event.pointerId); } catch (_) {}
+    svg.classList.remove("dragging");
+  }
+  if (currentTab === "visual" && (visualDrag || visualPan)) {
+    visualDrag = null;
+    visualPan = null;
+    renderVisual();
+  }
+});
+
+document.addEventListener("wheel", (event) => {
+  if (currentTab !== "visual") return;
+  const svg = event.target.closest && event.target.closest("#visualCanvas");
+  if (!svg) return;
+  const board = selectedVisualBoard();
+  if (!board) return;
+  event.preventDefault();
+  const before = visualCanvasPoint(event, board);
+  board.viewport = board.viewport || { x: 0, y: 0, zoom: 1 };
+  const oldZoom = Number(board.viewport.zoom || 1);
+  const nextZoom = Math.max(0.2, Math.min(3, oldZoom * (event.deltaY > 0 ? 0.9 : 1.1)));
+  board.viewport.zoom = nextZoom;
+  board.viewport.x = before.svgX - before.x * nextZoom;
+  board.viewport.y = before.svgY - before.y * nextZoom;
+  visualRenderCanvas(board);
+}, { passive: false });
 
 $("loginForm").addEventListener("submit", async (event) => {
   event.preventDefault();
@@ -2700,7 +3419,9 @@ function isEditingField() {
   return tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT";
 }
 
-refresh();
+refresh().then(() => {
+  if (currentTab !== "home" && currentTab !== "run") loadView(currentTab, true);
+});
 window.setInterval(() => {
   if ($("appView").classList.contains("hidden")) return;
   if (currentTab === "activity") return;

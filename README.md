@@ -16,6 +16,7 @@ Yarbis ya funciona como agente personal local:
 - guarda notas persistentes para conservar contexto entre ciclos
 - mantiene tareas con estados `pending`, `in_progress`, `blocked` y `done`
 - sostiene un plan actual de pasos cortos
+- guarda proyectos de ideas para explorar producto, negocio o vida personal con direcciones creativas, criterios, riesgos, preguntas y proximos pasos
 - ejecuta un ciclo controlado o varios ciclos en modo autonomo
 - se detiene cuando necesita una respuesta del usuario, cuando ya no quedan tareas abiertas o cuando el ciclo ya cerro sin seguimiento util
 - puede buscar informacion publica con DuckDuckGo HTML y leer paginas web publicas bajo una politica persistente
@@ -308,6 +309,19 @@ Al cambiar `goal`, Yarbis reinicia el contexto operativo del objetivo:
 - limpia preguntas pendientes
 - conserva perfil, notas, ajustes, notificaciones e internet
 
+## Ideas y proyectos
+
+Yarbis puede tratar una idea como un proyecto vivo antes de convertirla en tareas. Para producto, negocio o proyectos personales, el flujo recomendado es:
+
+1. Describe la idea aun si esta borrosa.
+2. Yarbis abre varias direcciones creativas, supuestos, riesgos, preguntas abiertas y criterios de exito.
+3. Cuando una direccion tenga sentido, Yarbis la guarda o actualiza como proyecto de idea.
+4. Al decidir ejecutar, Yarbis activa el proyecto, copia sus proximos pasos al plan actual y crea tareas sin duplicar.
+
+Desde la app usa `Objetivo y memoria de trabajo` -> `Ideas/proyectos`. En la UI movil, la vista `Contexto` muestra tarjetas de proyectos y permite crear, editar o activar. Por lenguaje natural puedes pedir cosas como: `Explora esta idea como proyecto`, `guarda estas alternativas`, `actualiza la direccion elegida` o `activa este proyecto`.
+
+La UI movil tambien incluye la vista `Visual` para trabajar esos proyectos como mesa visual. Desde ahi puedes crear boards por proyecto con plantillas de canvas de idea, matriz de decision, roadmap/kanban y mapa mental; mover nodos, editar textos, ajustar zoom, auto-organizar y exportar HTML/SVG/JSON en `.yarbis_runtime/visual_boards/`. Desde escritorio, el dialogo `Ideas/proyectos` ofrece `Visual web` para abrir esa vista sin duplicar el editor en Tkinter.
+
 ## Creacion de contenido para redes sociales
 
 Yarbis puede ayudarte a planear contenido, redactar piezas por plataforma, guardar drafts, preparar publicaciones y publicar cuando haya una cuenta conectada. La publicacion real siempre queda bloqueada hasta que confirmes con la frase exacta `PUBLICAR <id>`.
@@ -592,6 +606,7 @@ El archivo `state.json` guarda:
 - perfil
 - notas
 - tareas
+- proyectos de ideas
 - plan actual
 - pregunta pendiente
 - limites de autonomia
@@ -650,7 +665,7 @@ Los respaldos automaticos siempre redactan `notifications.ntfy.token`, `notifica
 Para trasplantar memoria hay dos modos:
 
 - `replace`: crea primero un respaldo local del estado actual y luego sustituye `state.json`. Si el respaldo origen tenia secretos redactados, conserva los secretos actuales del destino.
-- `merge`: crea primero un respaldo local y fusiona perfil, notas, tareas, mensajes, plan y autoconocimiento sin reemplazar configuracion local como modelo/proveedor, internet, notificaciones, UI, servicio o contexto local.
+- `merge`: crea primero un respaldo local y fusiona perfil, notas, tareas, proyectos de ideas, mensajes, plan y autoconocimiento sin reemplazar configuracion local como modelo/proveedor, internet, notificaciones, UI, servicio o contexto local.
 
 Desde la app de escritorio usa `Memoria` -> `Proteccion`, `Respaldar memoria`, `Trasplantar memoria` o `Verificar respaldos`. Desde lenguaje natural, el agente usa `memory_protection_status`, `update_memory_protection_settings`, `verify_memory_backups`, `create_memory_backup`, `list_memory_backups`, `inspect_memory_backup` e `import_memory_backup`.
 
@@ -664,6 +679,8 @@ Yarbis expone al modelo estas herramientas:
 - `update_internet_settings`: politica web
 - `request_user_input`: registra una pregunta pendiente
 - `save_note` y `list_notes`: memoria persistente
+- `create_idea_project`, `list_idea_projects`, `get_idea_project`, `update_idea_project` y `promote_idea_project_to_work`: proyectos de ideas para divergencia creativa, decision y conversion a plan/tareas
+- `create_project_visual_board`, `list_project_visual_boards`, `get_project_visual_board`, `update_project_visual_board` y `export_project_visual_board`: boards visuales por proyecto con exportacion HTML/SVG/JSON
 - `add_task`, `list_tasks` y `update_task_status`: backlog de trabajo
 - `set_plan`: plan actual
 - `memory_protection_status`, `update_memory_protection_settings` y `verify_memory_backups`: proteccion automatica de memoria

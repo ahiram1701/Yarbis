@@ -258,6 +258,10 @@ def _merge_states(current_state: dict, incoming_state: dict) -> dict:
         current_state.get("tasks", []),
         incoming_state.get("tasks", []),
     )
+    merged["idea_projects"] = _merge_items_by_id(
+        current_state.get("idea_projects", []),
+        incoming_state.get("idea_projects", []),
+    )
     merged["current_plan"] = _unique_text_items(
         current_state.get("current_plan", []),
         incoming_state.get("current_plan", []),

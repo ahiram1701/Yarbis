@@ -34,6 +34,7 @@ class MemoryTestCase(unittest.TestCase):
         self.assertEqual(state["notes"], [])
         self.assertEqual(state["tasks"], [])
         self.assertEqual(state["current_plan"], [])
+        self.assertEqual(state["idea_projects"], [])
         self.assertEqual(state["profile"]["preferences"], [])
         self.assertIsNone(state["autonomy"]["max_steps_per_cycle"])
         self.assertEqual(state["ollama"]["timeout_seconds"], 900)
@@ -523,6 +524,85 @@ class MemoryTestCase(unittest.TestCase):
         self.assertEqual(normalized["tasks"][0]["status"], "pending")
         self.assertEqual(normalized["tasks"][0]["priority"], "media")
         self.assertEqual(len(normalized["current_plan"]), 3)
+
+    def test_normalize_state_sanitizes_idea_projects_and_summary_renders_them(self):
+        normalized = memory.normalize_state({
+            "idea_projects": [
+                {"title": "", "summary": "sin titulo"},
+                {
+                    "id": "idea-1",
+                    "title": "Lanzar servicio local",
+                    "kind": "raro",
+                    "status": "volando",
+                    "summary": "Servicio para negocios locales",
+                    "creative_directions": [
+                        f"Direccion {index}"
+                        for index in range(memory.MAX_IDEA_PROJECT_ITEMS + 3)
+                    ],
+                    "open_questions": "precio, audiencia, audiencia",
+                    "next_steps": "Definir oferta\nValidar con 3 negocios",
+                },
+            ]
+        })
+
+        self.assertEqual(len(normalized["idea_projects"]), 1)
+        project = normalized["idea_projects"][0]
+        self.assertEqual(project["kind"], "mixto")
+        self.assertEqual(project["status"], "exploring")
+        self.assertEqual(len(project["creative_directions"]), memory.MAX_IDEA_PROJECT_ITEMS)
+        self.assertEqual(project["open_questions"], ["precio", "audiencia"])
+
+        summary = memory.render_state_summary(normalized, include_last_result=False)
+        self.assertIn("Proyectos de ideas abiertos:", summary)
+        self.assertIn("Lanzar servicio local", summary)
+        self.assertIn("Validar con 3 negocios", summary)
+
+    def test_normalize_state_sanitizes_visual_boards_on_idea_projects(self):
+        nodes = [
+            {
+                "id": f"node-{index}",
+                "title": f"Nodo {index}",
+                "text": "x" * (memory.MAX_VISUAL_BOARD_NODE_TEXT_CHARS + 20),
+                "x": index,
+                "y": index,
+            }
+            for index in range(memory.MAX_VISUAL_BOARD_NODES + 4)
+        ]
+        edges = [
+            {"id": f"edge-{index}", "source": "node-0", "target": "node-1"}
+            for index in range(memory.MAX_VISUAL_BOARD_EDGES + 5)
+        ]
+
+        normalized = memory.normalize_state({
+            "idea_projects": [{
+                "id": "idea-visual",
+                "title": "Proyecto visual",
+                "visual_boards": [
+                    {
+                        "id": f"board-{board_index}",
+                        "kind": "raro" if board_index == 0 else "mind_map",
+                        "title": f"Board {board_index}",
+                        "nodes": nodes,
+                        "edges": edges,
+                        "lanes": [{"id": "lane-1", "title": "Lane", "width": 10}],
+                        "viewport": {"zoom": 9},
+                        "export_paths": {"json": "a.json", "exe": "no"},
+                    }
+                    for board_index in range(memory.MAX_VISUAL_BOARDS_PER_PROJECT + 2)
+                ],
+            }]
+        })
+
+        project = normalized["idea_projects"][0]
+        self.assertEqual(len(project["visual_boards"]), memory.MAX_VISUAL_BOARDS_PER_PROJECT)
+        board = project["visual_boards"][0]
+        self.assertEqual(board["kind"], "idea_canvas")
+        self.assertEqual(len(board["nodes"]), memory.MAX_VISUAL_BOARD_NODES)
+        self.assertEqual(len(board["edges"]), memory.MAX_VISUAL_BOARD_EDGES)
+        self.assertEqual(len(board["nodes"][0]["text"]), memory.MAX_VISUAL_BOARD_NODE_TEXT_CHARS)
+        self.assertEqual(board["lanes"][0]["width"], 120)
+        self.assertEqual(board["viewport"]["zoom"], 3)
+        self.assertEqual(board["export_paths"], {"json": "a.json"})
 
     def test_normalize_state_keeps_pending_user_question_only_when_valid(self):
         normalized = memory.normalize_state({

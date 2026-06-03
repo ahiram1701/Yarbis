@@ -599,6 +599,95 @@ class ToolsTestCase(unittest.TestCase):
             ["nicho", "audiencia"],
         )
 
+    def test_idea_project_tools_create_update_list_and_promote(self):
+        state_path = self.runtime_dir / "tool_idea_project_state.json"
+
+        with patch.object(memory, "STATE_FILE", state_path):
+            memory.save_state(memory.normalize_state({
+                "tasks": [{
+                    "id": "task-existing",
+                    "title": "Definir brief",
+                    "status": "pending",
+                    "priority": "media",
+                }]
+            }))
+            create_result = tools.create_idea_project(
+                title="Servicio para negocios locales",
+                kind="producto_negocio",
+                summary="Automatizar seguimiento de clientes",
+                creative_directions="CRM simple\nAsistente de WhatsApp",
+                open_questions="precio, canal",
+                next_steps="Definir brief\nHablar con 3 clientes",
+            )
+            state = memory.load_state()
+            project_id = state["idea_projects"][0]["id"]
+            update_result = tools.update_idea_project(
+                project_id=project_id,
+                selected_direction="CRM simple",
+                status="planned",
+            )
+            list_result = tools.list_idea_projects(status="open")
+            get_result = tools.get_idea_project(project_id)
+            promote_result = tools.promote_idea_project_to_work(project_id, priority="alta")
+            state = memory.load_state()
+
+        self.assertIn("Proyecto de idea creado", create_result)
+        self.assertIn("Proyecto de idea actualizado", update_result)
+        self.assertIn("Servicio para negocios locales", list_result)
+        self.assertIn("CRM simple", get_result)
+        self.assertIn("Proyecto de idea activado", promote_result)
+        self.assertEqual(state["idea_projects"][0]["status"], "active")
+        self.assertEqual(state["current_plan"], ["Definir brief", "Hablar con 3 clientes"])
+        self.assertEqual(
+            [task["title"] for task in state["tasks"]],
+            ["Definir brief", "Hablar con 3 clientes"],
+        )
+        self.assertEqual(state["tasks"][1]["priority"], "alta")
+
+    def test_visual_board_tools_create_update_list_get_and_export(self):
+        state_path = self.runtime_dir / "tool_visual_board_state.json"
+        visual_dir = self.runtime_dir / ".yarbis_runtime" / "visual_boards"
+
+        with patch.object(memory, "STATE_FILE", state_path):
+            with patch.object(tools, "VISUAL_BOARDS_DIR", visual_dir):
+                memory.save_state(memory.default_state())
+                create_project = tools.create_idea_project(
+                    title="Servicio visual",
+                    summary="Planear oferta",
+                    creative_directions="CRM ligero\nAgenda asistida",
+                    next_steps="Validar problema\nHacer demo",
+                )
+                state = memory.load_state()
+                project_id = state["idea_projects"][0]["id"]
+
+                invalid = tools.create_project_visual_board(project_id, "desconocido")
+                create_board = tools.create_project_visual_board(project_id, "idea_canvas")
+                state = memory.load_state()
+                board_id = state["idea_projects"][0]["visual_boards"][0]["id"]
+                list_result = tools.list_project_visual_boards(project_id)
+                board = json.loads(tools.get_project_visual_board(project_id, board_id))
+                board["nodes"][0]["x"] = 123
+                board["nodes"][0]["text"] = "Problema actualizado"
+                update_result = tools.update_project_visual_board(project_id, board_id, json.dumps(board))
+                export_result = tools.export_project_visual_board(project_id, board_id, formats="html,svg,json")
+                state = memory.load_state()
+
+        self.assertIn("Proyecto de idea creado", create_project)
+        self.assertIn("Tipo de board visual invalido", invalid)
+        self.assertIn("Board visual creado", create_board)
+        self.assertIn(board_id, list_result)
+        self.assertIn("Board visual actualizado", update_result)
+        self.assertEqual(state["idea_projects"][0]["visual_boards"][0]["nodes"][0]["x"], 123)
+        self.assertEqual(
+            state["idea_projects"][0]["visual_boards"][0]["nodes"][0]["text"],
+            "Problema actualizado",
+        )
+        self.assertIn("Board visual exportado", export_result)
+        export_paths = state["idea_projects"][0]["visual_boards"][0]["export_paths"]
+        self.assertTrue(Path(export_paths["json"]).exists())
+        self.assertTrue(Path(export_paths["svg"]).exists())
+        self.assertTrue(Path(export_paths["html"]).exists())
+
     def test_update_internet_settings_persists_policy(self):
         state_path = self.runtime_dir / "tool_internet_state.json"
 

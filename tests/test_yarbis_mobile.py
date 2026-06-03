@@ -9,6 +9,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import memory
+import tools
 import yarbis_mobile
 from ui_settings_dialogs import NotificationsDialog, ServiceMobileUiDialog, VoiceSettingsDialog
 
@@ -177,6 +178,87 @@ class YarbisMobileTestCase(unittest.TestCase):
             finally:
                 server.shutdown()
                 server.server_close()
+
+    def test_context_state_and_actions_include_idea_projects(self):
+        state_path = TEST_RUNTIME_DIR / "mobile_idea_projects_state.json"
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+
+        seeded_state = memory.normalize_state({
+            "idea_projects": [{
+                "id": "idea-demo",
+                "title": "Idea demo",
+                "kind": "mixto",
+                "status": "exploring",
+                "next_steps": ["Definir brief"],
+            }]
+        })
+
+        with patch.object(memory, "STATE_FILE", state_path):
+            memory.save_state(seeded_state)
+            context_state = yarbis_mobile._public_context_state(memory.load_state())
+            result = yarbis_mobile._execute_action("create_idea_project", {
+                "title": "Nueva idea",
+                "kind": "vida_proyecto",
+                "next_steps": "Dar primer paso",
+            })
+            state = memory.load_state()
+
+        self.assertEqual(context_state["idea_projects"][0]["id"], "idea-demo")
+        self.assertIn("Proyecto de idea creado", result["result"])
+        self.assertEqual(len(state["idea_projects"]), 2)
+        self.assertEqual(state["idea_projects"][1]["kind"], "vida_proyecto")
+
+    def test_visual_state_and_actions_manage_project_boards(self):
+        state_path = TEST_RUNTIME_DIR / "mobile_visual_boards_state.json"
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+        visual_dir = TEST_RUNTIME_DIR / "mobile_visual_exports"
+
+        seeded_state = memory.normalize_state({
+            "idea_projects": [{
+                "id": "idea-demo",
+                "title": "Idea demo",
+                "kind": "mixto",
+                "status": "exploring",
+                "summary": "Explorar una oferta",
+                "next_steps": ["Definir brief"],
+            }]
+        })
+
+        with patch.object(memory, "STATE_FILE", state_path):
+            with patch.object(tools, "VISUAL_BOARDS_DIR", visual_dir):
+                memory.save_state(seeded_state)
+                visual_state = yarbis_mobile._public_state("visual")
+                create_result = yarbis_mobile._execute_action("create_visual_board", {
+                    "project_id": "idea-demo",
+                    "board_kind": "mind_map",
+                })
+                state = memory.load_state()
+                board = state["idea_projects"][0]["visual_boards"][0]
+                board["nodes"][0]["title"] = "Centro actualizado"
+                update_result = yarbis_mobile._execute_action("update_visual_board", {
+                    "project_id": "idea-demo",
+                    "board_id": board["id"],
+                    "board": board,
+                })
+                export_result = yarbis_mobile._execute_action("export_visual_board", {
+                    "project_id": "idea-demo",
+                    "board_id": board["id"],
+                    "formats": "json,svg,html",
+                })
+                state = memory.load_state()
+
+        self.assertEqual(visual_state["idea_projects"][0]["id"], "idea-demo")
+        self.assertIn("Board visual creado", create_result["result"])
+        self.assertIn("Board visual actualizado", update_result["result"])
+        self.assertEqual(
+            state["idea_projects"][0]["visual_boards"][0]["nodes"][0]["title"],
+            "Centro actualizado",
+        )
+        self.assertIn("Board visual exportado", export_result["result"])
+        export_paths = state["idea_projects"][0]["visual_boards"][0]["export_paths"]
+        self.assertTrue(Path(export_paths["json"]).exists())
+        self.assertTrue(Path(export_paths["svg"]).exists())
+        self.assertTrue(Path(export_paths["html"]).exists())
 
     def test_http_api_voice_transcribe_requires_auth_and_csrf(self):
         state_path = TEST_RUNTIME_DIR / "mobile_voice_state.json"

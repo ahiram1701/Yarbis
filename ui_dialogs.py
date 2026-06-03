@@ -16,7 +16,13 @@ from memory import (
     MODEL_PROVIDER_OPENROUTER,
     load_state,
 )
-from session import delete_note_text, save_note_text
+from session import (
+    create_idea_project_text,
+    delete_note_text,
+    promote_idea_project_to_work_text,
+    save_note_text,
+    update_idea_project_text,
+)
 from ui_theme import THEMES, style_listbox_widget, style_scrollbar_widget, style_text_widget
 
 
@@ -201,10 +207,10 @@ class SocialOAuthDialog(ThemedDialog):
 
 class FirstRunDialog(ThemedDialog):
     GOAL_TEMPLATES = (
-        "Organizar mis tareas y avanzar el siguiente paso importante",
+        "Explorar y planificar ideas de producto o negocio hasta convertirlas en proximos pasos",
+        "Organizar mis proyectos personales con claridad, prioridades y seguimiento",
+        "Convertir ideas borrosas en briefs, alternativas creativas, decisiones y tareas",
         "Mejorar este proyecto y dejarlo listo para usar",
-        "Investigar informacion publica y resumir decisiones accionables",
-        "Crear un sistema de notas y seguimiento por Telegram",
     )
 
     def __init__(self, parent, initial_state: dict):
@@ -774,6 +780,335 @@ class NotesDialog(ThemedDialog):
         result = delete_note_text(note.get("id", ""))
         self.activity_messages.append(result)
         self._refresh_notes()
+
+    def apply(self):
+        self.result = "\n".join(self.activity_messages).strip()
+
+
+class IdeaProjectEditDialog(ThemedDialog):
+    KIND_OPTIONS = ("producto_negocio", "vida_proyecto", "mixto", "otro")
+    STATUS_OPTIONS = ("exploring", "planned", "active", "paused", "done", "archived")
+    TEXT_FIELDS = (
+        ("summary", "Resumen", 3),
+        ("audience", "Audiencia", 2),
+        ("desired_outcome", "Resultado deseado", 2),
+        ("problem", "Problema u oportunidad", 2),
+        ("creative_directions", "Direcciones creativas", 4),
+        ("selected_direction", "Direccion elegida", 2),
+        ("success_criteria", "Criterios de exito", 3),
+        ("constraints", "Restricciones", 2),
+        ("risks", "Riesgos", 2),
+        ("open_questions", "Preguntas abiertas", 3),
+        ("next_steps", "Proximos pasos", 3),
+    )
+    LIST_FIELDS = {
+        "creative_directions",
+        "success_criteria",
+        "constraints",
+        "risks",
+        "open_questions",
+        "next_steps",
+    }
+
+    def __init__(self, parent, initial_project: dict | None = None):
+        self.initial_project = initial_project or {}
+        self.text_widgets = {}
+        title = "Editar proyecto" if initial_project else "Nuevo proyecto"
+        super().__init__(parent, title)
+
+    def body(self, master):
+        self._prepare_body(master)
+        master.columnconfigure(0, weight=1)
+        master.columnconfigure(1, weight=1)
+
+        ttk.Label(master, text="Titulo").grid(row=0, column=0, sticky="w", padx=6, pady=(6, 2))
+        self.title_entry = ttk.Entry(master, width=56)
+        self.title_entry.grid(row=1, column=0, columnspan=2, sticky="ew", padx=6)
+        self.title_entry.insert(0, self.initial_project.get("title", ""))
+
+        ttk.Label(master, text="Tipo").grid(row=2, column=0, sticky="w", padx=6, pady=(8, 2))
+        self.kind_combo = ttk.Combobox(master, values=self.KIND_OPTIONS, state="readonly", width=24)
+        self.kind_combo.grid(row=3, column=0, sticky="ew", padx=6)
+        self.kind_combo.set(self.initial_project.get("kind", "mixto") or "mixto")
+
+        ttk.Label(master, text="Estado").grid(row=2, column=1, sticky="w", padx=6, pady=(8, 2))
+        self.status_combo = ttk.Combobox(master, values=self.STATUS_OPTIONS, state="readonly", width=24)
+        self.status_combo.grid(row=3, column=1, sticky="ew", padx=6)
+        self.status_combo.set(self.initial_project.get("status", "exploring") or "exploring")
+
+        row = 4
+        for field_name, label, height in self.TEXT_FIELDS:
+            column = 0 if (row - 4) % 2 == 0 else 1
+            ttk.Label(master, text=label).grid(row=row, column=column, sticky="w", padx=6, pady=(8, 2))
+            text_widget = tk.Text(master, width=38, height=height, wrap="word")
+            text_widget.grid(row=row + 1, column=column, sticky="ew", padx=6)
+            self._style_text_widget(text_widget)
+            value = self.initial_project.get(field_name, "")
+            if isinstance(value, list):
+                value = "\n".join(str(item) for item in value)
+            text_widget.insert("1.0", str(value))
+            self.text_widgets[field_name] = text_widget
+            if column == 1:
+                row += 2
+
+        return self.title_entry
+
+    def validate(self):
+        if not self.title_entry.get().strip():
+            messagebox.showwarning("Yarbis", "El proyecto necesita titulo.", parent=self)
+            return False
+        return True
+
+    def _field_value(self, field_name: str):
+        text = self.text_widgets[field_name].get("1.0", "end-1c").strip()
+        if text:
+            return text
+        if not self.initial_project:
+            return ""
+        original = self.initial_project.get(field_name, "")
+        if isinstance(original, list):
+            return "[clear]" if original else ""
+        return "[clear]" if str(original).strip() else ""
+
+    def apply(self):
+        self.result = {
+            "title": self.title_entry.get().strip(),
+            "kind": self.kind_combo.get().strip() or "mixto",
+            "status": self.status_combo.get().strip() or "exploring",
+        }
+        for field_name, _label, _height in self.TEXT_FIELDS:
+            self.result[field_name] = self._field_value(field_name)
+
+
+class IdeaProjectsDialog(ThemedDialog):
+    def __init__(self, parent, visual_callback=None):
+        self.projects = []
+        self.activity_messages = []
+        self.visual_callback = visual_callback
+        super().__init__(parent, "Ideas/proyectos")
+
+    def body(self, master):
+        self._prepare_body(master)
+        master.columnconfigure(0, weight=0)
+        master.columnconfigure(1, weight=1)
+        master.rowconfigure(0, weight=1)
+
+        list_frame = tk.Frame(master, bd=0, highlightthickness=0)
+        list_frame.grid(row=0, column=0, sticky="nsew", padx=(6, 4), pady=6)
+        list_frame.columnconfigure(0, weight=1)
+        list_frame.rowconfigure(0, weight=1)
+        list_frame.configure(bg=self.theme_palette["bg"])
+
+        self.projects_list = tk.Listbox(
+            list_frame,
+            width=42,
+            height=20,
+            activestyle="dotbox",
+            exportselection=False,
+        )
+        self.projects_list.grid(row=0, column=0, sticky="nsew")
+        style_listbox_widget(self.projects_list, self.theme_palette)
+        self.projects_list.bind("<<ListboxSelect>>", self._show_selected_project)
+
+        projects_scrollbar = ttk.Scrollbar(
+            list_frame,
+            orient="vertical",
+            command=self.projects_list.yview,
+            style="Yarbis.Vertical.TScrollbar",
+        )
+        projects_scrollbar.grid(row=0, column=1, sticky="ns")
+        self.projects_list.configure(yscrollcommand=projects_scrollbar.set)
+        style_scrollbar_widget(projects_scrollbar, self.theme_palette)
+
+        detail_frame = tk.Frame(master, bd=0, highlightthickness=0)
+        detail_frame.grid(row=0, column=1, sticky="nsew", padx=(4, 6), pady=6)
+        detail_frame.columnconfigure(0, weight=1)
+        detail_frame.rowconfigure(0, weight=1)
+        detail_frame.configure(bg=self.theme_palette["bg"])
+
+        self.detail_text = tk.Text(detail_frame, width=64, height=20, wrap="word")
+        self.detail_text.grid(row=0, column=0, sticky="nsew")
+        self._style_text_widget(self.detail_text)
+        self.detail_text.configure(state="disabled")
+
+        detail_scrollbar = ttk.Scrollbar(
+            detail_frame,
+            orient="vertical",
+            command=self.detail_text.yview,
+            style="Yarbis.Vertical.TScrollbar",
+        )
+        detail_scrollbar.grid(row=0, column=1, sticky="ns")
+        self.detail_text.configure(yscrollcommand=detail_scrollbar.set)
+        style_scrollbar_widget(detail_scrollbar, self.theme_palette)
+
+        self._refresh_projects()
+        return self.projects_list
+
+    def buttonbox(self):
+        box = ttk.Frame(self)
+        ttk.Button(box, text="Nuevo", command=self._new_project, style="Accent.TButton").pack(side="left", padx=(0, 8))
+        self.edit_button = ttk.Button(box, text="Editar", command=self._edit_selected_project)
+        self.edit_button.pack(side="left", padx=(0, 8))
+        self.activate_button = ttk.Button(box, text="Activar", command=self._activate_selected_project)
+        self.activate_button.pack(side="left", padx=(0, 8))
+        self.visual_button = ttk.Button(box, text="Visual web", command=self._open_visual_workspace)
+        self.visual_button.pack(side="left", padx=(0, 8))
+        self.archive_button = ttk.Button(
+            box,
+            text="Archivar",
+            command=self._archive_selected_project,
+            style="Danger.TButton",
+        )
+        self.archive_button.pack(side="left", padx=(0, 8))
+        ttk.Button(box, text="Refrescar", command=self._refresh_projects).pack(side="left", padx=(0, 8))
+        ttk.Button(box, text="Cerrar", command=self.ok).pack(side="left")
+
+        self.bind("<Escape>", self.cancel)
+        box.pack(padx=10, pady=(0, 10), anchor="e")
+        self._sync_action_buttons()
+
+    def _set_detail_text(self, content: str):
+        self.detail_text.configure(state="normal")
+        self.detail_text.delete("1.0", "end")
+        self.detail_text.insert("1.0", content)
+        self.detail_text.configure(state="disabled")
+
+    def _selected_project(self) -> dict | None:
+        selection = self.projects_list.curselection()
+        if not selection:
+            return None
+        index = int(selection[0])
+        if index < 0 or index >= len(self.projects):
+            return None
+        return self.projects[index]
+
+    def _sync_action_buttons(self):
+        project = self._selected_project() if hasattr(self, "projects_list") else None
+        enabled = "normal" if project else "disabled"
+        for button_name in ("edit_button", "activate_button", "archive_button"):
+            if hasattr(self, button_name):
+                getattr(self, button_name).configure(state=enabled)
+        if hasattr(self, "visual_button"):
+            self.visual_button.configure(state="normal" if self.visual_callback else "disabled")
+
+    def _render_project(self, project: dict) -> str:
+        lines = [
+            f"[{project.get('id', '')}] {project.get('title', 'Proyecto sin titulo')}",
+            f"Tipo: {project.get('kind', '-')}",
+            f"Estado: {project.get('status', '-')}",
+        ]
+        for label, key in (
+            ("Resumen", "summary"),
+            ("Audiencia", "audience"),
+            ("Resultado deseado", "desired_outcome"),
+            ("Problema", "problem"),
+            ("Direccion elegida", "selected_direction"),
+        ):
+            if project.get(key):
+                lines.append(f"{label}: {project[key]}")
+
+        for label, key in (
+            ("Direcciones creativas", "creative_directions"),
+            ("Criterios de exito", "success_criteria"),
+            ("Restricciones", "constraints"),
+            ("Riesgos", "risks"),
+            ("Preguntas abiertas", "open_questions"),
+            ("Proximos pasos", "next_steps"),
+        ):
+            values = project.get(key) or []
+            if values:
+                lines.append(label + ":")
+                lines.extend(f"- {value}" for value in values)
+        return "\n".join(lines)
+
+    def _show_selected_project(self, _event=None):
+        project = self._selected_project()
+        if not project:
+            self._set_detail_text("Selecciona un proyecto para verlo completo.")
+            self._sync_action_buttons()
+            return
+        self._set_detail_text(self._render_project(project))
+        self._sync_action_buttons()
+
+    def _refresh_projects(self):
+        selected_id = ""
+        selected_project = self._selected_project() if hasattr(self, "projects_list") else None
+        if selected_project:
+            selected_id = selected_project.get("id", "")
+
+        state = load_state()
+        self.projects = list(reversed(state.get("idea_projects", [])))
+        self.projects_list.delete(0, "end")
+        for project in self.projects:
+            self.projects_list.insert(
+                "end",
+                f"[{project.get('id', '')}] {project.get('title', 'Proyecto sin titulo')} "
+                f"({project.get('status', '-')})",
+            )
+
+        if not self.projects:
+            self._set_detail_text("No hay proyectos de ideas guardados.")
+            self._sync_action_buttons()
+            return
+
+        next_index = 0
+        if selected_id:
+            for index, project in enumerate(self.projects):
+                if project.get("id", "") == selected_id:
+                    next_index = index
+                    break
+
+        self.projects_list.selection_clear(0, "end")
+        self.projects_list.selection_set(next_index)
+        self.projects_list.activate(next_index)
+        self.projects_list.see(next_index)
+        self._show_selected_project()
+
+    def _new_project(self):
+        dialog = IdeaProjectEditDialog(self)
+        if dialog.result is None:
+            return
+        result = create_idea_project_text(**dialog.result)
+        self.activity_messages.append(result)
+        self._refresh_projects()
+
+    def _edit_selected_project(self):
+        project = self._selected_project()
+        if not project:
+            return
+        dialog = IdeaProjectEditDialog(self, initial_project=project)
+        if dialog.result is None:
+            return
+        result = update_idea_project_text(project_id=project.get("id", ""), **dialog.result)
+        self.activity_messages.append(result)
+        self._refresh_projects()
+
+    def _activate_selected_project(self):
+        project = self._selected_project()
+        if not project:
+            return
+        result = promote_idea_project_to_work_text(project.get("id", ""))
+        self.activity_messages.append(result)
+        self._refresh_projects()
+
+    def _open_visual_workspace(self):
+        if callable(self.visual_callback):
+            self.visual_callback()
+
+    def _archive_selected_project(self):
+        project = self._selected_project()
+        if not project:
+            return
+        should_archive = messagebox.askyesno(
+            "Archivar proyecto",
+            f"Quieres archivar '{project.get('title', 'Proyecto sin titulo')}'?",
+            parent=self,
+        )
+        if not should_archive:
+            return
+        result = update_idea_project_text(project_id=project.get("id", ""), status="archived")
+        self.activity_messages.append(result)
+        self._refresh_projects()
 
     def apply(self):
         self.result = "\n".join(self.activity_messages).strip()

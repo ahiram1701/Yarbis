@@ -71,21 +71,31 @@ from tools import (
     coding_set_workspace,
     coding_update_validation_command,
     coding_workspace_overview,
+    create_idea_project,
     create_memory_backup,
+    create_project_visual_board,
     delete_note,
+    export_project_visual_board,
+    get_idea_project,
+    get_project_visual_board,
     get_note,
     import_memory_backup,
     inspect_memory_backup,
+    list_idea_projects,
     list_memory_backups,
     list_notes,
+    list_project_visual_boards,
     list_social_publications,
     memory_protection_status,
     open_assisted_social_post,
     save_note,
     social_accounts_overview,
     start_social_oauth,
+    promote_idea_project_to_work,
     update_goal as update_goal_tool,
+    update_idea_project,
     update_memory_protection_settings,
+    update_project_visual_board,
     update_profile,
     verify_memory_backups,
 )
@@ -1415,6 +1425,128 @@ def update_memory_protection_settings_text(
 def add_task_text(title: str, details: str = "", priority: str = "media") -> str:
     with SESSION_LOCK:
         return add_task(title=title, details=details, priority=priority or "media")
+
+
+def create_idea_project_text(
+    title: str,
+    kind: str = "mixto",
+    summary: str = "",
+    audience: str = "",
+    desired_outcome: str = "",
+    problem: str = "",
+    creative_directions: str = "",
+    selected_direction: str = "",
+    success_criteria: str = "",
+    constraints: str = "",
+    risks: str = "",
+    open_questions: str = "",
+    next_steps: str = "",
+    status: str = "exploring",
+) -> str:
+    with SESSION_LOCK:
+        return create_idea_project(
+            title=title,
+            kind=kind,
+            summary=summary,
+            audience=audience,
+            desired_outcome=desired_outcome,
+            problem=problem,
+            creative_directions=creative_directions,
+            selected_direction=selected_direction,
+            success_criteria=success_criteria,
+            constraints=constraints,
+            risks=risks,
+            open_questions=open_questions,
+            next_steps=next_steps,
+            status=status,
+        )
+
+
+def list_idea_projects_text(status: str = "open", limit: int = 20) -> str:
+    with SESSION_LOCK:
+        return list_idea_projects(status=status, limit=limit)
+
+
+def get_idea_project_text(project_id: str) -> str:
+    with SESSION_LOCK:
+        return get_idea_project(project_id=project_id)
+
+
+def update_idea_project_text(
+    project_id: str,
+    title: str = "",
+    kind: str = "",
+    status: str = "",
+    summary: str = "",
+    audience: str = "",
+    desired_outcome: str = "",
+    problem: str = "",
+    creative_directions: str = "",
+    selected_direction: str = "",
+    success_criteria: str = "",
+    constraints: str = "",
+    risks: str = "",
+    open_questions: str = "",
+    next_steps: str = "",
+) -> str:
+    with SESSION_LOCK:
+        return update_idea_project(
+            project_id=project_id,
+            title=title,
+            kind=kind,
+            status=status,
+            summary=summary,
+            audience=audience,
+            desired_outcome=desired_outcome,
+            problem=problem,
+            creative_directions=creative_directions,
+            selected_direction=selected_direction,
+            success_criteria=success_criteria,
+            constraints=constraints,
+            risks=risks,
+            open_questions=open_questions,
+            next_steps=next_steps,
+        )
+
+
+def promote_idea_project_to_work_text(project_id: str, priority: str = "media") -> str:
+    with SESSION_LOCK:
+        return promote_idea_project_to_work(project_id=project_id, priority=priority or "media")
+
+
+def create_project_visual_board_text(project_id: str, board_kind: str, title: str = "") -> str:
+    with SESSION_LOCK:
+        return create_project_visual_board(project_id=project_id, board_kind=board_kind, title=title)
+
+
+def list_project_visual_boards_text(project_id: str) -> str:
+    with SESSION_LOCK:
+        return list_project_visual_boards(project_id=project_id)
+
+
+def get_project_visual_board_text(project_id: str, board_id: str) -> str:
+    with SESSION_LOCK:
+        return get_project_visual_board(project_id=project_id, board_id=board_id)
+
+
+def update_project_visual_board_text(project_id: str, board_id: str, board_json: str) -> str:
+    with SESSION_LOCK:
+        return update_project_visual_board(project_id=project_id, board_id=board_id, board_json=board_json)
+
+
+def export_project_visual_board_text(
+    project_id: str,
+    board_id: str,
+    formats: str = "html,svg,json",
+    open_file: bool = False,
+) -> str:
+    with SESSION_LOCK:
+        return export_project_visual_board(
+            project_id=project_id,
+            board_id=board_id,
+            formats=formats,
+            open_file=open_file,
+        )
 
 
 def coding_set_workspace_text(path: str) -> str:
