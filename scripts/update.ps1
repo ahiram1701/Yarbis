@@ -183,6 +183,55 @@ function Get-GitStatusLines {
     return @($result.Output | Where-Object { [string]$_ })
 }
 
+function Test-ShouldExcludeFromUpdateStash([string]$RelativePath) {
+    $normalized = ([string]$RelativePath).Replace("/", "\").TrimStart("\").ToLowerInvariant()
+    if (-not $normalized) {
+        return $true
+    }
+
+    if ($normalized -eq "state.json" -or $normalized -eq "state.json.tmp" -or $normalized -like "state.json.tmp-*") {
+        return $true
+    }
+
+    foreach ($root in @(".yarbis_runtime", ".yarbis_checkpoints", ".yarbis_memory_backups", ".yarbis_instances", "tests_runtime")) {
+        if ($normalized -eq $root -or $normalized.StartsWith("$root\")) {
+            return $true
+        }
+    }
+
+    return $false
+}
+
+function Get-GitPathOutput([string[]]$Arguments, [string]$Action) {
+    $gitArguments = @("-C", $RepoRoot) + @($Arguments)
+    $result = Invoke-NativeCapture -FilePath "git" -Arguments $gitArguments
+    if ($result.ExitCode -ne 0) {
+        throw "$Action fallo.`n$($result.Output -join "`n")"
+    }
+
+    return @($result.Output | Where-Object { [string]$_ } | ForEach-Object { [string]$_ })
+}
+
+function Get-StashCandidatePaths {
+    $queries = @(
+        (@("diff", "--name-only", "--") + $StashPathspec),
+        (@("diff", "--cached", "--name-only", "--") + $StashPathspec),
+        (@("ls-files", "--others", "--exclude-standard", "--") + $StashPathspec)
+    )
+    $seen = @{}
+
+    foreach ($query in $queries) {
+        Get-GitPathOutput $query "listar archivos para stash" | ForEach-Object {
+            $path = ([string]$_).Trim()
+            if ($path -and -not (Test-ShouldExcludeFromUpdateStash $path)) {
+                $seen[$path] = $true
+            }
+        }
+    }
+
+    return @($seen.Keys | Sort-Object)
+}
+
 function Save-LocalChangesForUpdate {
     $statusLines = Get-GitStatusLines
     if (-not $statusLines -or $statusLines.Count -eq 0) {
@@ -196,6 +245,12 @@ function Save-LocalChangesForUpdate {
     Write-Host "La memoria local de Yarbis queda fuera del stash: state.json, runtime, respaldos e instancias."
     $statusLines | ForEach-Object { Write-Host "  $_" }
 
+    $stashPaths = Get-StashCandidatePaths
+    if (-not $stashPaths -or $stashPaths.Count -eq 0) {
+        $script:stashSummary = "sin cambios locales fuera de memoria/runtime"
+        return
+    }
+
     $stashArguments = @(
         "-C",
         $RepoRoot,
@@ -205,7 +260,7 @@ function Save-LocalChangesForUpdate {
         "--message",
         $script:stashMessage,
         "--"
-    ) + $StashPathspec
+    ) + $stashPaths
 
     Invoke-CommandChecked "git" $stashArguments "guardar cambios locales en stash"
 
