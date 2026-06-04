@@ -1,5 +1,6 @@
 import threading
 import time
+import unicodedata
 import uuid
 
 import conversation_ux
@@ -28,6 +29,25 @@ _MOBILE_LOCK = threading.RLock()
 _MOBILE_SESSIONS: dict[str, dict] = {}
 _MOBILE_SESSION_LIMIT = 8
 _MOBILE_SESSION_TTL_SECONDS = 30 * 60
+_ARMED_COMMAND_SECONDS = 12.0
+_WAKE_ALIASES = {
+    "yarbis": {
+        "yarbis",
+        "jarbis",
+        "jarvis",
+        "yarvis",
+        "yerbis",
+        "yervis",
+        "iarbis",
+        "iarvis",
+        "garbis",
+        "garvis",
+        "gerbis",
+        "gervis",
+        "yardis",
+        "yarbiz",
+    }
+}
 
 
 def _utc_now_text() -> str:
@@ -47,7 +67,29 @@ def _normalize_for_match(text: str) -> str:
     }
     for source, target in replacements.items():
         rendered = rendered.replace(source, target)
+    rendered = unicodedata.normalize("NFKD", rendered)
+    rendered = "".join(char for char in rendered if not unicodedata.combining(char))
+    rendered = "".join(char if char.isalnum() else " " for char in rendered)
     return " ".join(rendered.split())
+
+
+def _wake_phrase_aliases(wake_phrase: str) -> set[str]:
+    normalized_wake = _normalize_for_match(wake_phrase or "Yarbis")
+    aliases = {normalized_wake} if normalized_wake else set()
+    aliases.update(_WAKE_ALIASES.get(normalized_wake, set()))
+    return {alias for alias in aliases if alias}
+
+
+def _wake_match_span(words: list[str], wake_phrase: str) -> tuple[int, int] | None:
+    normalized_words = [_normalize_for_match(word) for word in words]
+    for alias in _wake_phrase_aliases(wake_phrase):
+        wake_parts = alias.split()
+        if not wake_parts:
+            continue
+        for index in range(0, len(normalized_words) - len(wake_parts) + 1):
+            if normalized_words[index:index + len(wake_parts)] == wake_parts:
+                return index, index + len(wake_parts)
+    return None
 
 
 def live_voice_settings(settings: dict | None = None) -> dict:
@@ -71,22 +113,18 @@ def live_voice_settings(settings: dict | None = None) -> dict:
 
 
 def wake_phrase_detected(text: str, wake_phrase: str = "Yarbis") -> bool:
-    normalized_text = _normalize_for_match(text)
-    normalized_wake = _normalize_for_match(wake_phrase or "Yarbis")
-    return bool(normalized_wake and normalized_wake in normalized_text)
+    return _wake_match_span(str(text or "").split(), wake_phrase) is not None
 
 
 def text_after_wake_phrase(text: str, wake_phrase: str = "Yarbis") -> str:
     cleaned = str(text or "").strip()
-    normalized_wake = _normalize_for_match(wake_phrase or "Yarbis")
-    if not cleaned or not normalized_wake:
+    if not cleaned:
         return cleaned
     words = cleaned.split()
-    normalized_words = [_normalize_for_match(word.strip(" ,.:;!?")) for word in words]
-    wake_parts = normalized_wake.split()
-    for index in range(0, len(normalized_words) - len(wake_parts) + 1):
-        if normalized_words[index:index + len(wake_parts)] == wake_parts:
-            return " ".join(words[index + len(wake_parts):]).strip(" ,.:;!?")
+    match = _wake_match_span(words, wake_phrase)
+    if match:
+        _start, end = match
+        return " ".join(words[end:]).strip(" ,.:;!?")
     return cleaned
 
 
@@ -130,10 +168,11 @@ def transcribe_live_audio_file(path, *, settings: dict | None = None, wake: bool
 
 def transcribe_live_audio_bytes(raw_audio: bytes, *, mime_type: str = "", settings: dict | None = None) -> str:
     live = live_voice_settings(settings)
+    model = str(live.get("turn_stt_model") or live.get("wake_stt_model") or "")
     return yarbis_voice.transcribe_audio_bytes(
         raw_audio,
         mime_type=mime_type,
-        settings=_stt_settings(settings or load_state(), str(live.get("wake_stt_model", ""))),
+        settings=_stt_settings(settings or load_state(), model),
     )
 
 
@@ -151,11 +190,18 @@ def process_voice_turn(
     wake_phrase = str(live.get("wake_phrase", "Yarbis")).strip() or "Yarbis"
     cleaned_turn = text_after_wake_phrase(transcript, wake_phrase).strip()
     if not cleaned_turn:
+        prompt = f"Te escucho. Dime lo que necesitas."
+        if speaker is None:
+            speaker = yarbis_voice.speak_text
+        if speak and live.get("auto_speak", True):
+            speaker(prompt, settings=current_settings, cancellable=True)
         return {
-            "state": STATE_WAKE_LISTENING,
+            "state": STATE_CAPTURING,
             "transcript": str(transcript or "").strip(),
             "reply": "",
-            "spoken_text": "Te escucho. Di lo que necesitas después de Yarbis.",
+            "spoken_text": prompt,
+            "awaiting_command": True,
+            "source": source,
         }
 
     if runner is None:
@@ -174,6 +220,7 @@ def process_voice_turn(
         "transcript": cleaned_turn,
         "reply": str(result or "").strip(),
         "spoken_text": spoken_text,
+        "awaiting_command": False,
         "source": source,
     }
 
@@ -204,6 +251,7 @@ def run_desktop_live_conversation(
 
     update(STATE_WAKE_LISTENING, f"Di '{wake_phrase}' para hablar.")
     last_result = {}
+    armed_until = 0.0
     while not stop_event.is_set():
         audio_path = None
         try:
@@ -217,22 +265,36 @@ def run_desktop_live_conversation(
             if stop_event.is_set():
                 break
             update(STATE_TRANSCRIBING, "Transcribiendo voz local.")
-            transcript = transcribe_live_audio_file(audio_path, settings=current_settings, wake=True)
+            transcript = transcribe_live_audio_file(audio_path, settings=current_settings, wake=False)
             update(STATE_WAKE_LISTENING, f"Escuché: {transcript}", last_transcript=transcript)
-            if not wake_phrase_detected(transcript, wake_phrase):
+            activation_detected = wake_phrase_detected(transcript, wake_phrase)
+            already_armed = time.monotonic() < armed_until
+            if not activation_detected and not already_armed:
+                update(
+                    STATE_WAKE_LISTENING,
+                    f"No detecté '{wake_phrase}'. Escuché: {transcript}",
+                    last_transcript=transcript,
+                )
                 continue
+            turn_transcript = transcript if activation_detected else f"{wake_phrase} {transcript}"
             update(STATE_THINKING, "Yarbis está preparando una respuesta.", last_transcript=transcript)
             last_result = process_voice_turn(
-                transcript,
+                turn_transcript,
                 source="desktop_voice_live",
                 settings=current_settings,
                 speak=bool(live.get("auto_speak", True)),
                 runner=runner,
                 speaker=speaker,
             )
+            if last_result.get("awaiting_command"):
+                armed_until = time.monotonic() + _ARMED_COMMAND_SECONDS
+            else:
+                armed_until = 0.0
             update(
                 STATE_SPEAKING if last_result.get("spoken_text") else STATE_WAKE_LISTENING,
-                "Respuesta hablada lista." if last_result.get("spoken_text") else "Respuesta lista.",
+                "Te escucho, dime la instrucción." if last_result.get("awaiting_command")
+                else "Respuesta hablada lista." if last_result.get("spoken_text")
+                else "Respuesta lista.",
                 last_transcript=last_result.get("transcript", transcript),
                 last_reply=last_result.get("spoken_text") or last_result.get("reply", ""),
             )
@@ -280,6 +342,8 @@ def start_mobile_session(settings: dict | None = None) -> dict:
         "last_transcript": "",
         "last_reply": "",
         "spoken_text": "",
+        "awaiting_command": False,
+        "armed_until": 0.0,
         "created_at": _utc_now_text(),
         "updated_at": _utc_now_text(),
         "updated_monotonic": time.time(),
@@ -345,18 +409,23 @@ def append_mobile_audio_chunk(
         session["updated_at"] = _utc_now_text()
         session["updated_monotonic"] = time.time()
 
-    if not wake_phrase_detected(transcript, wake_phrase):
+    activation_detected = wake_phrase_detected(transcript, wake_phrase)
+    already_armed = bool(session.get("awaiting_command")) and time.time() < float(session.get("armed_until", 0.0))
+    if not activation_detected and not already_armed:
         with _MOBILE_LOCK:
             session["state"] = STATE_WAKE_LISTENING
             session["detail"] = f"Escuché voz, pero no la frase '{wake_phrase}'."
+            session["awaiting_command"] = False
+            session["armed_until"] = 0.0
             return dict(session)
 
     with _MOBILE_LOCK:
         session["state"] = STATE_THINKING
         session["detail"] = "Yarbis está preparando una respuesta."
 
+    turn_transcript = transcript if activation_detected else f"{wake_phrase} {transcript}"
     result = process_voice_turn(
-        transcript,
+        turn_transcript,
         source="mobile_voice_live",
         settings=current_settings,
         speak=False,
@@ -365,10 +434,17 @@ def append_mobile_audio_chunk(
     with _MOBILE_LOCK:
         session = _MOBILE_SESSIONS[str(session_id).strip()]
         session["state"] = STATE_SPEAKING if result.get("spoken_text") else STATE_WAKE_LISTENING
-        session["detail"] = "Respuesta lista para escuchar." if result.get("spoken_text") else "Respuesta lista."
+        session["detail"] = (
+            "Te escucho, dime la instrucción."
+            if result.get("awaiting_command")
+            else "Respuesta lista para escuchar." if result.get("spoken_text")
+            else "Respuesta lista."
+        )
         session["last_transcript"] = result.get("transcript", transcript)
         session["last_reply"] = result.get("reply", "")
         session["spoken_text"] = result.get("spoken_text", "")
+        session["awaiting_command"] = bool(result.get("awaiting_command"))
+        session["armed_until"] = time.time() + _ARMED_COMMAND_SECONDS if result.get("awaiting_command") else 0.0
         session["updated_at"] = _utc_now_text()
         session["updated_monotonic"] = time.time()
         return dict(session)
