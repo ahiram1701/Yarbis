@@ -1,5 +1,7 @@
 import re
 
+import conversation_ux
+
 
 def _open_task_count(state: dict) -> int:
     return sum(
@@ -84,7 +86,11 @@ def format_telegram_operation_reply(label: str, content: str, state: dict | None
         except Exception:
             state = {}
 
-    body = extract_telegram_operation_body(content) or "Operación completada sin salida visible."
+    body = (
+        extract_telegram_operation_body(conversation_ux.spoken_reply_text(content))
+        or extract_telegram_operation_body(content)
+        or "Operacion completada sin salida visible."
+    )
 
     lines = [
         f"Yarbis | {operation_label}",

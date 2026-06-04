@@ -23,6 +23,7 @@ import activity
 import yarbis_bus
 import memory as memory_store
 import voice as yarbis_voice
+import voice_conversation
 from memory import (
     DEFAULT_OLLAMA_MODEL,
     DEFAULT_OLLAMA_TIMEOUT_SECONDS,
@@ -774,6 +775,8 @@ class YarbisDesktop(tk.Tk):
         self._voice_recording = False
         self._voice_record_stop_event = None
         self._voice_record_thread = None
+        self._live_voice_stop_event = None
+        self._live_voice_thread = None
         self._yarbis_message_worker_running = False
 
         self._build_ui()
@@ -1017,10 +1020,11 @@ class YarbisDesktop(tk.Tk):
 
         actions = create_section(parent, "Ejecutar", "Acciones principales del ciclo actual.")
         actions.grid(row=0, column=0, sticky="ew", pady=(0, 12))
-        for column in range(5):
+        for column in range(6):
             actions.columnconfigure(column, weight=1, uniform="run_actions")
         run_specs = (
             ("Ejecutar ciclo", self._run_cycle, "Accent.TButton", True),
+            ("Voz en vivo", self._toggle_live_voice, "Secondary.TButton", False),
             ("Modo autónomo", self._run_auto, "Secondary.TButton", True),
             ("Detener pensando", self._stop_current_operation, "Danger.TButton", False),
             ("Leer último resultado", self._speak_last_result, "TButton", False),
@@ -2071,6 +2075,13 @@ class YarbisDesktop(tk.Tk):
             self._set_busy(True, self._thinking_status_text(thinking_label), source="runtime")
             return True
 
+        live_status = voice_conversation.desktop_status()
+        live_state = str(live_status.get("state", "")).strip()
+        if live_state and live_state != voice_conversation.STATE_IDLE:
+            detail = str(live_status.get("detail", "")).strip()
+            self.thinking_var.set(f"Voz en vivo - {detail or live_state}")
+            return False
+
         self.thinking_var.set("No.")
         for source in ("runtime", "runtime_event"):
             if source in self._busy_sources:
@@ -2745,6 +2756,22 @@ class YarbisDesktop(tk.Tk):
                     self._finish_voice_recording_ui()
                     self._append_activity(f"{label} (error)", str(payload))
                     self.status_var.set("No pude transcribir la voz.")
+                elif kind == "live_voice_status":
+                    detail = str(payload.get("detail", "") if isinstance(payload, dict) else payload).strip()
+                    state_text = str(payload.get("state", "") if isinstance(payload, dict) else "").strip()
+                    self.status_var.set(detail or "Voz en vivo activa.")
+                    if state_text in {"thinking", "speaking", "error"}:
+                        self._append_activity(label, detail or state_text)
+                    self.refresh_state_view(force_heavy=False)
+                elif kind == "live_voice_done":
+                    self._live_voice_stop_event = None
+                    self._append_activity(label, "Conversacion en vivo detenida.")
+                    self.status_var.set("Voz en vivo detenida.")
+                    self.refresh_state_view()
+                elif kind == "live_voice_error":
+                    self._live_voice_stop_event = None
+                    self._append_activity(f"{label} (error)", str(payload))
+                    self.status_var.set("No pude mantener la voz en vivo.")
                 elif kind == "memory_import_ready":
                     self._set_busy(False, source="local")
                     source_path, summary = payload
@@ -2837,6 +2864,40 @@ class YarbisDesktop(tk.Tk):
 
         thread = threading.Thread(target=worker, daemon=True)
         self._voice_record_thread = thread
+        thread.start()
+
+    def _toggle_live_voice(self):
+        if self._live_voice_thread and self._live_voice_thread.is_alive():
+            if self._live_voice_stop_event is not None:
+                self._live_voice_stop_event.set()
+            self.status_var.set("Deteniendo voz en vivo...")
+            return
+
+        if self._busy:
+            messagebox.showinfo("Yarbis", "Ya hay una accion en curso. Espera a que termine.", parent=self)
+            return
+
+        stop_event = threading.Event()
+        self._live_voice_stop_event = stop_event
+        self.status_var.set("Voz en vivo: di 'Yarbis' para hablar.")
+        self._append_activity("Voz en vivo", "Conversacion en vivo iniciada.")
+
+        def status_callback(snapshot: dict):
+            self._result_queue.put(("live_voice_status", "Voz en vivo", snapshot))
+
+        def worker():
+            try:
+                result = voice_conversation.run_desktop_live_conversation(
+                    stop_event,
+                    settings=load_state(),
+                    status_callback=status_callback,
+                )
+                self._result_queue.put(("live_voice_done", "Voz en vivo", result))
+            except Exception as exc:
+                self._result_queue.put(("live_voice_error", "Voz en vivo", str(exc)))
+
+        thread = threading.Thread(target=worker, daemon=True)
+        self._live_voice_thread = thread
         thread.start()
 
     def _speak_last_result(self):
@@ -3291,6 +3352,8 @@ class YarbisDesktop(tk.Tk):
         self._closing = True
         if self._voice_record_stop_event is not None:
             self._voice_record_stop_event.set()
+        if self._live_voice_stop_event is not None:
+            self._live_voice_stop_event.set()
         stop_telegram_polling()
         self.destroy()
 
@@ -3676,6 +3739,8 @@ class YarbisDesktop(tk.Tk):
         self._closing = True
         if self._voice_record_stop_event is not None:
             self._voice_record_stop_event.set()
+        if self._live_voice_stop_event is not None:
+            self._live_voice_stop_event.set()
         stop_telegram_polling()
         self.destroy()
 

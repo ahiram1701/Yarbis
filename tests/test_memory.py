@@ -961,6 +961,18 @@ class MemoryTestCase(unittest.TestCase):
                 "browser_tts_rate": 9,
                 "browser_tts_pitch": -4,
                 "telegram_reply_mode": "LOUD",
+                "live_conversation": {
+                    "enabled": True,
+                    "wake_phrase": " Yarbis querido " * 20,
+                    "surfaces": ["desktop", "mobile", "telegram", "desktop"],
+                    "wake_stt_model": "tiny",
+                    "turn_stt_model": "base",
+                    "silence_ms": 1,
+                    "max_turn_seconds": 9999,
+                    "auto_speak": False,
+                    "barge_in": False,
+                    "save_audio_debug": True,
+                },
             },
         })
 
@@ -979,6 +991,17 @@ class MemoryTestCase(unittest.TestCase):
         self.assertEqual(settings["browser_tts_rate"], memory.MAX_VOICE_BROWSER_TTS_RATE)
         self.assertEqual(settings["browser_tts_pitch"], memory.MIN_VOICE_BROWSER_TTS_PITCH)
         self.assertEqual(settings["telegram_reply_mode"], memory.DEFAULT_VOICE_TELEGRAM_REPLY_MODE)
+        live = settings["live_conversation"]
+        self.assertTrue(live["enabled"])
+        self.assertLessEqual(len(live["wake_phrase"]), memory.MAX_VOICE_LIVE_WAKE_PHRASE_CHARS)
+        self.assertEqual(live["surfaces"], ["desktop", "mobile"])
+        self.assertEqual(live["wake_stt_model"], "tiny")
+        self.assertEqual(live["turn_stt_model"], "base")
+        self.assertEqual(live["silence_ms"], memory.MIN_VOICE_LIVE_SILENCE_MS)
+        self.assertEqual(live["max_turn_seconds"], memory.MAX_VOICE_LIVE_MAX_TURN_SECONDS)
+        self.assertFalse(live["auto_speak"])
+        self.assertFalse(live["barge_in"])
+        self.assertTrue(live["save_audio_debug"])
 
     def test_render_state_summary_highlights_unlinked_telegram(self):
         summary = memory.render_state_summary({

@@ -371,6 +371,70 @@ class YarbisMobileTestCase(unittest.TestCase):
                 server.shutdown()
                 server.server_close()
 
+    def test_http_api_voice_live_session_requires_auth_and_processes_chunk(self):
+        state_path = TEST_RUNTIME_DIR / "mobile_voice_live_state.json"
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+
+        with patch.object(memory, "STATE_FILE", state_path):
+            memory.save_state(memory.default_state())
+            yarbis_mobile.update_mobile_ui_settings(enabled=True, port=8787, pin="1357")
+            server = yarbis_mobile._MobileHTTPServer(("127.0.0.1", 0), yarbis_mobile.MobileRequestHandler)
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            port = int(server.server_address[1])
+            try:
+                conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+                conn.request("POST", "/api/login", body=json.dumps({"pin": "1357"}), headers={"Content-Type": "application/json"})
+                response = conn.getresponse()
+                login_payload = json.loads(response.read().decode("utf-8"))
+                cookie = response.getheader("Set-Cookie")
+                csrf = login_payload["csrf"]
+
+                conn.request("POST", "/api/voice/live/start", body=json.dumps({"csrf": csrf}), headers={
+                    "Content-Type": "application/json",
+                    "Cookie": cookie,
+                    "X-CSRF-Token": csrf,
+                })
+                response = conn.getresponse()
+                start_payload = json.loads(response.read().decode("utf-8"))
+                session_id = start_payload["voice_session"]["id"]
+                csrf = start_payload["csrf"]
+
+                with patch.object(
+                    yarbis_mobile.voice_conversation,
+                    "transcribe_live_audio_bytes",
+                    return_value="Yarbis toma nota",
+                ):
+                    with patch.object(
+                        yarbis_mobile.voice_conversation,
+                        "process_voice_turn",
+                        return_value={
+                            "state": "speaking",
+                            "transcript": "toma nota",
+                            "reply": "Yarbis:\nHecho.",
+                            "spoken_text": "Hecho.",
+                        },
+                    ):
+                        conn.request("POST", "/api/voice/live/chunk", body=json.dumps({
+                            "csrf": csrf,
+                            "session_id": session_id,
+                            "audio_b64": base64.b64encode(b"audio").decode("ascii"),
+                            "mime_type": "audio/webm",
+                        }), headers={
+                            "Content-Type": "application/json",
+                            "Cookie": cookie,
+                            "X-CSRF-Token": csrf,
+                        })
+                        response = conn.getresponse()
+                        chunk_payload = json.loads(response.read().decode("utf-8"))
+
+                self.assertEqual(response.status, 200)
+                self.assertEqual(chunk_payload["voice_session"]["state"], "speaking")
+                self.assertEqual(chunk_payload["voice_session"]["spoken_text"], "Hecho.")
+            finally:
+                server.shutdown()
+                server.server_close()
+
     def test_http_api_voice_voices_catalog_flag_and_speak_endpoint(self):
         state_path = TEST_RUNTIME_DIR / "mobile_voice_catalog_state.json"
         audio_path = TEST_RUNTIME_DIR / "mobile_speak.ogg"
@@ -468,6 +532,12 @@ class YarbisMobileTestCase(unittest.TestCase):
                 "browser_tts_rate": 1.2,
                 "browser_tts_pitch": 0.8,
                 "telegram_reply_mode": "always",
+                "live_enabled": True,
+                "live_wake_phrase": "Jarvis",
+                "live_silence_ms": 1200,
+                "live_max_turn_seconds": 30,
+                "live_auto_speak": False,
+                "live_barge_in": False,
             })
             state = memory.load_state()
 
@@ -479,6 +549,11 @@ class YarbisMobileTestCase(unittest.TestCase):
         self.assertEqual(state["voice"]["browser_tts_rate"], 1.2)
         self.assertEqual(state["voice"]["browser_tts_pitch"], 0.8)
         self.assertEqual(state["voice"]["telegram_reply_mode"], "always")
+        self.assertEqual(state["voice"]["live_conversation"]["wake_phrase"], "Jarvis")
+        self.assertEqual(state["voice"]["live_conversation"]["silence_ms"], 1200)
+        self.assertEqual(state["voice"]["live_conversation"]["max_turn_seconds"], 30)
+        self.assertFalse(state["voice"]["live_conversation"]["auto_speak"])
+        self.assertFalse(state["voice"]["live_conversation"]["barge_in"])
 
     def test_mobile_voice_settings_action_updates_kokoro_state(self):
         state_path = TEST_RUNTIME_DIR / "mobile_voice_kokoro_settings_state.json"
@@ -514,6 +589,8 @@ class YarbisMobileTestCase(unittest.TestCase):
 
         self.assertEqual(load_mock.call_count, 1)
         self.assertIn("jobs", payload)
+        self.assertIn("conversation", payload)
+        self.assertIn("voice", payload["conversation"])
         self.assertIn("health_text", payload)
         self.assertNotIn("messages", payload)
         self.assertNotIn("activity_text", payload)
@@ -603,6 +680,9 @@ class YarbisMobileTestCase(unittest.TestCase):
         self.assertIn("Detener habla", html)
         self.assertIn("speechSynthesis.cancel", html)
         self.assertIn("/api/voice/speak", html)
+        self.assertIn("/api/voice/live/start", html)
+        self.assertIn("toggle-live-voice", html)
+        self.assertIn("Conversacion en vivo", html)
         self.assertIn("preferredLocalSpeechFormat", html)
         self.assertIn("Catálogo Kokoro", html)
         self.assertIn("modalBackdrop", html)

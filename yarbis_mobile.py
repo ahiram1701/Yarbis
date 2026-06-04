@@ -17,8 +17,10 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 import activity
+import conversation_ux
 import yarbis_instance
 import voice as yarbis_voice
+import voice_conversation
 from secrets_redaction import build_secret_redactor
 from memory import (
     DEFAULT_MOBILE_UI_PORT,
@@ -934,19 +936,29 @@ def _public_base_state(state: dict) -> dict:
         mobile_settings = {}
     service_status = get_service_status()
     health = _mobile_health_status_from_state(state, service_status)
+    jobs = _recent_jobs()
+    conversation = conversation_ux.build_conversation_view(
+        state,
+        service_status=service_status,
+        jobs=jobs,
+        voice_status=voice_conversation.desktop_status(),
+        channel="mobile",
+        limit=6,
+    )
     return {
         "now": _utc_now(),
         "goal": state.get("goal", ""),
         "cycle_count": state.get("cycle_count", 0),
         "last_result": _truncate_text(state.get("last_result", "")),
         "awaiting_user_input": state.get("awaiting_user_input", {}),
+        "conversation": conversation,
         "service": {
             "status": service_status,
             "mobile_ui": public_mobile_ui_status(mobile_settings),
         },
         "health_text": format_health_status(health),
         "readiness_text": _mobile_readiness_text_from_state(state, service_status),
-        "jobs": _recent_jobs(),
+        "jobs": jobs,
     }
 
 
@@ -1057,6 +1069,34 @@ def _transcribe_mobile_voice(payload: dict) -> str:
         suffix=suffix,
         settings=load_state(),
     )
+
+
+def _decode_mobile_audio_payload(payload: dict) -> tuple[bytes, str]:
+    return yarbis_voice.decode_audio_b64(
+        _payload_text(payload, "audio_b64"),
+        mime_type=_payload_text(payload, "mime_type"),
+    )
+
+
+def _start_mobile_live_voice() -> dict:
+    session = voice_conversation.start_mobile_session(load_state())
+    return {"voice_session": session}
+
+
+def _append_mobile_live_voice(payload: dict) -> dict:
+    raw_audio, _suffix = _decode_mobile_audio_payload(payload)
+    session = voice_conversation.append_mobile_audio_chunk(
+        _payload_text(payload, "session_id"),
+        raw_audio,
+        mime_type=_payload_text(payload, "mime_type"),
+        settings=load_state(),
+    )
+    return {"voice_session": session}
+
+
+def _stop_mobile_live_voice(payload: dict) -> dict:
+    session = voice_conversation.stop_mobile_session(_payload_text(payload, "session_id"))
+    return {"voice_session": session}
 
 
 def _public_voice_payload(*, include_downloadable: bool = False, refresh_catalog: bool = False) -> dict:
@@ -1352,6 +1392,12 @@ def _execute_action(action: str, payload: dict | None = None) -> dict:
             browser_tts_rate=payload.get("browser_tts_rate"),
             browser_tts_pitch=payload.get("browser_tts_pitch"),
             telegram_reply_mode=_payload_text(payload, "telegram_reply_mode", "auto") or "auto",
+            live_enabled=bool(payload.get("live_enabled", True)),
+            live_wake_phrase=_payload_text(payload, "live_wake_phrase"),
+            live_silence_ms=payload.get("live_silence_ms"),
+            live_max_turn_seconds=payload.get("live_max_turn_seconds"),
+            live_auto_speak=bool(payload.get("live_auto_speak", True)),
+            live_barge_in=bool(payload.get("live_barge_in", True)),
         )}
     if action == "memory_protection":
         return {"result": update_memory_protection_settings_text(**payload)}
@@ -1903,6 +1949,10 @@ let voiceRecorder = null;
 let voiceStream = null;
 let voiceChunks = [];
 let voiceStopTimer = null;
+let liveVoiceRecorder = null;
+let liveVoiceStream = null;
+let liveVoiceSessionId = "";
+let liveVoiceBusy = false;
 let localTtsVoices = [];
 let browserVoices = [];
 let voiceOptionsLoaded = false;
@@ -2155,6 +2205,106 @@ async function toggleReplyRecording() {
   }
 }
 
+function liveVoiceSessionText() {
+  const sessionState = window._lastLiveVoiceSession || {};
+  if (liveVoiceSessionId) {
+    return sessionState.detail || "Conversación en vivo activa.";
+  }
+  const voice = ((appState && appState.conversation) || {}).voice || {};
+  return voice.headline || "Di Yarbis cuando la conversación en vivo esté activa.";
+}
+
+async function startLiveVoice() {
+  const blockedReason = liveRecordingBlockReason();
+  if (blockedReason) {
+    toast(blockedReason);
+    return;
+  }
+  if (liveVoiceSessionId) return;
+  try {
+    liveVoiceStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    const data = await api("/api/voice/live/start", {
+      method: "POST",
+      headers: { "X-CSRF-Token": csrfToken },
+      body: { csrf: csrfToken }
+    });
+    csrfToken = data.csrf || csrfToken;
+    window._lastLiveVoiceSession = data.voice_session || {};
+    liveVoiceSessionId = (data.voice_session || {}).id || "";
+    liveVoiceRecorder = new MediaRecorder(liveVoiceStream);
+    liveVoiceRecorder.ondataavailable = async (event) => {
+      if (!event.data || event.data.size <= 0 || liveVoiceBusy || !liveVoiceSessionId) return;
+      liveVoiceBusy = true;
+      try {
+        const bytes = new Uint8Array(await event.data.arrayBuffer());
+        const chunk = await api("/api/voice/live/chunk", {
+          method: "POST",
+          headers: { "X-CSRF-Token": csrfToken },
+          body: {
+            csrf: csrfToken,
+            session_id: liveVoiceSessionId,
+            audio_b64: bytesToBase64(bytes),
+            mime_type: event.data.type || liveVoiceRecorder.mimeType || "audio/webm"
+          }
+        });
+        csrfToken = chunk.csrf || csrfToken;
+        window._lastLiveVoiceSession = chunk.voice_session || {};
+        const spoken = (chunk.voice_session || {}).spoken_text || "";
+        if (spoken) await speakText(spoken);
+        renderCurrent();
+      } catch (error) {
+        toast(error.message);
+      } finally {
+        liveVoiceBusy = false;
+      }
+    };
+    liveVoiceRecorder.start(3000);
+    toast("Conversación en vivo activa");
+    renderCurrent();
+  } catch (error) {
+    stopLiveVoiceTracks();
+    liveVoiceSessionId = "";
+    toast(error.message);
+  }
+}
+
+function stopLiveVoiceTracks() {
+  if (liveVoiceRecorder && liveVoiceRecorder.state === "recording") {
+    try { liveVoiceRecorder.stop(); } catch (_error) {}
+  }
+  liveVoiceRecorder = null;
+  if (liveVoiceStream) {
+    liveVoiceStream.getTracks().forEach(track => track.stop());
+    liveVoiceStream = null;
+  }
+}
+
+async function stopLiveVoice() {
+  const sessionId = liveVoiceSessionId;
+  stopLiveVoiceTracks();
+  liveVoiceSessionId = "";
+  if (sessionId) {
+    try {
+      const data = await api("/api/voice/live/stop", {
+        method: "POST",
+        headers: { "X-CSRF-Token": csrfToken },
+        body: { csrf: csrfToken, session_id: sessionId }
+      });
+      csrfToken = data.csrf || csrfToken;
+      window._lastLiveVoiceSession = data.voice_session || {};
+    } catch (error) {
+      toast(error.message);
+    }
+  }
+  toast("Conversación en vivo detenida");
+  renderCurrent();
+}
+
+async function toggleLiveVoice() {
+  if (liveVoiceSessionId) await stopLiveVoice();
+  else await startLiveVoice();
+}
+
 async function loadVoiceOptions(force = false, includeCatalog = false, refreshCatalog = false) {
   if (voiceOptionsLoaded && !force) return;
   try {
@@ -2199,7 +2349,13 @@ async function saveVoiceSettings(providerOverride = null, kokoroVoiceOverride = 
     browser_voice_name: $("browserVoiceName").value,
     browser_tts_rate: $("browserTtsRate").value,
     browser_tts_pitch: $("browserTtsPitch").value,
-    telegram_reply_mode: $("telegramVoiceMode").value
+    telegram_reply_mode: $("telegramVoiceMode").value,
+    live_enabled: $("liveVoiceEnabled") ? $("liveVoiceEnabled").checked : true,
+    live_wake_phrase: $("liveWakePhrase") ? $("liveWakePhrase").value : "Yarbis",
+    live_silence_ms: $("liveSilenceMs") ? $("liveSilenceMs").value : 900,
+    live_max_turn_seconds: $("liveMaxTurnSeconds") ? $("liveMaxTurnSeconds").value : 45,
+    live_auto_speak: $("liveAutoSpeak") ? $("liveAutoSpeak").checked : true,
+    live_barge_in: $("liveBargeIn") ? $("liveBargeIn").checked : true
   });
   voiceOptionsLoaded = false;
   return data;
@@ -2384,10 +2540,40 @@ function renderHome() {
 }
 
 function renderRun() {
+  const conversation = appState.conversation || {};
+  const voice = conversation.voice || {};
+  const pending = conversation.pending || {};
+  const liveActive = Boolean(liveVoiceSessionId);
+  const liveLabel = liveActive ? "Detener conversacion" : "Conversacion en vivo";
+  const liveDetail = liveVoiceSessionText();
+  const timeline = conversation.timeline || [];
   $("run").innerHTML = `
     <section class="hero">
       <h2>Ejecuta, responde o dicta sin salir del teléfono.</h2>
       <div class="muted">Las operaciones largas quedan como trabajos y se actualizan automáticamente.</div>
+    </section>
+    <section class="section">
+      <h2>Conversacion</h2>
+      <div class="panel">
+        <div class="muted">${escapeHtml(pending.active ? "Pregunta pendiente" : "Hilo reciente")}</div>
+        <div class="list">${timeline.map(item => `
+          <div class="item">
+            <strong>${item.role === "user" ? "Tu" : "Yarbis"}</strong>
+            <pre>${escapeHtml(item.text || "")}</pre>
+          </div>`).join("") || `<div class="muted">Sin conversacion reciente.</div>`}
+        </div>
+      </div>
+    </section>
+    <section class="section">
+      <h2>Voz en vivo</h2>
+      <div class="panel">
+        <div>${escapeHtml(liveDetail)}</div>
+        <div class="muted">Activacion: ${escapeHtml(voice.wake_phrase || "Yarbis")}</div>
+        <div class="actions tight">
+          <button class="${liveActive ? "danger" : "primary"}" data-action="toggle-live-voice">${liveLabel}</button>
+          <button data-action="stop-speaking">Detener habla</button>
+        </div>
+      </div>
     </section>
     <section class="section">
       <h2>Ejecutar</h2>
@@ -2893,6 +3079,7 @@ function renderSettings() {
   ].join(" | ");
   const internet = appState.internet || {};
   const voice = appState.voice || {};
+  const live = voice.live_conversation || {};
   refreshBrowserVoices();
   if (!voiceOptionsLoaded) window.setTimeout(() => loadVoiceOptions(false, true), 0);
   const systemVoiceOptions = localTtsVoices.filter(item => (item.provider || "system") === "system").map(item => {
@@ -2951,6 +3138,12 @@ function renderSettings() {
         <div><label>Velocidad navegador</label><input id="browserTtsRate" type="number" min="0.5" max="2" step="0.1" value="${escapeHtml(voice.browser_tts_rate || 1)}"></div>
         <div><label>Tono navegador</label><input id="browserTtsPitch" type="number" min="0" max="2" step="0.1" value="${escapeHtml(voice.browser_tts_pitch || 1)}"></div>
         <div><label>Telegram voz</label><select id="telegramVoiceMode"><option value="off">off</option><option value="auto">auto</option><option value="always">always</option></select></div>
+        <label><input id="liveVoiceEnabled" type="checkbox" ${live.enabled === false ? "" : "checked"}> Voz en vivo disponible</label>
+        <div><label>Frase de activacion</label><input id="liveWakePhrase" value="${escapeHtml(live.wake_phrase || "Yarbis")}"></div>
+        <div><label>Silencio ms</label><input id="liveSilenceMs" type="number" min="250" max="5000" value="${escapeHtml(live.silence_ms || 900)}"></div>
+        <div><label>Turno max segundos</label><input id="liveMaxTurnSeconds" type="number" min="3" max="300" value="${escapeHtml(live.max_turn_seconds || 45)}"></div>
+        <label><input id="liveAutoSpeak" type="checkbox" ${live.auto_speak === false ? "" : "checked"}> Responder con voz automaticamente</label>
+        <label><input id="liveBargeIn" type="checkbox" ${live.barge_in === false ? "" : "checked"}> Permitir interrupcion</label>
         <button data-action="refresh-voice-catalog">Catálogo Kokoro</button>
         <button data-action="use-free-voice">Usar seleccionada</button>
         <button data-action="test-voice">Probar voz</button>
@@ -3126,6 +3319,8 @@ document.addEventListener("click", async (event) => {
       stopSpeech();
     } else if (name === "record-reply") {
       await toggleReplyRecording();
+    } else if (name === "toggle-live-voice") {
+      await toggleLiveVoice();
     } else if (name === "voice-file") {
       const fileInput = $("voiceFileInput");
       if (fileInput) fileInput.click();
@@ -3676,6 +3871,19 @@ class MobileRequestHandler(BaseHTTPRequestHandler):
             except PermissionError as exc:
                 self._send_json(HTTPStatus.UNAUTHORIZED, {"ok": False, "error": str(exc)})
             return
+        if parsed.path == "/api/voice/live/status":
+            try:
+                _settings, session = self._require_session({})
+                query = parse_qs(parsed.query)
+                session_id = query.get("session_id", [""])[0]
+                voice_session = voice_conversation.mobile_session_status(session_id)
+                if not voice_session:
+                    self._send_json(HTTPStatus.NOT_FOUND, {"ok": False, "error": "Sesión de voz no encontrada."})
+                    return
+                self._send_json(HTTPStatus.OK, {"ok": True, "csrf": session["csrf"], "voice_session": voice_session})
+            except PermissionError as exc:
+                self._send_json(HTTPStatus.UNAUTHORIZED, {"ok": False, "error": str(exc)})
+            return
         if parsed.path == "/api/voice/voices":
             try:
                 _settings, session = self._require_session({})
@@ -3697,7 +3905,11 @@ class MobileRequestHandler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         try:
-            max_bytes = MAX_VOICE_REQUEST_BYTES if self.path == "/api/voice/transcribe" else MAX_REQUEST_BYTES
+            max_bytes = (
+                MAX_VOICE_REQUEST_BYTES
+                if self.path in {"/api/voice/transcribe", "/api/voice/live/chunk"}
+                else MAX_REQUEST_BYTES
+            )
             payload = self._read_json(max_bytes=max_bytes)
         except MobileUiError as exc:
             self._send_json(HTTPStatus.BAD_REQUEST, {"ok": False, "error": str(exc)})
@@ -3731,6 +3943,18 @@ class MobileRequestHandler(BaseHTTPRequestHandler):
                 text = _transcribe_mobile_voice(payload)
                 activity.append_activity("UI movil voz", text)
                 self._send_json(HTTPStatus.OK, {"ok": True, "csrf": session["csrf"], "text": text})
+                return
+            if self.path == "/api/voice/live/start":
+                result = _start_mobile_live_voice()
+                self._send_json(HTTPStatus.OK, {"ok": True, "csrf": session["csrf"], **result})
+                return
+            if self.path == "/api/voice/live/chunk":
+                result = _append_mobile_live_voice(payload)
+                self._send_json(HTTPStatus.OK, {"ok": True, "csrf": session["csrf"], **result})
+                return
+            if self.path == "/api/voice/live/stop":
+                result = _stop_mobile_live_voice(payload)
+                self._send_json(HTTPStatus.OK, {"ok": True, "csrf": session["csrf"], **result})
                 return
             if self.path == "/api/voice/speak":
                 audio_b64, mime_type = _synthesize_mobile_speech(payload)

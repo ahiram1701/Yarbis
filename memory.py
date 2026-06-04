@@ -147,6 +147,11 @@ DEFAULT_VOICE_BROWSER_VOICE_NAME = ""
 DEFAULT_VOICE_BROWSER_TTS_RATE = 1.0
 DEFAULT_VOICE_BROWSER_TTS_PITCH = 1.0
 DEFAULT_VOICE_TELEGRAM_REPLY_MODE = "auto"
+DEFAULT_VOICE_LIVE_WAKE_PHRASE = "Yarbis"
+DEFAULT_VOICE_LIVE_WAKE_STT_MODEL = "tiny"
+DEFAULT_VOICE_LIVE_TURN_STT_MODEL = ""
+DEFAULT_VOICE_LIVE_SILENCE_MS = 900
+DEFAULT_VOICE_LIVE_MAX_TURN_SECONDS = 45
 VALID_VOICE_TTS_PROVIDERS = {"system", "kokoro"}
 VALID_VOICE_TELEGRAM_REPLY_MODES = {"off", "auto", "always"}
 VALID_VOICE_STT_COMPUTE_TYPES = {"default", "int8", "int8_float16", "int16", "float16", "float32"}
@@ -163,6 +168,12 @@ MAX_VOICE_STT_MODEL_CHARS = 80
 MAX_VOICE_STT_COMPUTE_TYPE_CHARS = 24
 MAX_VOICE_TTS_VOICE_ID_CHARS = 240
 MAX_VOICE_TTS_PROVIDER_CHARS = 20
+MAX_VOICE_LIVE_WAKE_PHRASE_CHARS = 60
+MAX_VOICE_LIVE_STT_MODEL_CHARS = 80
+MIN_VOICE_LIVE_SILENCE_MS = 250
+MAX_VOICE_LIVE_SILENCE_MS = 5000
+MIN_VOICE_LIVE_MAX_TURN_SECONDS = 3
+MAX_VOICE_LIVE_MAX_TURN_SECONDS = 300
 MAX_VOICE_KOKORO_VOICE_ID_CHARS = 80
 MAX_VOICE_BROWSER_VOICE_NAME_CHARS = 160
 DEFAULT_INTERNET_MODE = "auto"
@@ -459,6 +470,18 @@ def default_state():
             "browser_tts_rate": DEFAULT_VOICE_BROWSER_TTS_RATE,
             "browser_tts_pitch": DEFAULT_VOICE_BROWSER_TTS_PITCH,
             "telegram_reply_mode": DEFAULT_VOICE_TELEGRAM_REPLY_MODE,
+            "live_conversation": {
+                "enabled": True,
+                "wake_phrase": DEFAULT_VOICE_LIVE_WAKE_PHRASE,
+                "surfaces": ["desktop", "mobile"],
+                "wake_stt_model": DEFAULT_VOICE_LIVE_WAKE_STT_MODEL,
+                "turn_stt_model": DEFAULT_VOICE_LIVE_TURN_STT_MODEL,
+                "silence_ms": DEFAULT_VOICE_LIVE_SILENCE_MS,
+                "max_turn_seconds": DEFAULT_VOICE_LIVE_MAX_TURN_SECONDS,
+                "auto_speak": True,
+                "barge_in": True,
+                "save_audio_debug": False,
+            },
         },
         "social": {
             "settings": {
@@ -1929,6 +1952,58 @@ def _normalize_voice_settings(voice):
         browser_tts_pitch = defaults["browser_tts_pitch"]
     browser_tts_pitch = max(MIN_VOICE_BROWSER_TTS_PITCH, min(MAX_VOICE_BROWSER_TTS_PITCH, browser_tts_pitch))
 
+    live_defaults = defaults["live_conversation"]
+    live = voice.get("live_conversation", {})
+    if not isinstance(live, dict):
+        live = {}
+    raw_surfaces = live.get("surfaces", live_defaults["surfaces"])
+    if not isinstance(raw_surfaces, list):
+        raw_surfaces = live_defaults["surfaces"]
+    live_surfaces = []
+    for surface in raw_surfaces:
+        cleaned_surface = _coerce_text(surface, 20).strip().lower()
+        if cleaned_surface in {"desktop", "mobile"} and cleaned_surface not in live_surfaces:
+            live_surfaces.append(cleaned_surface)
+    if not live_surfaces:
+        live_surfaces = list(live_defaults["surfaces"])
+
+    try:
+        live_silence_ms = int(live.get("silence_ms", live_defaults["silence_ms"]))
+    except (TypeError, ValueError):
+        live_silence_ms = live_defaults["silence_ms"]
+    live_silence_ms = max(MIN_VOICE_LIVE_SILENCE_MS, min(MAX_VOICE_LIVE_SILENCE_MS, live_silence_ms))
+
+    try:
+        live_max_turn_seconds = int(live.get("max_turn_seconds", live_defaults["max_turn_seconds"]))
+    except (TypeError, ValueError):
+        live_max_turn_seconds = live_defaults["max_turn_seconds"]
+    live_max_turn_seconds = max(
+        MIN_VOICE_LIVE_MAX_TURN_SECONDS,
+        min(MAX_VOICE_LIVE_MAX_TURN_SECONDS, live_max_turn_seconds),
+    )
+
+    live_conversation = {
+        "enabled": bool(live.get("enabled", live_defaults["enabled"])),
+        "wake_phrase": _coerce_text(
+            live.get("wake_phrase", live_defaults["wake_phrase"]),
+            MAX_VOICE_LIVE_WAKE_PHRASE_CHARS,
+        ).strip()[:MAX_VOICE_LIVE_WAKE_PHRASE_CHARS] or live_defaults["wake_phrase"],
+        "surfaces": live_surfaces,
+        "wake_stt_model": _coerce_text(
+            live.get("wake_stt_model", live_defaults["wake_stt_model"]),
+            MAX_VOICE_LIVE_STT_MODEL_CHARS,
+        ).strip()[:MAX_VOICE_LIVE_STT_MODEL_CHARS] or live_defaults["wake_stt_model"],
+        "turn_stt_model": _coerce_text(
+            live.get("turn_stt_model", live_defaults["turn_stt_model"]),
+            MAX_VOICE_LIVE_STT_MODEL_CHARS,
+        ).strip()[:MAX_VOICE_LIVE_STT_MODEL_CHARS],
+        "silence_ms": live_silence_ms,
+        "max_turn_seconds": live_max_turn_seconds,
+        "auto_speak": bool(live.get("auto_speak", live_defaults["auto_speak"])),
+        "barge_in": bool(live.get("barge_in", live_defaults["barge_in"])),
+        "save_audio_debug": bool(live.get("save_audio_debug", live_defaults["save_audio_debug"])),
+    }
+
     return {
         "enabled": bool(voice.get("enabled", defaults["enabled"])),
         "language": language,
@@ -1955,6 +2030,7 @@ def _normalize_voice_settings(voice):
         "browser_tts_rate": browser_tts_rate,
         "browser_tts_pitch": browser_tts_pitch,
         "telegram_reply_mode": reply_mode,
+        "live_conversation": live_conversation,
     }
 
 
@@ -2341,13 +2417,20 @@ def render_state_summary(
     )
 
     voice_settings = normalized["voice"]
+    live_voice = voice_settings.get("live_conversation", {})
+    live_text = "live=off"
+    if isinstance(live_voice, dict) and live_voice.get("enabled"):
+        live_text = (
+            f"live=on/{live_voice.get('wake_phrase', DEFAULT_VOICE_LIVE_WAKE_PHRASE)}"
+        )
     lines.append(
         "Voz: "
         f"{'activa' if voice_settings['enabled'] else 'desactivada'}, "
         f"idioma={voice_settings['language']}, "
         f"stt={voice_settings['stt_model']} ({voice_settings['stt_compute_type']}), "
         f"tts={voice_settings.get('tts_provider', DEFAULT_VOICE_TTS_PROVIDER)}, "
-        f"telegram={voice_settings['telegram_reply_mode']}"
+        f"telegram={voice_settings['telegram_reply_mode']}, "
+        f"{live_text}"
     )
 
     if include_last_result:

@@ -1,5 +1,6 @@
 import base64
 import contextlib
+import math
 import tempfile
 import threading
 import time
@@ -14,11 +15,19 @@ from memory import (
     DEFAULT_VOICE_TELEGRAM_REPLY_MODE,
     DEFAULT_VOICE_TTS_RATE,
     DEFAULT_VOICE_TTS_PROVIDER,
+    DEFAULT_VOICE_LIVE_MAX_TURN_SECONDS,
+    DEFAULT_VOICE_LIVE_SILENCE_MS,
+    DEFAULT_VOICE_LIVE_WAKE_PHRASE,
+    MAX_VOICE_LIVE_MAX_TURN_SECONDS,
+    MAX_VOICE_LIVE_SILENCE_MS,
+    MAX_VOICE_LIVE_WAKE_PHRASE_CHARS,
     MAX_VOICE_BROWSER_TTS_PITCH,
     MAX_VOICE_BROWSER_TTS_RATE,
     MAX_VOICE_TTS_RATE,
     MIN_VOICE_BROWSER_TTS_PITCH,
     MIN_VOICE_BROWSER_TTS_RATE,
+    MIN_VOICE_LIVE_MAX_TURN_SECONDS,
+    MIN_VOICE_LIVE_SILENCE_MS,
     MIN_VOICE_TTS_RATE,
     VALID_VOICE_TTS_PROVIDERS,
     VALID_VOICE_TELEGRAM_REPLY_MODES,
@@ -75,6 +84,7 @@ TELEGRAM_AUTO_VOICE_REPLY_MAX_CHARS = 800
 DEFAULT_TTS_VOLUME = 1.0
 DEFAULT_RECORD_SAMPLE_RATE = 16_000
 DEFAULT_RECORD_CHANNELS = 1
+DEFAULT_SILENCE_THRESHOLD = 450
 _WHISPER_LOCK = threading.RLock()
 _WHISPER_MODELS = {}
 _TTS_LOCK = threading.RLock()
@@ -658,8 +668,17 @@ def update_voice_settings_text(
     browser_tts_rate=None,
     browser_tts_pitch=None,
     telegram_reply_mode: str | None = None,
+    live_enabled: bool | None = None,
+    live_wake_phrase: str | None = None,
+    live_silence_ms=None,
+    live_max_turn_seconds=None,
+    live_auto_speak: bool | None = None,
+    live_barge_in: bool | None = None,
 ) -> str:
     current = get_voice_settings()
+    current_live = current.get("live_conversation", {})
+    if not isinstance(current_live, dict):
+        current_live = {}
     next_provider = str(tts_provider if tts_provider is not None else current.get("tts_provider", "system")).strip().lower()
     if next_provider == "sistema":
         next_provider = "system"
@@ -692,6 +711,28 @@ def update_voice_settings_text(
     ).strip().lower()
     if next_reply_mode not in VALID_VOICE_TELEGRAM_REPLY_MODES:
         raise ValueError("Modo Telegram de voz invalido. Usa off, auto o always.")
+    next_live_wake_phrase = str(
+        live_wake_phrase
+        if live_wake_phrase is not None
+        else current_live.get("wake_phrase", DEFAULT_VOICE_LIVE_WAKE_PHRASE)
+    ).strip()[:MAX_VOICE_LIVE_WAKE_PHRASE_CHARS] or DEFAULT_VOICE_LIVE_WAKE_PHRASE
+    next_live_silence_ms = max(
+        MIN_VOICE_LIVE_SILENCE_MS,
+        min(
+            MAX_VOICE_LIVE_SILENCE_MS,
+            _optional_int(live_silence_ms, int(current_live.get("silence_ms", DEFAULT_VOICE_LIVE_SILENCE_MS))),
+        ),
+    )
+    next_live_max_turn_seconds = max(
+        MIN_VOICE_LIVE_MAX_TURN_SECONDS,
+        min(
+            MAX_VOICE_LIVE_MAX_TURN_SECONDS,
+            _optional_int(
+                live_max_turn_seconds,
+                int(current_live.get("max_turn_seconds", DEFAULT_VOICE_LIVE_MAX_TURN_SECONDS)),
+            ),
+        ),
+    )
 
     def mutate(state):
         voice = state.setdefault("voice", {})
@@ -707,6 +748,16 @@ def update_voice_settings_text(
         voice["browser_tts_rate"] = next_browser_rate
         voice["browser_tts_pitch"] = next_browser_pitch
         voice["telegram_reply_mode"] = next_reply_mode
+        live = voice.setdefault("live_conversation", {})
+        if live_enabled is not None:
+            live["enabled"] = bool(live_enabled)
+        live["wake_phrase"] = next_live_wake_phrase
+        live["silence_ms"] = next_live_silence_ms
+        live["max_turn_seconds"] = next_live_max_turn_seconds
+        if live_auto_speak is not None:
+            live["auto_speak"] = bool(live_auto_speak)
+        if live_barge_in is not None:
+            live["barge_in"] = bool(live_barge_in)
 
     state_transaction("update_voice_settings", mutate)
     return (
@@ -716,7 +767,7 @@ def update_voice_settings_text(
         f"sistema={'predeterminada' if not str(tts_voice_id if tts_voice_id is not None else current.get('tts_voice_id', '')).strip() else 'personalizada'}, "
         f"kokoro={next_kokoro_voice_id}, "
         f"velocidad={next_tts_rate}, navegador={next_browser_rate:g}/{next_browser_pitch:g}, "
-        f"Telegram={next_reply_mode}."
+        f"Telegram={next_reply_mode}, voz en vivo='{next_live_wake_phrase}'."
     )
 
 
@@ -821,6 +872,94 @@ def record_microphone_to_file(
 
     VOICE_RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
     path = VOICE_RUNTIME_DIR / f"recording-{time.time_ns()}-{threading.get_ident()}.wav"
+    with wave.open(str(path), "wb") as wav_file:
+        wav_file.setnchannels(channels)
+        wav_file.setsampwidth(2)
+        wav_file.setframerate(sample_rate)
+        wav_file.writeframes(b"".join(chunks))
+    return path
+
+
+def _audio_rms(raw_audio: bytes) -> float:
+    if not raw_audio:
+        return 0.0
+    try:
+        samples = memoryview(raw_audio).cast("h")
+    except (TypeError, ValueError):
+        return 0.0
+    if not samples:
+        return 0.0
+    total = 0
+    for sample in samples:
+        total += int(sample) * int(sample)
+    return math.sqrt(total / len(samples))
+
+
+def record_microphone_until_silence(
+    stop_event: threading.Event,
+    *,
+    settings: dict | None = None,
+    sample_rate: int = DEFAULT_RECORD_SAMPLE_RATE,
+    channels: int = DEFAULT_RECORD_CHANNELS,
+    silence_ms: int = 900,
+    max_seconds: int | None = None,
+    silence_threshold: int = DEFAULT_SILENCE_THRESHOLD,
+) -> Path:
+    voice_settings = ensure_voice_enabled(settings)
+    configured_max = int(voice_settings.get("max_audio_seconds", DEFAULT_VOICE_MAX_AUDIO_SECONDS))
+    max_seconds = int(max_seconds or configured_max)
+    max_seconds = max(1, min(configured_max, max_seconds))
+    silence_seconds = max(0.2, int(silence_ms or 900) / 1000.0)
+    try:
+        import sounddevice as sd
+    except Exception as exc:
+        raise VoiceError("Falta sounddevice. Instala dependencias con python -m pip install -r requirements.txt.") from exc
+
+    chunks: list[bytes] = []
+    preroll: list[bytes] = []
+    voice_started = False
+    last_voice_at = 0.0
+    started_at = time.monotonic()
+
+    def callback(indata, _frames, _time_info, status):
+        nonlocal voice_started, last_voice_at
+        if status:
+            return
+        raw = bytes(indata)
+        now = time.monotonic()
+        if _audio_rms(raw) >= silence_threshold:
+            if not voice_started:
+                chunks.extend(preroll)
+                preroll.clear()
+            voice_started = True
+            last_voice_at = now
+        if voice_started:
+            chunks.append(raw)
+        else:
+            preroll.append(raw)
+            del preroll[:-8]
+
+    try:
+        with sd.RawInputStream(
+            samplerate=sample_rate,
+            channels=channels,
+            dtype="int16",
+            callback=callback,
+        ):
+            while not stop_event.wait(0.05):
+                now = time.monotonic()
+                if now - started_at >= max_seconds:
+                    break
+                if voice_started and last_voice_at and now - last_voice_at >= silence_seconds:
+                    break
+    except Exception as exc:
+        raise VoiceError(f"No pude grabar desde el microfono: {exc}") from exc
+
+    if not chunks:
+        raise VoiceError("No capture voz clara del microfono.")
+
+    VOICE_RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
+    path = VOICE_RUNTIME_DIR / f"turn-{time.time_ns()}-{threading.get_ident()}.wav"
     with wave.open(str(path), "wb") as wav_file:
         wav_file.setnchannels(channels)
         wav_file.setsampwidth(2)
