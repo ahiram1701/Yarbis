@@ -204,12 +204,30 @@ function Test-ShouldExcludeFromUpdateStash([string]$RelativePath) {
 
 function Get-GitPathOutput([string[]]$Arguments, [string]$Action) {
     $gitArguments = @("-C", $RepoRoot) + @($Arguments)
-    $result = Invoke-NativeCapture -FilePath "git" -Arguments $gitArguments
-    if ($result.ExitCode -ne 0) {
-        throw "$Action fallo.`n$($result.Output -join "`n")"
+
+    $stderrFile = [IO.Path]::GetTempFileName()
+    $previousErrorActionPreference = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = "Continue"
+        $output = & git @gitArguments 2> $stderrFile
+        $nativeExitCode = $LASTEXITCODE
+    }
+    finally {
+        $ErrorActionPreference = $previousErrorActionPreference
     }
 
-    return @($result.Output | Where-Object { [string]$_ } | ForEach-Object { [string]$_ })
+    $stderrOutput = @()
+    if (Test-Path -LiteralPath $stderrFile) {
+        $stderrOutput = @(Get-Content -LiteralPath $stderrFile -ErrorAction SilentlyContinue)
+        Remove-Item -LiteralPath $stderrFile -Force -ErrorAction SilentlyContinue
+    }
+
+    if ($nativeExitCode -ne 0) {
+        $rendered = (@($output) + @($stderrOutput) | Where-Object { [string]$_ }) -join "`n"
+        throw "$Action fallo.`n$rendered"
+    }
+
+    return @($output | Where-Object { [string]$_ } | ForEach-Object { [string]$_ })
 }
 
 function Get-StashCandidatePaths {
