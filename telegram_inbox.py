@@ -41,12 +41,19 @@ from power import (
 )
 from session import (
     SessionOperationBusy,
+    coding_apply_and_validate_text,
     coding_apply_proposal_text,
+    coding_check_proposal_text,
     coding_discard_proposal_text,
     coding_get_proposal_text,
     coding_list_proposals_text,
+    coding_propose_edits_text,
+    coding_read_text_range_text,
     coding_run_validation_text,
+    coding_search_text_text,
     coding_set_workspace_text,
+    coding_validation_plan_text,
+    coding_workflow_status_text,
     coding_workspace_overview_text,
     get_default_model_provider,
     get_ollama_settings,
@@ -391,8 +398,14 @@ def _help_text() -> str:
         "/nota ID - ver nota\n"
         "/nota borrar ID - eliminar nota\n"
         "/coding - workspace y propuestas\n"
+        "/coding status - estado integrado de coding\n"
+        "/coding buscar TEXTO - buscar en workspace\n"
+        "/coding rango ARCHIVO [LINEA] [CANTIDAD] - leer rango\n"
+        "/coding revisar ID - preflight de propuesta\n"
+        "/coding plan_validacion [ID] - recomendar validacion\n"
         "/coding validar [ID] - validar workspace/propuesta\n"
-        "/coding aplicar ID - aplicar propuesta aprobada\n\n"
+        "/coding aplicar ID - aplicar propuesta aprobada\n"
+        "/coding aplicar_validar ID - aplicar y validar\n\n"
         "Modelo y voz\n"
         "/proveedor ollama|openrouter\n"
         "/modelo NOMBRE\n"
@@ -1338,30 +1351,60 @@ def _dispatch_coding_command(argument_text: str) -> str:
     action = parts[0].strip().lower()
     value = parts[1].strip() if len(parts) > 1 else ""
 
+    if action in {"status", "estado"}:
+        return coding_workflow_status_text()
     if action in {"propuestas", "proposals", "listar", "list"}:
         return coding_list_proposals_text(status="pending", limit=20)
+    if action in {"buscar", "search"}:
+        if not value:
+            return "Uso: /coding buscar TEXTO"
+        return coding_search_text_text(value)
+    if action in {"rango", "range"}:
+        range_args = value.split()
+        if not range_args:
+            return "Uso: /coding rango ARCHIVO [LINEA] [CANTIDAD]"
+        start_line = range_args[1] if len(range_args) > 1 else 1
+        line_count = range_args[2] if len(range_args) > 2 else 120
+        return coding_read_text_range_text(range_args[0], start_line=start_line, line_count=line_count)
     if action in {"ver", "get"}:
         if not value:
             return "Uso: /coding ver ID"
         return coding_get_proposal_text(value)
+    if action in {"revisar", "check", "preflight"}:
+        if not value:
+            return "Uso: /coding revisar ID"
+        return coding_check_proposal_text(value)
+    if action in {"editar", "edit", "edits"}:
+        if not value:
+            return "Uso: /coding editar EDITS_JSON"
+        return coding_propose_edits_text("Edicion localizada Telegram", value)
     if action in {"aplicar", "apply"}:
         if not value:
             return "Uso: /coding aplicar ID"
         return coding_apply_proposal_text(value)
+    if action in {"aplicar_validar", "aplicar-validar", "apply_validate", "apply-validate"}:
+        if not value:
+            return "Uso: /coding aplicar_validar ID"
+        return coding_apply_and_validate_text(value)
     if action in {"descartar", "discard"}:
         if not value:
             return "Uso: /coding descartar ID"
         return coding_discard_proposal_text(value)
     if action in {"validar", "validate"}:
         return coding_run_validation_text(proposal_id=value)
+    if action in {"plan_validacion", "plan-validacion", "validation_plan", "validation-plan"}:
+        return coding_validation_plan_text(proposal_id=value)
     if action == "workspace":
         if not value:
             return "Uso: /coding workspace RUTA"
         return coding_set_workspace_text(value)
 
     return (
-        "Uso: /coding, /coding propuestas, /coding ver ID, /coding aplicar ID, "
-        "/coding descartar ID, /coding validar [ID] o /coding workspace RUTA"
+        "Uso: /coding, /coding status, /coding propuestas, /coding ver ID, "
+        "/coding revisar ID, /coding aplicar ID, /coding aplicar_validar ID, "
+        "/coding descartar ID, /coding buscar TEXTO, /coding rango ARCHIVO [LINEA] [CANTIDAD], "
+        "/coding editar EDITS_JSON, /coding plan_validacion [ID], /coding validar [ID] "
+        "o /coding workspace RUTA"
     )
 
 

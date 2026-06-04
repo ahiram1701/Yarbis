@@ -145,6 +145,41 @@ class ToolsTestCase(unittest.TestCase):
 
         self.assertIn("Ruta fuera del workspace de codigo activo", result)
 
+    def test_coding_search_text_respects_workspace_and_limits_results(self):
+        (self.external_dir / "app.py").write_text("alpha\nneedle here\nomega\n", encoding="utf-8")
+
+        fake_result = subprocess.CompletedProcess(
+            args=["rg"],
+            returncode=0,
+            stdout="app.py:2:1:needle here\n",
+            stderr="",
+        )
+
+        with patch.object(memory, "STATE_FILE", self.state_path):
+            with patch.object(tools, "CODING_PROPOSALS_DIR", self.proposals_dir):
+                tools.coding_set_workspace(str(self.external_dir))
+                with patch.object(tools.subprocess, "run", return_value=fake_result) as run_mock:
+                    result = tools.coding_search_text("needle", glob="*.py", max_results=5)
+
+        self.assertIn("Busqueda coding", result)
+        self.assertIn("needle here", result)
+        self.assertEqual(run_mock.call_args.kwargs["cwd"], str(self.external_dir.resolve()))
+        self.assertIn("--max-count", run_mock.call_args.args[0])
+        self.assertIn("5", run_mock.call_args.args[0])
+
+    def test_coding_read_text_range_returns_numbered_lines(self):
+        file_path = self.external_dir / "app.py"
+        file_path.write_text("one\ntwo\nthree\nfour\n", encoding="utf-8")
+
+        with patch.object(memory, "STATE_FILE", self.state_path):
+            with patch.object(tools, "CODING_PROPOSALS_DIR", self.proposals_dir):
+                tools.coding_set_workspace(str(self.external_dir))
+                result = tools.coding_read_text_range("app.py", start_line=2, line_count=2)
+
+        self.assertIn("Lineas: 2-3 de 4", result)
+        self.assertIn("2: two", result)
+        self.assertIn("3: three", result)
+
     def test_coding_propose_text_file_creates_diff_without_modifying_file(self):
         file_path = self.external_dir / "app.py"
         file_path.write_text("print('old')\n", encoding="utf-8")
@@ -192,6 +227,84 @@ class ToolsTestCase(unittest.TestCase):
         self.assertIn("Archivos: 2", result)
         self.assertEqual([item["path"] for item in proposal["files"]], ["app.py", "new_module.py"])
         self.assertFalse((self.external_dir / "new_module.py").exists())
+
+    def test_coding_propose_edits_exact_replace_creates_proposal_without_mutating_file(self):
+        file_path = self.external_dir / "app.py"
+        file_path.write_text("print('old')\n", encoding="utf-8")
+        edits_json = json.dumps([{
+            "type": "exact_replace",
+            "path": "app.py",
+            "old_text": "old",
+            "new_text": "new",
+        }])
+
+        with patch.object(memory, "STATE_FILE", self.state_path):
+            with patch.object(tools, "CODING_PROPOSALS_DIR", self.proposals_dir):
+                tools.coding_set_workspace(str(self.external_dir))
+                result = tools.coding_propose_edits("Editar app", edits_json)
+
+        proposal_id = next(line.split(":", 1)[1].strip() for line in result.splitlines() if line.startswith("Id:"))
+        proposal = json.loads((self.proposals_dir / f"{proposal_id}.json").read_text(encoding="utf-8"))
+        self.assertIn("Propuesta de coding creada", result)
+        self.assertEqual(file_path.read_text(encoding="utf-8"), "print('old')\n")
+        self.assertEqual(proposal["files"][0]["proposed_content"], "print('new')\n")
+
+    def test_coding_propose_edits_exact_replace_blocks_ambiguous_text(self):
+        file_path = self.external_dir / "app.py"
+        file_path.write_text("value = 1\nvalue = 2\n", encoding="utf-8")
+        edits_json = json.dumps([{
+            "type": "exact_replace",
+            "path": "app.py",
+            "old_text": "value",
+            "new_text": "item",
+        }])
+
+        with patch.object(memory, "STATE_FILE", self.state_path):
+            with patch.object(tools, "CODING_PROPOSALS_DIR", self.proposals_dir):
+                tools.coding_set_workspace(str(self.external_dir))
+                result = tools.coding_propose_edits("Editar app", edits_json)
+
+        self.assertIn("ambiguedad", result)
+        self.assertEqual(file_path.read_text(encoding="utf-8"), "value = 1\nvalue = 2\n")
+
+    def test_coding_propose_edits_line_range_creates_proposal(self):
+        file_path = self.external_dir / "app.py"
+        file_path.write_text("one\ntwo\nthree\n", encoding="utf-8")
+        edits_json = json.dumps([{
+            "type": "line_range",
+            "path": "app.py",
+            "start_line": 2,
+            "end_line": 2,
+            "replacement": "TWO\n",
+        }])
+
+        with patch.object(memory, "STATE_FILE", self.state_path):
+            with patch.object(tools, "CODING_PROPOSALS_DIR", self.proposals_dir):
+                tools.coding_set_workspace(str(self.external_dir))
+                result = tools.coding_propose_edits("Editar rango", edits_json)
+
+        proposal_id = next(line.split(":", 1)[1].strip() for line in result.splitlines() if line.startswith("Id:"))
+        proposal = json.loads((self.proposals_dir / f"{proposal_id}.json").read_text(encoding="utf-8"))
+        self.assertEqual(proposal["files"][0]["proposed_content"], "one\nTWO\nthree\n")
+        self.assertEqual(file_path.read_text(encoding="utf-8"), "one\ntwo\nthree\n")
+
+    def test_coding_propose_edits_line_range_blocks_invalid_range(self):
+        file_path = self.external_dir / "app.py"
+        file_path.write_text("one\n", encoding="utf-8")
+        edits_json = json.dumps([{
+            "type": "line_range",
+            "path": "app.py",
+            "start_line": 3,
+            "end_line": 3,
+            "replacement": "three\n",
+        }])
+
+        with patch.object(memory, "STATE_FILE", self.state_path):
+            with patch.object(tools, "CODING_PROPOSALS_DIR", self.proposals_dir):
+                tools.coding_set_workspace(str(self.external_dir))
+                result = tools.coding_propose_edits("Editar rango", edits_json)
+
+        self.assertIn("Rango fuera del archivo", result)
 
     def test_coding_apply_proposal_handles_multiple_files_and_delete(self):
         keep_path = self.external_dir / "app.py"
@@ -386,6 +499,154 @@ class ToolsTestCase(unittest.TestCase):
         self.assertIn("Validacion OK.", result)
         self.assertEqual(state["coding"]["last_validation"]["command"], "pytest")
         self.assertEqual(proposal["validation"]["command"], "pytest")
+        self.assertEqual(proposal["validation"]["exit_code"], 0)
+
+    def test_coding_validation_plan_prefers_saved_command_and_lists_proposal_files(self):
+        file_path = self.external_dir / "app.py"
+        file_path.write_text("print('old')\n", encoding="utf-8")
+
+        with patch.object(memory, "STATE_FILE", self.state_path):
+            with patch.object(tools, "CODING_PROPOSALS_DIR", self.proposals_dir):
+                tools.coding_set_workspace(str(self.external_dir))
+                tools.coding_update_validation_command("pytest tests/test_app.py")
+                propose_result = tools.coding_propose_text_file("app.py", "print('new')\n")
+                proposal_id = next(
+                    line.split(":", 1)[1].strip()
+                    for line in propose_result.splitlines()
+                    if line.startswith("Id:")
+                )
+                result = tools.coding_validation_plan(proposal_id)
+
+        self.assertIn("Plan de validacion coding", result)
+        self.assertIn("pytest tests/test_app.py", result)
+        self.assertIn("Fuente: guardado", result)
+        self.assertIn("app.py", result)
+
+    def test_coding_validation_plan_uses_detected_command_when_missing_saved_command(self):
+        scripts_dir = self.external_dir / "scripts"
+        scripts_dir.mkdir(parents=True, exist_ok=True)
+        (scripts_dir / "check.ps1").write_text("Write-Output OK\n", encoding="utf-8")
+
+        with patch.object(memory, "STATE_FILE", self.state_path):
+            with patch.object(tools, "CODING_PROPOSALS_DIR", self.proposals_dir):
+                tools.coding_set_workspace(str(self.external_dir))
+                result = tools.coding_validation_plan()
+
+        self.assertIn("Fuente: detectado", result)
+        self.assertIn("scripts\\check.ps1", result)
+
+    def test_coding_workflow_status_summarizes_git_validation_and_pending_proposals(self):
+        file_path = self.external_dir / "app.py"
+        file_path.write_text("print('old')\n", encoding="utf-8")
+        fake_git = subprocess.CompletedProcess(
+            args=["git", "status"],
+            returncode=0,
+            stdout="## main\n M app.py\n",
+            stderr="",
+        )
+
+        with patch.object(memory, "STATE_FILE", self.state_path):
+            with patch.object(tools, "CODING_PROPOSALS_DIR", self.proposals_dir):
+                tools.coding_set_workspace(str(self.external_dir))
+                tools.coding_update_validation_command("pytest")
+                tools.coding_propose_text_file("app.py", "print('new')\n", reason="demo")
+                with patch.object(tools.subprocess, "run", return_value=fake_git):
+                    result = tools.coding_workflow_status()
+
+        self.assertIn("Estado de workflow coding", result)
+        self.assertIn("Validacion guardada: pytest", result)
+        self.assertIn("M app.py", result)
+        self.assertIn("Propuestas", result)
+        self.assertIn("proposal-", result)
+
+    def test_coding_check_proposal_reports_preflight_ok_without_mutating_files(self):
+        file_path = self.external_dir / "app.py"
+        file_path.write_text("print('old')\n", encoding="utf-8")
+
+        with patch.object(memory, "STATE_FILE", self.state_path):
+            with patch.object(tools, "CODING_PROPOSALS_DIR", self.proposals_dir):
+                tools.coding_set_workspace(str(self.external_dir))
+                propose_result = tools.coding_propose_text_file("app.py", "print('new')\n")
+                proposal_id = next(
+                    line.split(":", 1)[1].strip()
+                    for line in propose_result.splitlines()
+                    if line.startswith("Id:")
+                )
+                result = tools.coding_check_proposal(proposal_id)
+
+        self.assertIn("Preflight OK.", result)
+        self.assertIn("app.py", result)
+        self.assertEqual(file_path.read_text(encoding="utf-8"), "print('old')\n")
+
+    def test_coding_check_proposal_reports_obsolete_when_file_changed(self):
+        file_path = self.external_dir / "app.py"
+        file_path.write_text("print('old')\n", encoding="utf-8")
+
+        with patch.object(memory, "STATE_FILE", self.state_path):
+            with patch.object(tools, "CODING_PROPOSALS_DIR", self.proposals_dir):
+                tools.coding_set_workspace(str(self.external_dir))
+                propose_result = tools.coding_propose_text_file("app.py", "print('new')\n")
+                proposal_id = next(
+                    line.split(":", 1)[1].strip()
+                    for line in propose_result.splitlines()
+                    if line.startswith("Id:")
+                )
+                file_path.write_text("changed by user\n", encoding="utf-8")
+                result = tools.coding_check_proposal(proposal_id)
+
+        self.assertIn("Preflight con fallos", result)
+        self.assertIn("El archivo cambio", result)
+
+    def test_coding_check_proposal_reports_wrong_workspace(self):
+        file_path = self.external_dir / "app.py"
+        file_path.write_text("print('old')\n", encoding="utf-8")
+        other_dir = self.runtime_dir / "other_repo"
+        other_dir.mkdir(parents=True, exist_ok=True)
+
+        with patch.object(memory, "STATE_FILE", self.state_path):
+            with patch.object(tools, "CODING_PROPOSALS_DIR", self.proposals_dir):
+                tools.coding_set_workspace(str(self.external_dir))
+                propose_result = tools.coding_propose_text_file("app.py", "print('new')\n")
+                proposal_id = next(
+                    line.split(":", 1)[1].strip()
+                    for line in propose_result.splitlines()
+                    if line.startswith("Id:")
+                )
+                tools.coding_set_workspace(str(other_dir))
+                result = tools.coding_check_proposal(proposal_id)
+
+        self.assertIn("Preflight con fallos", result)
+        self.assertIn("pertenece a otro workspace", result)
+
+    def test_coding_apply_and_validate_applies_then_records_validation(self):
+        file_path = self.external_dir / "app.py"
+        file_path.write_text("print('old')\n", encoding="utf-8")
+        fake_result = subprocess.CompletedProcess(
+            args="pytest",
+            returncode=0,
+            stdout="OK",
+            stderr="",
+        )
+
+        with patch.object(memory, "STATE_FILE", self.state_path):
+            with patch.object(tools, "CODING_PROPOSALS_DIR", self.proposals_dir):
+                with patch.object(tools, "CHECKPOINTS_DIR", self.checkpoints_dir):
+                    tools.coding_set_workspace(str(self.external_dir))
+                    tools.coding_update_validation_command("pytest")
+                    propose_result = tools.coding_propose_text_file("app.py", "print('new')\n")
+                    proposal_id = next(
+                        line.split(":", 1)[1].strip()
+                        for line in propose_result.splitlines()
+                        if line.startswith("Id:")
+                    )
+                    with patch.object(tools.subprocess, "run", return_value=fake_result):
+                        result = tools.coding_apply_and_validate(proposal_id)
+
+        proposal = json.loads((self.proposals_dir / f"{proposal_id}.json").read_text(encoding="utf-8"))
+        self.assertIn("Aplicacion y validacion completadas", result)
+        self.assertIn("Validacion OK.", result)
+        self.assertEqual(file_path.read_text(encoding="utf-8"), "print('new')\n")
+        self.assertEqual(proposal["status"], "applied")
         self.assertEqual(proposal["validation"]["exit_code"], 0)
 
     def test_restore_checkpoint_recovers_previous_content(self):

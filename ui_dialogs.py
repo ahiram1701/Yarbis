@@ -973,6 +973,12 @@ class IdeaProjectsDialog(ThemedDialog):
         self.detail_text.insert("1.0", content)
         self.detail_text.configure(state="disabled")
 
+    def _set_status_text(self, content: str):
+        self.status_text.configure(state="normal")
+        self.status_text.delete("1.0", "end")
+        self.status_text.insert("1.0", content)
+        self.status_text.configure(state="disabled")
+
     def _selected_project(self) -> dict | None:
         selection = self.projects_list.curselection()
         if not selection:
@@ -1115,11 +1121,33 @@ class IdeaProjectsDialog(ThemedDialog):
 
 
 class CodingProposalsDialog(ThemedDialog):
-    def __init__(self, parent, apply_callback, discard_callback, detail_callback, list_callback, validate_callback):
+    def __init__(
+        self,
+        parent,
+        apply_callback,
+        discard_callback,
+        detail_callback,
+        list_callback,
+        validate_callback,
+        apply_validate_callback=None,
+        check_callback=None,
+        detect_validation_callback=None,
+        range_callback=None,
+        search_callback=None,
+        status_callback=None,
+        validation_plan_callback=None,
+    ):
         self.apply_callback = apply_callback
+        self.apply_validate_callback = apply_validate_callback
+        self.check_callback = check_callback
+        self.detect_validation_callback = detect_validation_callback
+        self.range_callback = range_callback
         self.discard_callback = discard_callback
         self.detail_callback = detail_callback
         self.list_callback = list_callback
+        self.search_callback = search_callback
+        self.status_callback = status_callback
+        self.validation_plan_callback = validation_plan_callback
         self.validate_callback = validate_callback
         self.proposal_lines = []
         self.activity_messages = []
@@ -1129,10 +1157,20 @@ class CodingProposalsDialog(ThemedDialog):
         self._prepare_body(master)
         master.columnconfigure(0, weight=0)
         master.columnconfigure(1, weight=1)
-        master.rowconfigure(0, weight=1)
+        master.rowconfigure(1, weight=1)
+
+        status_frame = tk.Frame(master, bd=0, highlightthickness=0)
+        status_frame.grid(row=0, column=0, columnspan=2, sticky="ew", padx=6, pady=(6, 2))
+        status_frame.columnconfigure(0, weight=1)
+        status_frame.configure(bg=self.theme_palette["bg"])
+
+        self.status_text = tk.Text(status_frame, width=104, height=6, wrap="word")
+        self.status_text.grid(row=0, column=0, sticky="ew")
+        self._style_text_widget(self.status_text)
+        self.status_text.configure(state="disabled")
 
         list_frame = tk.Frame(master, bd=0, highlightthickness=0)
-        list_frame.grid(row=0, column=0, sticky="nsew", padx=(6, 4), pady=6)
+        list_frame.grid(row=1, column=0, sticky="nsew", padx=(6, 4), pady=6)
         list_frame.columnconfigure(0, weight=1)
         list_frame.rowconfigure(0, weight=1)
         list_frame.configure(bg=self.theme_palette["bg"])
@@ -1159,7 +1197,7 @@ class CodingProposalsDialog(ThemedDialog):
         style_scrollbar_widget(proposals_scrollbar, self.theme_palette)
 
         detail_frame = tk.Frame(master, bd=0, highlightthickness=0)
-        detail_frame.grid(row=0, column=1, sticky="nsew", padx=(4, 6), pady=6)
+        detail_frame.grid(row=1, column=1, sticky="nsew", padx=(4, 6), pady=6)
         detail_frame.columnconfigure(0, weight=1)
         detail_frame.rowconfigure(0, weight=1)
         detail_frame.configure(bg=self.theme_palette["bg"])
@@ -1191,6 +1229,19 @@ class CodingProposalsDialog(ThemedDialog):
             style="Accent.TButton",
         )
         self.apply_button.pack(side="left", padx=(0, 8))
+        self.apply_validate_button = ttk.Button(
+            box,
+            text="Aplicar y validar",
+            command=self._apply_and_validate_selected_proposal,
+            style="Accent.TButton",
+        )
+        self.apply_validate_button.pack(side="left", padx=(0, 8))
+        self.check_button = ttk.Button(
+            box,
+            text="Revisar",
+            command=self._check_selected_proposal,
+        )
+        self.check_button.pack(side="left", padx=(0, 8))
         self.discard_button = ttk.Button(
             box,
             text="Descartar",
@@ -1204,6 +1255,30 @@ class CodingProposalsDialog(ThemedDialog):
             command=self._validate_selected_proposal,
         )
         self.validate_button.pack(side="left", padx=(0, 8))
+        self.detect_validation_button = ttk.Button(
+            box,
+            text="Detectar validacion",
+            command=self._detect_validation,
+        )
+        self.detect_validation_button.pack(side="left", padx=(0, 8))
+        self.validation_plan_button = ttk.Button(
+            box,
+            text="Plan validacion",
+            command=self._show_validation_plan,
+        )
+        self.validation_plan_button.pack(side="left", padx=(0, 8))
+        self.search_button = ttk.Button(
+            box,
+            text="Buscar",
+            command=self._search_text,
+        )
+        self.search_button.pack(side="left", padx=(0, 8))
+        self.range_button = ttk.Button(
+            box,
+            text="Leer rango",
+            command=self._read_range,
+        )
+        self.range_button.pack(side="left", padx=(0, 8))
         ttk.Button(box, text="Refrescar", command=self._refresh_proposals).pack(side="left", padx=(0, 8))
         ttk.Button(box, text="Cerrar", command=self.ok).pack(side="left")
 
@@ -1216,6 +1291,12 @@ class CodingProposalsDialog(ThemedDialog):
         self.detail_text.delete("1.0", "end")
         self.detail_text.insert("1.0", content)
         self.detail_text.configure(state="disabled")
+
+    def _set_status_text(self, content: str):
+        self.status_text.configure(state="normal")
+        self.status_text.delete("1.0", "end")
+        self.status_text.insert("1.0", content)
+        self.status_text.configure(state="disabled")
 
     def _selected_line(self) -> str:
         selection = self.proposals_list.curselection()
@@ -1237,19 +1318,46 @@ class CodingProposalsDialog(ThemedDialog):
         enabled = "normal" if self._proposal_id_from_line(self._selected_line()) else "disabled"
         if hasattr(self, "apply_button"):
             self.apply_button.configure(state=enabled)
+        if hasattr(self, "apply_validate_button"):
+            self.apply_validate_button.configure(
+                state=enabled if callable(self.apply_validate_callback) else "disabled",
+            )
+        if hasattr(self, "check_button"):
+            self.check_button.configure(state=enabled if callable(self.check_callback) else "disabled")
         if hasattr(self, "discard_button"):
             self.discard_button.configure(state=enabled)
         if hasattr(self, "validate_button"):
             self.validate_button.configure(state=enabled)
+        if hasattr(self, "detect_validation_button"):
+            self.detect_validation_button.configure(
+                state="normal" if callable(self.detect_validation_callback) else "disabled",
+            )
+        if hasattr(self, "validation_plan_button"):
+            self.validation_plan_button.configure(
+                state="normal" if callable(self.validation_plan_callback) else "disabled",
+            )
+        if hasattr(self, "search_button"):
+            self.search_button.configure(state="normal" if callable(self.search_callback) else "disabled")
+        if hasattr(self, "range_button"):
+            self.range_button.configure(state="normal" if callable(self.range_callback) else "disabled")
 
     def _show_selected_proposal(self, _event=None):
         line = self._selected_line()
         proposal_id = self._proposal_id_from_line(line)
         detail = self.detail_callback(proposal_id) if proposal_id else "Selecciona una propuesta pendiente."
+        if proposal_id and callable(self.check_callback):
+            detail = f"{detail}\n\nPreflight:\n{self.check_callback(proposal_id)}"
         self._set_detail_text(detail)
         self._sync_action_buttons()
 
+    def _refresh_status(self):
+        if callable(self.status_callback):
+            self._set_status_text(self.status_callback(include_diff=False))
+        else:
+            self._set_status_text("Estado de coding no disponible.")
+
     def _refresh_proposals(self):
+        self._refresh_status()
         selected_id = self._proposal_id_from_line(self._selected_line()) if hasattr(self, "proposals_list") else ""
         rendered = self.list_callback(status="pending", limit=50)
         if rendered.startswith("No hay propuestas") or rendered.startswith("No hay workspace"):
@@ -1294,6 +1402,30 @@ class CodingProposalsDialog(ThemedDialog):
         self.activity_messages.append(result)
         self._refresh_proposals()
 
+    def _apply_and_validate_selected_proposal(self):
+        proposal_id = self._proposal_id_from_line(self._selected_line())
+        if not proposal_id or not callable(self.apply_validate_callback):
+            return
+        should_apply = messagebox.askyesno(
+            "Aplicar y validar propuesta",
+            f"Quieres aplicar y validar la propuesta {proposal_id}?",
+            parent=self,
+        )
+        if not should_apply:
+            return
+        result = self.apply_validate_callback(proposal_id)
+        self.activity_messages.append(result)
+        self._refresh_proposals()
+
+    def _check_selected_proposal(self):
+        proposal_id = self._proposal_id_from_line(self._selected_line())
+        if not proposal_id or not callable(self.check_callback):
+            return
+        result = self.check_callback(proposal_id)
+        self.activity_messages.append(result)
+        self._set_detail_text(result)
+        self._refresh_status()
+
     def _discard_selected_proposal(self):
         proposal_id = self._proposal_id_from_line(self._selected_line())
         if not proposal_id:
@@ -1316,6 +1448,47 @@ class CodingProposalsDialog(ThemedDialog):
         result = self.validate_callback(proposal_id=proposal_id)
         self.activity_messages.append(result)
         self._refresh_proposals()
+
+    def _detect_validation(self):
+        if not callable(self.detect_validation_callback):
+            return
+        result = self.detect_validation_callback()
+        self.activity_messages.append(result)
+        self._refresh_proposals()
+
+    def _show_validation_plan(self):
+        if not callable(self.validation_plan_callback):
+            return
+        proposal_id = self._proposal_id_from_line(self._selected_line())
+        result = self.validation_plan_callback(proposal_id=proposal_id)
+        self.activity_messages.append(result)
+        self._set_detail_text(result)
+
+    def _search_text(self):
+        if not callable(self.search_callback):
+            return
+        pattern = simpledialog.askstring("Buscar en coding", "Texto o patron a buscar:", parent=self)
+        if not pattern:
+            return
+        result = self.search_callback(pattern=pattern)
+        self.activity_messages.append(result)
+        self._set_detail_text(result)
+
+    def _read_range(self):
+        if not callable(self.range_callback):
+            return
+        path = simpledialog.askstring("Leer rango", "Archivo:", parent=self)
+        if not path:
+            return
+        start_line = simpledialog.askinteger("Leer rango", "Linea inicial:", initialvalue=1, parent=self)
+        if not start_line:
+            return
+        line_count = simpledialog.askinteger("Leer rango", "Cantidad de lineas:", initialvalue=120, parent=self)
+        if not line_count:
+            return
+        result = self.range_callback(path=path, start_line=start_line, line_count=line_count)
+        self.activity_messages.append(result)
+        self._set_detail_text(result)
 
     def apply(self):
         self.result = "\n".join(self.activity_messages).strip()

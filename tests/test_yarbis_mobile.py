@@ -614,6 +614,12 @@ class YarbisMobileTestCase(unittest.TestCase):
         self.assertIn("kokoroVoiceFilter", html)
         self.assertIn("Guardar validación", html)
         self.assertIn("coding_validate", html)
+        self.assertIn("coding_check", html)
+        self.assertIn("coding_apply_validate", html)
+        self.assertIn("select-coding-proposal", html)
+        self.assertIn("coding_search", html)
+        self.assertIn("coding_read_range", html)
+        self.assertIn("coding_validation_plan", html)
         self.assertIn("ntfyPriority", html)
         self.assertIn("ntfyTags", html)
         self.assertIn("guardado; vacío conserva", html)
@@ -641,6 +647,77 @@ class YarbisMobileTestCase(unittest.TestCase):
         self.assertEqual(validate_result["result"], "validado")
         update_mock.assert_called_once_with("pytest")
         validate_mock.assert_called_once_with(proposal_id="proposal-1", command="pytest")
+
+    def test_mobile_coding_guided_actions_route_to_session_helpers(self):
+        with patch.object(
+            yarbis_mobile,
+            "coding_workflow_status_text",
+            return_value="status",
+        ) as status_mock:
+            status_result = yarbis_mobile._execute_action("coding_status", {})
+
+        with patch.object(
+            yarbis_mobile,
+            "coding_check_proposal_text",
+            return_value="check",
+        ) as check_mock:
+            check_result = yarbis_mobile._execute_action("coding_check", {"proposal_id": "proposal-1"})
+
+        with patch.object(
+            yarbis_mobile,
+            "coding_apply_and_validate_text",
+            return_value="aplicado validado",
+        ) as apply_validate_mock:
+            apply_validate_result = yarbis_mobile._execute_action(
+                "coding_apply_validate",
+                {"proposal_id": "proposal-1", "command": "pytest"},
+            )
+
+        with patch.object(
+            yarbis_mobile,
+            "coding_detect_validation_command_text",
+            return_value="detectado",
+        ) as detect_mock:
+            detect_result = yarbis_mobile._execute_action("coding_detect_validation", {})
+
+        with patch.object(
+            yarbis_mobile,
+            "coding_search_text_text",
+            return_value="busqueda",
+        ) as search_mock:
+            search_result = yarbis_mobile._execute_action("coding_search", {"pattern": "foo", "path": ".", "glob": "*.py"})
+
+        with patch.object(
+            yarbis_mobile,
+            "coding_read_text_range_text",
+            return_value="rango",
+        ) as range_mock:
+            range_result = yarbis_mobile._execute_action(
+                "coding_read_range",
+                {"path": "app.py", "start_line": 2, "line_count": 5},
+            )
+
+        with patch.object(
+            yarbis_mobile,
+            "coding_validation_plan_text",
+            return_value="plan",
+        ) as plan_mock:
+            plan_result = yarbis_mobile._execute_action("coding_validation_plan", {"proposal_id": "proposal-1"})
+
+        self.assertEqual(status_result["result"], "status")
+        self.assertEqual(check_result["result"], "check")
+        self.assertEqual(apply_validate_result["result"], "aplicado validado")
+        self.assertEqual(detect_result["result"], "detectado")
+        self.assertEqual(search_result["result"], "busqueda")
+        self.assertEqual(range_result["result"], "rango")
+        self.assertEqual(plan_result["result"], "plan")
+        status_mock.assert_called_once_with(include_diff=False)
+        check_mock.assert_called_once_with("proposal-1")
+        apply_validate_mock.assert_called_once_with(proposal_id="proposal-1", command="pytest")
+        detect_mock.assert_called_once_with()
+        search_mock.assert_called_once_with(pattern="foo", path=".", glob="*.py")
+        range_mock.assert_called_once_with(path="app.py", start_line=2, line_count=5)
+        plan_mock.assert_called_once_with("proposal-1")
 
     def test_ensure_mobile_ui_servers_starts_localhost_when_tailscale_missing(self):
         state_path = TEST_RUNTIME_DIR / "mobile_server_state.json"

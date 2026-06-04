@@ -25,15 +25,87 @@ class TelegramInboxTestCase(unittest.TestCase):
                     "coding_run_validation_text",
                     return_value="validado",
                 ) as validation_mock:
-                    proposals_result = telegram_inbox._dispatch_command("/coding propuestas", chat_id="123")
-                    get_result = telegram_inbox._dispatch_command("/coding ver proposal-1", chat_id="123")
-                    validation_result = telegram_inbox._dispatch_command("/coding validar proposal-1", chat_id="123")
+                    with patch.object(
+                        telegram_inbox,
+                        "coding_workflow_status_text",
+                        return_value="status",
+                    ) as status_mock:
+                        with patch.object(
+                            telegram_inbox,
+                            "coding_check_proposal_text",
+                            return_value="check",
+                        ) as check_mock:
+                            with patch.object(
+                                telegram_inbox,
+                                "coding_apply_and_validate_text",
+                                return_value="aplicado validado",
+                            ) as apply_validate_mock:
+                                with patch.object(
+                                    telegram_inbox,
+                                    "coding_search_text_text",
+                                    return_value="busqueda",
+                                ) as search_mock:
+                                    with patch.object(
+                                        telegram_inbox,
+                                        "coding_read_text_range_text",
+                                        return_value="rango",
+                                    ) as range_mock:
+                                        with patch.object(
+                                            telegram_inbox,
+                                            "coding_validation_plan_text",
+                                            return_value="plan",
+                                        ) as plan_mock:
+                                            status_result = telegram_inbox._dispatch_command("/coding status", chat_id="123")
+                                            proposals_result = telegram_inbox._dispatch_command(
+                                                "/coding propuestas",
+                                                chat_id="123",
+                                            )
+                                            get_result = telegram_inbox._dispatch_command(
+                                                "/coding ver proposal-1",
+                                                chat_id="123",
+                                            )
+                                            check_result = telegram_inbox._dispatch_command(
+                                                "/coding revisar proposal-1",
+                                                chat_id="123",
+                                            )
+                                            apply_validate_result = telegram_inbox._dispatch_command(
+                                                "/coding aplicar_validar proposal-1",
+                                                chat_id="123",
+                                            )
+                                            search_result = telegram_inbox._dispatch_command(
+                                                "/coding buscar foo",
+                                                chat_id="123",
+                                            )
+                                            range_result = telegram_inbox._dispatch_command(
+                                                "/coding rango app.py 2 5",
+                                                chat_id="123",
+                                            )
+                                            plan_result = telegram_inbox._dispatch_command(
+                                                "/coding plan_validacion proposal-1",
+                                                chat_id="123",
+                                            )
+                                            validation_result = telegram_inbox._dispatch_command(
+                                                "/coding validar proposal-1",
+                                                chat_id="123",
+                                            )
 
+        self.assertEqual(status_result, "status")
         self.assertEqual(proposals_result, "propuestas")
         self.assertEqual(get_result, "detalle")
+        self.assertEqual(check_result, "check")
+        self.assertEqual(apply_validate_result, "aplicado validado")
+        self.assertEqual(search_result, "busqueda")
+        self.assertEqual(range_result, "rango")
+        self.assertEqual(plan_result, "plan")
         self.assertEqual(validation_result, "validado")
+        status_mock.assert_called_once_with()
         proposals_mock.assert_called_once_with(status="pending", limit=20)
         get_mock.assert_called_once_with("proposal-1")
+        check_mock.assert_called_once_with("proposal-1")
+        apply_validate_mock.assert_called_once_with("proposal-1")
+        search_mock.assert_called_once_with("foo")
+        range_mock.assert_called_once_with("app.py", start_line="2", line_count="5")
+        plan_mock.assert_called_once_with(proposal_id="proposal-1")
         validation_mock.assert_called_once_with(proposal_id="proposal-1")
 
     def test_process_telegram_update_binds_first_private_chat_and_runs_command(self):

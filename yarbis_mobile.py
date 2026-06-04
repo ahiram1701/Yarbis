@@ -48,13 +48,21 @@ from service_manager import (
 )
 from session import (
     add_task_text,
+    coding_apply_and_validate_text,
     coding_apply_proposal_text,
+    coding_check_proposal_text,
+    coding_detect_validation_command_text,
     coding_discard_proposal_text,
     coding_get_proposal_text,
     coding_list_proposals_text,
+    coding_propose_edits_text,
+    coding_read_text_range_text,
     coding_run_validation_text,
+    coding_search_text_text,
     coding_set_workspace_text,
     coding_update_validation_command_text,
+    coding_validation_plan_text,
+    coding_workflow_status_text,
     create_idea_project_text,
     create_memory_backup_text,
     create_project_visual_board_text,
@@ -1208,10 +1216,39 @@ def _execute_action(action: str, payload: dict | None = None) -> dict:
         return {"result": set_plan(_payload_text(payload, "plan_text"))}
     if action == "coding_workspace":
         return {"result": coding_set_workspace_text(_payload_text(payload, "path"))}
+    if action == "coding_status":
+        return {"result": coding_workflow_status_text(include_diff=bool(payload.get("include_diff")))}
+    if action == "coding_search":
+        return {"result": coding_search_text_text(
+            pattern=_payload_text(payload, "pattern"),
+            path=_payload_text(payload, "path", ".") or ".",
+            glob=_payload_text(payload, "glob"),
+        )}
+    if action == "coding_read_range":
+        return {"result": coding_read_text_range_text(
+            path=_payload_text(payload, "path"),
+            start_line=payload.get("start_line", 1),
+            line_count=payload.get("line_count", 120),
+        )}
+    if action == "coding_propose_edits":
+        return {"result": coding_propose_edits_text(
+            title=_payload_text(payload, "title", "Edicion localizada") or "Edicion localizada",
+            edits_json=_payload_text(payload, "edits_json"),
+            summary=_payload_text(payload, "summary"),
+            reason=_payload_text(payload, "reason"),
+            validation_command=_payload_text(payload, "validation_command"),
+        )}
     if action == "coding_get":
         return {"result": coding_get_proposal_text(_payload_text(payload, "proposal_id"))}
+    if action == "coding_check":
+        return {"result": coding_check_proposal_text(_payload_text(payload, "proposal_id"))}
     if action == "coding_apply":
         return {"result": coding_apply_proposal_text(_payload_text(payload, "proposal_id"))}
+    if action == "coding_apply_validate":
+        return {"result": coding_apply_and_validate_text(
+            proposal_id=_payload_text(payload, "proposal_id"),
+            command=_payload_text(payload, "command"),
+        )}
     if action == "coding_discard":
         return {"result": coding_discard_proposal_text(_payload_text(payload, "proposal_id"))}
     if action == "coding_validate":
@@ -1221,6 +1258,10 @@ def _execute_action(action: str, payload: dict | None = None) -> dict:
         )}
     if action == "coding_validation":
         return {"result": coding_update_validation_command_text(_payload_text(payload, "command"))}
+    if action == "coding_detect_validation":
+        return {"result": coding_detect_validation_command_text()}
+    if action == "coding_validation_plan":
+        return {"result": coding_validation_plan_text(_payload_text(payload, "proposal_id"))}
     if action == "update_model":
         provider = _payload_text(payload, "provider", MODEL_PROVIDER_OLLAMA).lower()
         if provider == MODEL_PROVIDER_OPENROUTER:
@@ -1868,6 +1909,7 @@ let voiceOptionsLoaded = false;
 let localSpeechAudio = null;
 let kokoroVoiceFilter = "";
 let visualSelection = { projectId: "", boardId: "", nodeId: "" };
+let codingSelection = { proposalId: "" };
 let visualDrag = null;
 let visualPan = null;
 const $ = (id) => document.getElementById(id);
@@ -2385,6 +2427,22 @@ function renderRun() {
 function renderContext() {
   const profile = appState.profile || {};
   const ideaProjects = appState.idea_projects || [];
+  const coding = appState.coding || {};
+  const codingProposalLines = String(coding.proposals_text || "")
+    .split(/\n+/)
+    .map(line => line.trim())
+    .filter(line => line.startsWith("[") && line.includes("]"));
+  const codingProposals = codingProposalLines.map(line => ({
+    id: line.split("]", 1)[0].replace("[", "").trim(),
+    label: line
+  })).filter(item => item.id);
+  if (codingSelection.proposalId && !codingProposals.some(item => item.id === codingSelection.proposalId)) {
+    codingSelection.proposalId = "";
+  }
+  if (!codingSelection.proposalId && codingProposals.length) {
+    codingSelection.proposalId = codingProposals[0].id;
+  }
+  const selectedCodingProposalId = codingSelection.proposalId || (codingProposals[0] || {}).id || "";
   $("context").innerHTML = `
     <section class="hero">
       <h2>Contexto que Yarbis usa para trabajar mejor.</h2>
@@ -2474,21 +2532,57 @@ function renderContext() {
     <section class="section">
       <h2>Coding</h2>
       <div class="form-grid">
-        <input id="codingPath" value="${escapeHtml((appState.coding || {}).workspace_path || "")}" placeholder="Ruta del repositorio">
+        <input id="codingPath" value="${escapeHtml(coding.workspace_path || "")}" placeholder="Ruta del repositorio">
         <button data-action="save-coding-workspace">Guardar workspace</button>
       </div>
       <div class="form-grid">
-        <input id="codingValidation" value="${escapeHtml((appState.coding || {}).validation_command || "")}" placeholder="Comando de validación">
+        <input id="codingValidation" value="${escapeHtml(coding.validation_command || "")}" placeholder="Comando de validación">
         <button data-action="save-coding-validation">Guardar validación</button>
+        <button data-action="coding-detect-validation">Detectar validación</button>
+      </div>
+      <div class="actions tight">
+        <button data-action="coding-status">Estado</button>
+        <button data-action="coding-validation-plan">Plan validaciÃ³n</button>
+        <button data-action="refresh">Refrescar</button>
       </div>
       <div class="form-grid">
-        <input id="codingProposalId" placeholder="Id de propuesta">
+        <input id="codingSearchPattern" placeholder="Buscar texto o simbolo">
+        <input id="codingSearchPath" value="." placeholder="Ruta">
+        <input id="codingSearchGlob" placeholder="Glob opcional, ej. *.py">
+        <button data-action="coding-search">Buscar</button>
+      </div>
+      <div class="form-grid">
+        <input id="codingRangePath" placeholder="Archivo para leer rango">
+        <input id="codingRangeStart" type="number" value="1" placeholder="Linea">
+        <input id="codingRangeCount" type="number" value="120" placeholder="Cantidad">
+        <button data-action="coding-read-range">Leer rango</button>
+      </div>
+      <div class="form-grid">
+        <textarea id="codingEditsJson" placeholder='[{"type":"exact_replace","path":"app.py","old_text":"old","new_text":"new"}]'></textarea>
+        <input id="codingEditsTitle" value="Edicion localizada" placeholder="Titulo">
+        <button data-action="coding-propose-edits">Proponer ediciones</button>
+      </div>
+      <div class="list">${codingProposals.map(item => `
+        <div class="item">
+          <strong>${escapeHtml(item.id)}</strong>
+          <div class="muted">${escapeHtml(item.label)}</div>
+          <div class="actions tight">
+            <button data-action="select-coding-proposal" data-proposal-id="${escapeHtml(item.id)}">Seleccionar</button>
+            <button data-action="coding-card-check" data-proposal-id="${escapeHtml(item.id)}">Revisar</button>
+            <button data-action="coding-card-get" data-proposal-id="${escapeHtml(item.id)}">Ver</button>
+          </div>
+        </div>`).join("") || `<div class="muted">Sin propuestas pendientes.</div>`}
+      </div>
+      <div class="form-grid">
+        <input id="codingProposalId" value="${escapeHtml(selectedCodingProposalId)}" placeholder="Id de propuesta seleccionada" readonly>
+        <button data-action="coding-check">Revisar</button>
         <button data-action="coding-get">Ver</button>
         <button data-action="coding-validate">Validar</button>
         <button data-action="coding-apply">Aplicar</button>
+        <button data-action="coding-apply-validate">Aplicar+validar</button>
         <button data-action="coding-discard">Descartar</button>
       </div>
-      <div class="panel"><pre>${escapeHtml((appState.coding || {}).proposals_text || "")}</pre></div>
+      <div class="panel"><pre>${escapeHtml(coding.proposals_text || "")}</pre></div>
     </section>`;
 }
 
@@ -2505,6 +2599,11 @@ function fillIdeaProjectForm(projectId) {
   if ($("ideaDirections")) $("ideaDirections").value = (project.creative_directions || []).join("\n");
   if ($("ideaQuestions")) $("ideaQuestions").value = (project.open_questions || []).join("\n");
   if ($("ideaSteps")) $("ideaSteps").value = (project.next_steps || []).join("\n");
+}
+
+function selectedCodingProposalId() {
+  const node = $("codingProposalId");
+  return (node ? node.value : codingSelection.proposalId || "").trim();
 }
 
 function visualProjects() {
@@ -3166,14 +3265,52 @@ document.addEventListener("click", async (event) => {
       await action("coding_workspace", { path: $("codingPath").value });
     } else if (name === "save-coding-validation") {
       await action("coding_validation", { command: $("codingValidation").value });
+    } else if (name === "coding-detect-validation") {
+      await action("coding_detect_validation", {});
+    } else if (name === "coding-status") {
+      await action("coding_status", {});
+    } else if (name === "coding-validation-plan") {
+      await action("coding_validation_plan", { proposal_id: selectedCodingProposalId() });
+    } else if (name === "coding-search") {
+      await action("coding_search", {
+        pattern: $("codingSearchPattern").value,
+        path: $("codingSearchPath").value || ".",
+        glob: $("codingSearchGlob").value
+      });
+    } else if (name === "coding-read-range") {
+      await action("coding_read_range", {
+        path: $("codingRangePath").value,
+        start_line: $("codingRangeStart").value,
+        line_count: $("codingRangeCount").value
+      });
+    } else if (name === "coding-propose-edits") {
+      await action("coding_propose_edits", {
+        title: $("codingEditsTitle").value,
+        edits_json: $("codingEditsJson").value,
+        validation_command: $("codingValidation").value
+      });
+    } else if (name === "select-coding-proposal") {
+      codingSelection.proposalId = button.dataset.proposalId || "";
+      if ($("codingProposalId")) $("codingProposalId").value = codingSelection.proposalId;
+      await action("coding_check", { proposal_id: codingSelection.proposalId });
+    } else if (name === "coding-card-check") {
+      codingSelection.proposalId = button.dataset.proposalId || "";
+      await action("coding_check", { proposal_id: codingSelection.proposalId });
+    } else if (name === "coding-card-get") {
+      codingSelection.proposalId = button.dataset.proposalId || "";
+      await action("coding_get", { proposal_id: codingSelection.proposalId });
+    } else if (name === "coding-check") {
+      await action("coding_check", { proposal_id: selectedCodingProposalId() });
     } else if (name === "coding-get") {
-      await action("coding_get", { proposal_id: $("codingProposalId").value });
+      await action("coding_get", { proposal_id: selectedCodingProposalId() });
     } else if (name === "coding-validate") {
-      await action("coding_validate", { proposal_id: $("codingProposalId").value });
+      await action("coding_validate", { proposal_id: selectedCodingProposalId(), command: $("codingValidation").value });
     } else if (name === "coding-apply") {
-      await action("coding_apply", { proposal_id: $("codingProposalId").value });
+      await action("coding_apply", { proposal_id: selectedCodingProposalId() });
+    } else if (name === "coding-apply-validate") {
+      await action("coding_apply_validate", { proposal_id: selectedCodingProposalId(), command: $("codingValidation").value });
     } else if (name === "coding-discard") {
-      await action("coding_discard", { proposal_id: $("codingProposalId").value });
+      await action("coding_discard", { proposal_id: selectedCodingProposalId() });
     } else if (name === "save-model") {
       await action("update_model", {
         provider: $("modelProvider").value,

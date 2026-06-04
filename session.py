@@ -61,15 +61,22 @@ from notifications import (
 from self_knowledge import get_cached_source_signature, render_self_knowledge_summary
 from tools import (
     add_task,
+    coding_apply_and_validate,
     coding_apply_proposal,
+    coding_check_proposal,
     coding_detect_validation_command,
     coding_discard_proposal,
     coding_git_status,
     coding_get_proposal,
     coding_list_proposals,
+    coding_propose_edits,
     coding_run_validation,
+    coding_read_text_range,
+    coding_search_text,
     coding_set_workspace,
     coding_update_validation_command,
+    coding_validation_plan,
+    coding_workflow_status,
     coding_workspace_overview,
     create_idea_project,
     create_memory_backup,
@@ -1559,6 +1566,37 @@ def coding_workspace_overview_text() -> str:
         return coding_workspace_overview()
 
 
+def coding_workflow_status_text(include_diff: bool = False) -> str:
+    with SESSION_LOCK:
+        return coding_workflow_status(include_diff=include_diff)
+
+
+def coding_search_text_text(
+    pattern: str,
+    path: str = ".",
+    glob: str = "",
+    context_lines: int = 2,
+    max_results: int = 50,
+) -> str:
+    with SESSION_LOCK:
+        return coding_search_text(
+            pattern=pattern,
+            path=path,
+            glob=glob,
+            context_lines=context_lines,
+            max_results=max_results,
+        )
+
+
+def coding_read_text_range_text(path: str, start_line: int = 1, line_count: int = 120) -> str:
+    with SESSION_LOCK:
+        return coding_read_text_range(
+            path=path,
+            start_line=start_line,
+            line_count=line_count,
+        )
+
+
 def coding_list_proposals_text(status: str = "pending", limit: int = 20) -> str:
     with SESSION_LOCK:
         return coding_list_proposals(status=status, limit=limit)
@@ -1569,9 +1607,40 @@ def coding_get_proposal_text(proposal_id: str) -> str:
         return coding_get_proposal(proposal_id=proposal_id)
 
 
+def coding_check_proposal_text(proposal_id: str) -> str:
+    with SESSION_LOCK:
+        return coding_check_proposal(proposal_id=proposal_id)
+
+
+def coding_propose_edits_text(
+    title: str,
+    edits_json: str,
+    summary: str = "",
+    reason: str = "",
+    validation_command: str = "",
+) -> str:
+    with SESSION_LOCK:
+        return coding_propose_edits(
+            title=title,
+            edits_json=edits_json,
+            summary=summary,
+            reason=reason,
+            validation_command=validation_command,
+        )
+
+
 def coding_apply_proposal_text(proposal_id: str) -> str:
     with SESSION_LOCK:
         return coding_apply_proposal(proposal_id=proposal_id)
+
+
+def coding_apply_and_validate_text(proposal_id: str, command: str = "", timeout_seconds: int = 120) -> str:
+    with SESSION_LOCK:
+        return coding_apply_and_validate(
+            proposal_id=proposal_id,
+            command=command,
+            timeout_seconds=timeout_seconds,
+        )
 
 
 def coding_discard_proposal_text(proposal_id: str) -> str:
@@ -1587,6 +1656,11 @@ def coding_git_status_text() -> str:
 def coding_detect_validation_command_text() -> str:
     with SESSION_LOCK:
         return coding_detect_validation_command()
+
+
+def coding_validation_plan_text(proposal_id: str = "") -> str:
+    with SESSION_LOCK:
+        return coding_validation_plan(proposal_id=proposal_id)
 
 
 def coding_update_validation_command_text(command: str = "") -> str:

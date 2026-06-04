@@ -685,9 +685,9 @@ Yarbis expone al modelo estas herramientas:
 - `set_plan`: plan actual
 - `memory_protection_status`, `update_memory_protection_settings` y `verify_memory_backups`: proteccion automatica de memoria
 - `create_memory_backup`, `list_memory_backups`, `inspect_memory_backup` e `import_memory_backup`: respaldo y trasplante manual de memoria
-- `coding_set_workspace`, `coding_workspace_overview`, `coding_list_files` y `coding_read_text_file`: contexto de un repositorio local activo
-- `coding_propose_changes`, `coding_propose_text_file`, `coding_list_proposals`, `coding_get_proposal`, `coding_apply_proposal` y `coding_discard_proposal`: propuestas de cambios de codigo en modo `propose_first`
-- `coding_git_status`, `coding_git_diff`, `coding_detect_validation_command`, `coding_update_validation_command` y `coding_run_validation`: estado Git, diff y validaciones dentro del repo activo
+- `coding_set_workspace`, `coding_workspace_overview`, `coding_workflow_status`, `coding_list_files`, `coding_search_text`, `coding_read_text_file` y `coding_read_text_range`: contexto e inspeccion de un repositorio local activo
+- `coding_propose_changes`, `coding_propose_edits`, `coding_propose_text_file`, `coding_list_proposals`, `coding_get_proposal`, `coding_apply_proposal` y `coding_discard_proposal`: propuestas de cambios de codigo en modo `propose_first`
+- `coding_check_proposal`, `coding_apply_and_validate`, `coding_git_status`, `coding_git_diff`, `coding_detect_validation_command`, `coding_update_validation_command`, `coding_validation_plan` y `coding_run_validation`: preflight, aplicacion guiada, estado Git, diff y validaciones dentro del repo activo
 - `list_files` y `read_text_file`: lectura de rutas del workspace o del filesystem local
 - `write_text_file`: escritura con checkpoint y diff
 - `list_checkpoints` y `restore_checkpoint`: recuperacion de cambios
@@ -720,19 +720,35 @@ python main.py
 
 En este modo el flujo por defecto es `propose_first`: Yarbis no escribe directamente en archivos del repo activo con `write_text_file`; crea propuestas persistidas en `.yarbis_runtime/coding_proposals/` con contenido previo, contenido propuesto y diff. Las propuestas nuevas usan `schema_version=2` y pueden agrupar varios archivos como una unidad de trabajo: creacion, actualizacion o borrado de archivos de texto UTF-8.
 
-Puedes revisar propuestas con `coding proposals`, abrir una con `coding get <id>`, aplicarla con `coding apply <id>` o descartarla con `coding discard <id>`. Al aplicar, Yarbis hace preflight de todos los archivos, bloquea la aplicacion si algo cambio desde la propuesta, crea checkpoints por archivo y limpia la propuesta pendiente. Las propuestas v1 de un archivo siguen siendo legibles y aplicables.
+Puedes revisar el flujo completo con `coding status`, revisar propuestas con `coding proposals`, abrir una con `coding get <id>`, hacer preflight seco con `coding check <id>`, aplicarla con `coding apply <id>`, aplicar y validar con `coding apply-validate <id>` o descartarla con `coding discard <id>`. Al aplicar, Yarbis hace preflight de todos los archivos, bloquea la aplicacion si algo cambio desde la propuesta, crea checkpoints por archivo y limpia la propuesta pendiente. Las propuestas v1 de un archivo siguen siendo legibles y aplicables.
+
+Para reducir vueltas al trabajar sobre codigo existente, usa el playbook tipo IDE:
+
+```powershell
+>>> coding status
+>>> coding search nombre_funcion
+>>> coding range tools.py 120 80
+>>> coding edit "[{\"type\":\"exact_replace\",\"path\":\"tools.py\",\"old_text\":\"viejo\",\"new_text\":\"nuevo\"}]"
+>>> coding check <id>
+>>> coding validation-plan <id>
+```
+
+`coding edit` acepta ediciones `exact_replace` y `line_range`. Para cambios pequenos o medianos, prefiere ediciones localizadas; para archivos nuevos, reemplazos completos o refactors amplios, usa propuestas de archivo completo con `coding_propose_changes`.
 
 La validacion puede detectarse y guardarse por repo:
 
 ```powershell
 >>> coding validation
 >>> coding validation "python -m unittest discover -s tests"
+>>> coding check <id>
+>>> coding validation-plan <id>
 >>> coding validate <id>
+>>> coding apply-validate <id>
 ```
 
-`coding validation` intenta detectar `scripts/check.ps1`, proyectos Python con `pyproject.toml` y `tests`, `package.json` o proyectos .NET. `coding validate [id]` usa el comando explicito, el guardado o el detectado, guarda el ultimo resultado en `state["coding"]["last_validation"]` y puede asociarlo a una propuesta.
+`coding validation` intenta detectar `scripts/check.ps1`, proyectos Python con `pyproject.toml` y `tests`, `package.json` o proyectos .NET. `coding validation-plan [id]` recomienda el comando guardado o detectado y agrega pistas segun archivos tocados. `coding validate [id]` usa el comando explicito, el guardado o el detectado, guarda el ultimo resultado en `state["coding"]["last_validation"]` y puede asociarlo a una propuesta. `coding apply-validate <id>` solo trabaja con una propuesta explicita, aplica tras el preflight y despues ejecuta esa misma validacion.
 
-El mismo flujo esta disponible en escritorio desde `Workspace de codigo` y `Propuestas`; en movil puedes elegir workspace, guardar comando de validacion, ver/aplicar/descartar/validar propuestas; por Telegram existen `/coding`, `/coding propuestas`, `/coding ver <id>`, `/coding aplicar <id>`, `/coding descartar <id>`, `/coding validar [id]` y `/coding workspace <ruta>`.
+El mismo flujo esta disponible en escritorio desde `Workspace de codigo` y `Propuestas`; en movil puedes elegir workspace, buscar, leer rangos, proponer ediciones JSON, guardar o detectar comando de validacion, seleccionar propuestas desde una lista accionable, revisar/aplicar/aplicar+validar/descartar/validar propuestas; por Telegram existen `/coding`, `/coding status`, `/coding buscar TEXTO`, `/coding rango ARCHIVO [LINEA] [CANTIDAD]`, `/coding editar EDITS_JSON`, `/coding plan_validacion [id]`, `/coding propuestas`, `/coding ver <id>`, `/coding revisar <id>`, `/coding aplicar <id>`, `/coding aplicar_validar <id>`, `/coding descartar <id>`, `/coding validar [id]` y `/coding workspace <ruta>`.
 
 Limites de salida actuales:
 

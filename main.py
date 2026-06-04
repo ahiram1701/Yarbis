@@ -5,15 +5,22 @@ yarbis_instance.ensure_instance_registered()
 
 from memory import load_state, render_state_summary
 from session import (
+    coding_apply_and_validate_text,
     coding_apply_proposal_text,
+    coding_check_proposal_text,
     coding_detect_validation_command_text,
     coding_discard_proposal_text,
     coding_git_status_text,
     coding_get_proposal_text,
     coding_list_proposals_text,
+    coding_propose_edits_text,
+    coding_read_text_range_text,
     coding_run_validation_text,
+    coding_search_text_text,
     coding_set_workspace_text,
     coding_update_validation_command_text,
+    coding_validation_plan_text,
+    coding_workflow_status_text,
     coding_workspace_overview_text,
     delete_note_text,
     get_note_text,
@@ -139,12 +146,33 @@ def main():
                     print(coding_set_workspace_text(coding_value))
                     continue
 
-                if coding_action in {"status", "git"}:
+                if coding_action in {"status", "estado"}:
+                    print(coding_workflow_status_text())
+                    continue
+
+                if coding_action == "git":
                     print(coding_git_status_text())
                     continue
 
                 if coding_action in {"proposals", "propuestas"}:
                     print(coding_list_proposals_text(status="pending", limit=20))
+                    continue
+
+                if coding_action in {"search", "buscar"}:
+                    if not coding_value:
+                        print("Uso: coding search <patron>")
+                        continue
+                    print(coding_search_text_text(coding_value))
+                    continue
+
+                if coding_action in {"range", "rango"}:
+                    range_args = coding_value.split()
+                    if not range_args:
+                        print("Uso: coding range <archivo> [start_line] [line_count]")
+                        continue
+                    start_line = range_args[1] if len(range_args) > 1 else 1
+                    line_count = range_args[2] if len(range_args) > 2 else 120
+                    print(coding_read_text_range_text(range_args[0], start_line=start_line, line_count=line_count))
                     continue
 
                 if coding_action in {"get", "ver"}:
@@ -154,6 +182,20 @@ def main():
                     print(coding_get_proposal_text(coding_value))
                     continue
 
+                if coding_action in {"check", "revisar", "preflight"}:
+                    if not coding_value:
+                        print("Uso: coding check <proposal_id>")
+                        continue
+                    print(coding_check_proposal_text(coding_value))
+                    continue
+
+                if coding_action in {"edit", "edits", "editar"}:
+                    if not coding_value:
+                        print("Uso: coding edit <edits_json>")
+                        continue
+                    print(coding_propose_edits_text("Edicion localizada", coding_value))
+                    continue
+
                 if coding_action == "apply":
                     if not coding_value:
                         print("Uso: coding apply <proposal_id>")
@@ -161,8 +203,19 @@ def main():
                     print(coding_apply_proposal_text(coding_value))
                     continue
 
+                if coding_action in {"apply-validate", "apply_validate", "aplicar-validar", "aplicar_validar"}:
+                    if not coding_value:
+                        print("Uso: coding apply-validate <proposal_id>")
+                        continue
+                    print(coding_apply_and_validate_text(coding_value))
+                    continue
+
                 if coding_action in {"validate", "validar"}:
                     print(coding_run_validation_text(proposal_id=coding_value))
+                    continue
+
+                if coding_action in {"validation-plan", "plan-validacion", "validation_plan"}:
+                    print(coding_validation_plan_text(proposal_id=coding_value))
                     continue
 
                 if coding_action in {"validation", "validacion"}:
@@ -179,7 +232,10 @@ def main():
                     print(coding_discard_proposal_text(coding_value))
                     continue
 
-                print("Uso: coding [workspace|status|proposals|get|apply|discard|validate|validation]")
+                print(
+                    "Uso: coding [workspace|status|git|proposals|get|check|apply|apply-validate|"
+                    "discard|search|range|edit|validate|validation|validation-plan]"
+                )
                 continue
 
             if cmd == "self":
