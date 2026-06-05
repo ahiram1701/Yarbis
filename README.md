@@ -265,7 +265,7 @@ Si el servicio se detiene mientras procesa una respuesta del usuario, esa respue
 
 Puedes ajustar el pulso desde la app con `Servicio` -> `Configurar pulso`. Los cambios se guardan en `state.json`; el servicio los lee en caliente para el intervalo y los ciclos. La espera inicial aplica al siguiente arranque del servicio. Tambien puedes ajustar las senales locales desde `Servicio` -> `Contexto local`; el observador se activa o detiene mientras la app de escritorio esta abierta.
 
-La UI movil se configura desde `Servicio` -> `UI movil`. Al activarla debes definir un PIN local, un puerto por defecto `8787` y el timeout de operaciones moviles, por defecto 1800 segundos. El servicio la publica en `127.0.0.1` y, si Tailscale esta disponible, en la IP Tailscale de la PC, por ejemplo `http://100.99.240.111:8787`. Safari en iPhone puede entrar a esa URL cuando el telefono esta en la misma tailnet. Las sesiones usan cookie `HttpOnly`, CSRF en acciones POST y el PIN queda guardado como hash PBKDF2 en `state.json`.
+La UI movil se configura desde `Servicio` -> `UI movil`. Al activarla debes definir un PIN local, un puerto por defecto `8787` y el timeout de operaciones moviles, por defecto 1800 segundos. El servicio la publica internamente en `127.0.0.1` y, si Tailscale esta disponible con MagicDNS y `HTTPS Certificates` habilitado en `Tailscale Admin` -> `DNS`, configura `tailscale serve` para abrirla por HTTPS, por ejemplo `https://desktop-2p3ou07.tail82d7a7.ts.net/`. En iPhone/Safari usa esa URL HTTPS para que el navegador permita el microfono. Las sesiones usan cookie `HttpOnly`, CSRF en acciones POST y el PIN queda guardado como hash PBKDF2 en `state.json`.
 
 El proveedor por defecto y su modelo tambien se pueden cambiar desde la app con `Modelo` -> `Modelo y timeout`. Ollama sigue siendo el default inicial; OpenRouter queda disponible con configuracion separada de modelo, host, fallbacks, API key env y timeout. Esos cambios se guardan en `state.json` y se aplican al siguiente ciclo, tanto en la app como en el servicio.
 
@@ -481,8 +481,9 @@ Superficies disponibles:
   elegir motor `Sistema/Kokoro`, probar voz, elegir voz/rate/pitch
   en `Config` -> `Voz` y detener habla activa con `Detener habla`. Para Kokoro en Safari/iPhone,
   la UI web pide audio WAV porque iOS no reproduce OGG/Opus de forma consistente.
-  Si iPhone/Safari bloquea el microfono por HTTP o por origen no seguro, usa `Grabar archivo`:
-  abre la captura/subida de audio del sistema y reutiliza la misma transcripcion local.
+  Para voz en vivo en iPhone, abre la UI desde el enlace HTTPS de Tailscale; Safari bloquea
+  el microfono en la URL HTTP. Si no aparece `secure_url`, revisa que `HTTPS Certificates`
+  este habilitado en `Tailscale Admin` -> `DNS`.
 - La app de escritorio tiene `Dictar` en el compositor, `Voz` para elegir motor, voz del sistema
   o Kokoro, velocidad y modo Telegram, `Voces Kokoro`, `Probar voz`,
   `Leer ultimo resultado` y `Detener voz`.

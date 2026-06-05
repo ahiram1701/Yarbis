@@ -182,15 +182,25 @@ class YarbisDesktopTestCase(unittest.TestCase):
                 pid_path.parent.mkdir(parents=True, exist_ok=True)
                 pid_path.write_text(str(os.getpid()), encoding="utf-8")
 
-            rows, warnings = yarbis_desktop._instance_overview_rows()
+            with patch.object(
+                yarbis_desktop,
+                "current_tailscale_serve_targets",
+                return_value=("http://127.0.0.1:9002",),
+            ):
+                rows, warnings = yarbis_desktop._instance_overview_rows()
 
         alpha = [row for row in rows if row["id"] == "alpha"][0]
+        beta = [row for row in rows if row["id"] == "beta"][0]
         self.assertEqual(alpha["display_name"], "Alpha")
         self.assertEqual(alpha["active_text"], "activa")
         self.assertEqual(alpha["service_name"], "Yarbis-alpha")
         self.assertEqual(alpha["mobile_port"], 9001)
+        self.assertEqual(alpha["mobile_https_text"], "apagada")
+        self.assertEqual(beta["mobile_https_text"], "duena")
+        self.assertTrue(beta["mobile_https_owner"])
         self.assertIn("pending_messages", alpha)
         self.assertTrue(any("Telegram duplicado" in warning for warning in warnings))
+        self.assertTrue(any("HTTPS movil" in warning and "Beta" in warning for warning in warnings))
 
     def test_instance_archive_enabled_blocks_default_current_and_active(self):
         self.assertFalse(yarbis_desktop._instance_archive_enabled({"id": "default", "active": False}, "default"))
@@ -212,6 +222,23 @@ class YarbisDesktopTestCase(unittest.TestCase):
         self.assertIn("Mensaje en cola", result)
         self.assertEqual(len(messages), 1)
         self.assertEqual(messages[0]["to_instance"], "beta")
+
+    def test_claim_instance_mobile_https_uses_selected_instance_env(self):
+        completed = yarbis_desktop.subprocess.CompletedProcess(
+            ["python"],
+            0,
+            stdout="HTTPS movil ahora apunta a esta instancia.\n",
+            stderr="",
+        )
+
+        with patch.object(yarbis_desktop.subprocess, "run", return_value=completed) as run_mock:
+            result = yarbis_desktop.YarbisDesktop._claim_instance_mobile_https("tester")
+
+        self.assertIn("HTTPS movil", result)
+        kwargs = run_mock.call_args.kwargs
+        self.assertEqual(kwargs["env"][yarbis_instance.ENV_INSTANCE], "tester")
+        self.assertEqual(kwargs["env"][yarbis_instance.ENV_SERVICE_NAME], "Yarbis-tester")
+        self.assertIn("claim_mobile_https_for_current_instance", run_mock.call_args.args[0][2])
 
     def test_first_run_setup_can_store_direct_ollama_api_key(self):
         state_path = TEST_RUNTIME_DIR / "desktop_first_run_ollama_key_state.json"

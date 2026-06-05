@@ -89,6 +89,7 @@ DEFAULT_SERVICE_PROACTIVE_START_DELAY_SECONDS = 60
 DEFAULT_SERVICE_PROACTIVE_MODEL = ""
 DEFAULT_MOBILE_UI_PORT = 8787
 DEFAULT_MOBILE_UI_JOB_TIMEOUT_SECONDS = 30 * 60
+DEFAULT_MOBILE_UI_HTTPS_ENABLED = True
 MIN_MOBILE_UI_JOB_TIMEOUT_SECONDS = 60
 MAX_MOBILE_UI_JOB_TIMEOUT_SECONDS = 24 * 60 * 60
 MODEL_PROVIDER_OLLAMA = "ollama"
@@ -114,6 +115,7 @@ MAX_MOBILE_UI_HASH_CHARS = 256
 MAX_MOBILE_UI_SALT_CHARS = 128
 MAX_MOBILE_UI_SESSION_SECRET_CHARS = 128
 MAX_MOBILE_UI_BIND_ERROR_CHARS = 600
+MAX_MOBILE_UI_SERVE_TARGET_CHARS = 240
 MAX_OLLAMA_HOST_CHARS = 240
 MAX_OLLAMA_API_KEY_ENV_VAR_CHARS = 80
 MAX_OLLAMA_FALLBACK_MODELS = 8
@@ -386,10 +388,13 @@ def default_state():
                 "enabled": False,
                 "port": yarbis_instance.default_mobile_ui_port(),
                 "job_timeout_seconds": DEFAULT_MOBILE_UI_JOB_TIMEOUT_SECONDS,
+                "https_enabled": DEFAULT_MOBILE_UI_HTTPS_ENABLED,
                 "pin_hash": "",
                 "pin_salt": "",
                 "session_secret": "",
                 "last_bind_error": "",
+                "https_last_error": "",
+                "tailscale_serve_target": "",
             },
         },
         "ui": {
@@ -1464,6 +1469,10 @@ def _normalize_service(service, *, migrate_legacy_cycles: bool = False):
             ),
             "port": mobile_port,
             "job_timeout_seconds": mobile_job_timeout_seconds,
+            "https_enabled": _normalize_bool(
+                mobile_ui.get("https_enabled", mobile_defaults["https_enabled"]),
+                mobile_defaults["https_enabled"],
+            ),
             "pin_hash": _coerce_text(
                 mobile_ui.get("pin_hash", mobile_defaults["pin_hash"]),
                 MAX_MOBILE_UI_HASH_CHARS,
@@ -1480,6 +1489,14 @@ def _normalize_service(service, *, migrate_legacy_cycles: bool = False):
                 mobile_ui.get("last_bind_error", mobile_defaults["last_bind_error"]),
                 MAX_MOBILE_UI_BIND_ERROR_CHARS,
             ).strip()[:MAX_MOBILE_UI_BIND_ERROR_CHARS],
+            "https_last_error": _coerce_text(
+                mobile_ui.get("https_last_error", mobile_defaults["https_last_error"]),
+                MAX_MOBILE_UI_BIND_ERROR_CHARS,
+            ).strip()[:MAX_MOBILE_UI_BIND_ERROR_CHARS],
+            "tailscale_serve_target": _coerce_text(
+                mobile_ui.get("tailscale_serve_target", mobile_defaults["tailscale_serve_target"]),
+                MAX_MOBILE_UI_SERVE_TARGET_CHARS,
+            ).strip()[:MAX_MOBILE_UI_SERVE_TARGET_CHARS],
         },
     }
 

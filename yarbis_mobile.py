@@ -23,6 +23,7 @@ import voice as yarbis_voice
 import voice_conversation
 from secrets_redaction import build_secret_redactor
 from memory import (
+    DEFAULT_MOBILE_UI_HTTPS_ENABLED,
     DEFAULT_MOBILE_UI_PORT,
     DEFAULT_MOBILE_UI_JOB_TIMEOUT_SECONDS,
     DEFAULT_OLLAMA_MODEL,
@@ -348,11 +349,28 @@ def _set_mobile_bind_error(error_text: str) -> None:
         pass
 
 
+def _set_mobile_https_status(error_text: str = "", target: str | None = None) -> None:
+    cleaned = str(error_text or "").strip()
+    cleaned_target = None if target is None else str(target or "").strip()
+
+    def mutate(state):
+        mobile = state.setdefault("service", {}).setdefault("mobile_ui", {})
+        mobile["https_last_error"] = cleaned
+        if cleaned_target is not None:
+            mobile["tailscale_serve_target"] = cleaned_target
+
+    try:
+        state_transaction("mobile_ui_https_status", mutate, create_backup=False)
+    except Exception:
+        pass
+
+
 def update_mobile_ui_settings(
     enabled: bool,
     port: int | str = DEFAULT_MOBILE_UI_PORT,
     pin: str = "",
     job_timeout_seconds: int | str | None = None,
+    https_enabled: bool | None = None,
 ) -> str:
     try:
         cleaned_port = int(port)
@@ -377,6 +395,9 @@ def update_mobile_ui_settings(
     )
     cleaned_job_timeout_seconds = _normalize_mobile_job_timeout(timeout_source)
     session_secret = str(current.get("session_secret", "")).strip() or secrets.token_urlsafe(32)
+    current_https_enabled = bool(current.get("https_enabled", DEFAULT_MOBILE_UI_HTTPS_ENABLED))
+    next_https_enabled = current_https_enabled if https_enabled is None else bool(https_enabled)
+    current_serve_target = str(current.get("tailscale_serve_target", "")).strip()
 
     def mutate(state):
         mobile = state.setdefault("service", {}).setdefault("mobile_ui", {})
@@ -384,23 +405,26 @@ def update_mobile_ui_settings(
             "enabled": bool(enabled),
             "port": cleaned_port,
             "job_timeout_seconds": cleaned_job_timeout_seconds,
+            "https_enabled": next_https_enabled,
             "pin_hash": next_hash,
             "pin_salt": next_salt,
             "session_secret": session_secret,
             "last_bind_error": "",
+            "https_last_error": "",
+            "tailscale_serve_target": current_serve_target if next_https_enabled else "",
         })
 
     state_transaction("update_mobile_ui_settings", mutate)
-    status = public_mobile_ui_status()
-    url_text = status.get("tailscale_url") or status.get("local_url")
+    url_text = f"http://127.0.0.1:{cleaned_port}"
     pin_text = "PIN actualizado" if cleaned_pin else "PIN conservado"
     return (
         "UI movil actualizada.\n"
         f"Estado: {_bool_text(bool(enabled))}\n"
         f"Puerto: {cleaned_port}\n"
         f"Timeout operaciones: {cleaned_job_timeout_seconds} segundos\n"
+        f"HTTPS iPhone: {_bool_text(next_https_enabled)}\n"
         f"{pin_text}.\n"
-        f"URL: {url_text or 'pendiente de Tailscale'}"
+        f"URL local: {url_text}"
     )
 
 
@@ -419,25 +443,45 @@ def _ensure_mobile_session_secret(settings: dict) -> dict:
     return refreshed
 
 
-def detect_tailscale_ipv4(timeout_seconds: float = 2.0) -> str:
+def _tailscale_executable() -> str:
     tailscale = shutil.which("tailscale")
     if not tailscale:
         candidate = Path(r"C:\Program Files\Tailscale\tailscale.exe")
         if candidate.exists():
             tailscale = str(candidate)
+    return str(tailscale or "")
+
+
+def _run_tailscale_command(args: list[str], timeout_seconds: float = 5.0) -> subprocess.CompletedProcess:
+    tailscale = _tailscale_executable()
     if not tailscale:
-        return ""
+        raise MobileUiError("Tailscale no esta instalado o no esta en PATH.")
+    return subprocess.run(
+        [tailscale, *args],
+        cwd=str(WORKSPACE_ROOT),
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=timeout_seconds,
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+    )
+
+
+def _tailscale_status_payload(timeout_seconds: float = 2.0) -> dict:
+    completed = _run_tailscale_command(["status", "--json"], timeout_seconds=timeout_seconds)
+    if completed.returncode != 0:
+        return {}
     try:
-        completed = subprocess.run(
-            [tailscale, "ip", "-4"],
-            cwd=str(WORKSPACE_ROOT),
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=timeout_seconds,
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-        )
+        payload = json.loads(completed.stdout or "{}")
+    except json.JSONDecodeError:
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def detect_tailscale_ipv4(timeout_seconds: float = 2.0) -> str:
+    try:
+        completed = _run_tailscale_command(["ip", "-4"], timeout_seconds=timeout_seconds)
     except Exception:
         return ""
     if completed.returncode != 0:
@@ -447,6 +491,212 @@ def detect_tailscale_ipv4(timeout_seconds: float = 2.0) -> str:
         if candidate.startswith("100.") and candidate.count(".") == 3:
             return candidate
     return ""
+
+
+def detect_tailscale_dns_name(timeout_seconds: float = 2.0) -> str:
+    try:
+        payload = _tailscale_status_payload(timeout_seconds=timeout_seconds)
+    except Exception:
+        return ""
+    self_status = payload.get("Self", {}) if isinstance(payload, dict) else {}
+    if not isinstance(self_status, dict):
+        return ""
+    dns_name = str(self_status.get("DNSName", "")).strip().rstrip(".")
+    return dns_name if "." in dns_name else ""
+
+
+def detect_tailscale_cert_domains(timeout_seconds: float = 2.0) -> tuple[str, ...]:
+    try:
+        payload = _tailscale_status_payload(timeout_seconds=timeout_seconds)
+    except Exception:
+        return ()
+    domains = payload.get("CertDomains") if isinstance(payload, dict) else None
+    if not isinstance(domains, list):
+        return ()
+    cleaned = []
+    for domain in domains:
+        text = str(domain or "").strip().rstrip(".")
+        if "." in text:
+            cleaned.append(text)
+    return tuple(cleaned)
+
+
+def _cached_tailscale_dns_name() -> str:
+    return str(_cached_value(
+        "tailscale_dns_name",
+        "tailscale-dns-name",
+        MOBILE_CACHE_TTL_SECONDS,
+        detect_tailscale_dns_name,
+    ) or "")
+
+
+def _cached_tailscale_cert_domains() -> tuple[str, ...]:
+    domains = _cached_value(
+        "tailscale_cert_domains",
+        "tailscale-cert-domains",
+        MOBILE_CACHE_TTL_SECONDS,
+        detect_tailscale_cert_domains,
+    )
+    return tuple(domains or ())
+
+
+def _tailscale_serve_status(timeout_seconds: float = 5.0) -> dict:
+    completed = _run_tailscale_command(["serve", "status", "--json"], timeout_seconds=timeout_seconds)
+    if completed.returncode != 0:
+        message = (completed.stderr or completed.stdout or "").strip()
+        raise MobileUiError(message or "No pude consultar Tailscale Serve.")
+    output = (completed.stdout or "").strip()
+    if not output:
+        return {}
+    try:
+        payload = json.loads(output)
+    except json.JSONDecodeError as exc:
+        raise MobileUiError("Tailscale Serve devolvio un estado no valido.") from exc
+    return payload if isinstance(payload, dict) else {}
+
+
+def _cached_tailscale_serve_status() -> dict:
+    try:
+        status = _cached_value(
+            "tailscale_serve_status",
+            "tailscale-serve-status",
+            MOBILE_CACHE_TTL_SECONDS,
+            lambda: _tailscale_serve_status(timeout_seconds=2.0),
+        )
+    except Exception:
+        return {}
+    return status if isinstance(status, dict) else {}
+
+
+def _serve_status_mentions_target(status: dict, targets: set[str]) -> bool:
+    rendered = json.dumps(status, ensure_ascii=True, sort_keys=True)
+    return any(target and target in rendered for target in targets)
+
+
+def _serve_proxy_targets_from_status(status: dict) -> set[str]:
+    targets = set()
+
+    def add_target(value: object) -> None:
+        text = str(value or "").strip().rstrip("/")
+        if text.startswith(("http://127.0.0.1:", "https://127.0.0.1:", "http://localhost:", "https://localhost:")):
+            targets.add(text)
+
+    def walk(node: object) -> None:
+        if isinstance(node, dict):
+            add_target(node.get("Proxy"))
+            for value in node.values():
+                walk(value)
+        elif isinstance(node, list):
+            for value in node:
+                walk(value)
+        elif isinstance(node, str):
+            add_target(node)
+
+    walk(status if isinstance(status, dict) else {})
+    return targets
+
+
+def current_tailscale_serve_targets() -> tuple[str, ...]:
+    return tuple(sorted(_serve_proxy_targets_from_status(_cached_tailscale_serve_status())))
+
+
+def _known_yarbis_mobile_serve_targets() -> set[str]:
+    targets = set()
+    state_paths = [WORKSPACE_ROOT / "state.json"]
+    instances_root = WORKSPACE_ROOT / ".yarbis_instances"
+    if instances_root.exists():
+        state_paths.extend(instances_root.glob("*/state.json"))
+
+    for state_path in state_paths:
+        try:
+            payload = json.loads(state_path.read_text(encoding="utf-8"))
+        except (FileNotFoundError, OSError, json.JSONDecodeError):
+            continue
+        mobile = payload.get("service", {}).get("mobile_ui", {}) if isinstance(payload, dict) else {}
+        if not isinstance(mobile, dict):
+            continue
+        stored_target = str(mobile.get("tailscale_serve_target", "")).strip()
+        if stored_target:
+            targets.add(stored_target)
+        try:
+            port = int(mobile.get("port", DEFAULT_MOBILE_UI_PORT) or DEFAULT_MOBILE_UI_PORT)
+        except (TypeError, ValueError):
+            continue
+        if 1 <= port <= 65535:
+            targets.add(_tailscale_serve_target_for_port(port))
+    return targets
+
+
+def _configure_tailscale_https(port: int, settings: dict) -> dict:
+    dns_name = detect_tailscale_dns_name()
+    if not dns_name:
+        raise MobileUiError("Tailscale no expone MagicDNS para generar una URL HTTPS.")
+
+    target = _tailscale_serve_target_for_port(port)
+    cert_domains = detect_tailscale_cert_domains()
+    if dns_name not in cert_domains:
+        if not cert_domains:
+            raise MobileUiError(
+                "Tailscale HTTPS Certificates no esta habilitado para esta tailnet. "
+                "Activalo en Tailscale Admin > DNS > HTTPS Certificates."
+            )
+        raise MobileUiError(
+            "Tailscale no permite certificados HTTPS para "
+            f"{dns_name}; dominios permitidos: {', '.join(cert_domains)}."
+        )
+    previous_target = str(settings.get("tailscale_serve_target", "")).strip()
+    status = _tailscale_serve_status()
+    known_yarbis_targets = _known_yarbis_mobile_serve_targets()
+    allowed_targets = {target, previous_target, *known_yarbis_targets}
+    if status and not _serve_status_mentions_target(status, allowed_targets):
+        raise MobileUiError(
+            "Tailscale Serve ya tiene una configuracion activa que no parece ser de Yarbis; no la sobrescribi."
+        )
+
+    completed = _run_tailscale_command(["serve", "--bg", "--yes", target], timeout_seconds=10.0)
+    if completed.returncode != 0 and "unknown flag" in (completed.stderr or "").lower():
+        completed = _run_tailscale_command(["serve", "--bg", target], timeout_seconds=10.0)
+    if completed.returncode != 0:
+        message = (completed.stderr or completed.stdout or "").strip()
+        raise MobileUiError(message or "No pude configurar Tailscale Serve para HTTPS.")
+
+    with _MOBILE_CACHE_LOCK:
+        _MOBILE_VALUE_CACHE.pop("tailscale_serve_status", None)
+    _set_mobile_https_status("", target)
+    return {"target": target, "url": f"https://{dns_name}/"}
+
+
+def claim_mobile_https_for_current_instance() -> str:
+    settings = get_mobile_ui_settings()
+    if not bool(settings.get("enabled")):
+        raise ValueError("Activa la UI movil antes de usar HTTPS aqui.")
+    if not str(settings.get("pin_hash", "")).strip():
+        raise ValueError("Configura un PIN antes de usar HTTPS aqui.")
+
+    port = int(settings.get("port", DEFAULT_MOBILE_UI_PORT) or DEFAULT_MOBILE_UI_PORT)
+    if not bool(settings.get("https_enabled", DEFAULT_MOBILE_UI_HTTPS_ENABLED)):
+        update_mobile_ui_settings(
+            enabled=True,
+            port=port,
+            pin="",
+            job_timeout_seconds=settings.get("job_timeout_seconds", DEFAULT_MOBILE_UI_JOB_TIMEOUT_SECONDS),
+            https_enabled=True,
+        )
+        settings = get_mobile_ui_settings()
+
+    try:
+        result = _configure_tailscale_https(port, settings)
+    except MobileUiError as exc:
+        _set_mobile_https_status(str(exc).strip())
+        raise
+    except Exception as exc:
+        _set_mobile_https_status(f"{type(exc).__name__}: {exc}")
+        raise
+
+    status = public_mobile_ui_status(get_mobile_ui_settings())
+    url = status.get("secure_url") or result.get("url") or status.get("tailscale_https_url") or ""
+    target = result.get("target") or _tailscale_serve_target_for_port(port)
+    return f"HTTPS movil ahora apunta a esta instancia: {url} -> {target}"
 
 
 def _bind_hosts() -> tuple[str, ...]:
@@ -462,6 +712,10 @@ def _active_mobile_urls() -> list[str]:
         return [server["url"] for server in _MOBILE_SERVERS]
 
 
+def _tailscale_serve_target_for_port(port: int) -> str:
+    return f"http://127.0.0.1:{port}"
+
+
 def public_mobile_ui_status(settings: dict | None = None) -> dict:
     settings = settings or get_mobile_ui_settings()
     port = int(settings.get("port", DEFAULT_MOBILE_UI_PORT) or DEFAULT_MOBILE_UI_PORT)
@@ -469,17 +723,93 @@ def public_mobile_ui_status(settings: dict | None = None) -> dict:
         settings.get("job_timeout_seconds", DEFAULT_MOBILE_UI_JOB_TIMEOUT_SECONDS)
         or DEFAULT_MOBILE_UI_JOB_TIMEOUT_SECONDS
     )
+    enabled = bool(settings.get("enabled"))
+    configured = bool(str(settings.get("pin_hash", "")).strip())
+    https_enabled = bool(settings.get("https_enabled", DEFAULT_MOBILE_UI_HTTPS_ENABLED))
+    https_last_error = str(settings.get("https_last_error", "")).strip()
+    last_bind_error = str(settings.get("last_bind_error", "")).strip()
+    serve_target = str(settings.get("tailscale_serve_target", "")).strip()
+    expected_serve_target = _tailscale_serve_target_for_port(port)
     tailscale_ip = _cached_tailscale_ipv4()
+    tailscale_dns_name = _cached_tailscale_dns_name() if https_enabled else ""
+    tailscale_https_url = f"https://{tailscale_dns_name}/" if tailscale_dns_name else ""
+    tailscale_cert_domains = _cached_tailscale_cert_domains() if https_enabled else ()
+    tailscale_https_supported = bool(tailscale_dns_name and tailscale_dns_name in tailscale_cert_domains)
+    serve_matches_expected_target = False
+    serve_current_targets: set[str] = set()
+    if enabled and configured and https_enabled and tailscale_https_supported:
+        serve_status = _cached_tailscale_serve_status()
+        serve_current_targets = _serve_proxy_targets_from_status(serve_status)
+        serve_matches_expected_target = (
+            expected_serve_target in serve_current_targets
+            or _serve_status_mentions_target(serve_status, {expected_serve_target})
+        )
+    known_yarbis_targets = _known_yarbis_mobile_serve_targets() if serve_current_targets else set()
+    serve_points_to_known_other_instance = bool(
+        (serve_current_targets - {expected_serve_target}) & known_yarbis_targets
+    )
+    blocking_https_error = bool(
+        https_last_error
+        and not serve_matches_expected_target
+        and not serve_points_to_known_other_instance
+    )
+    active_http_urls = _active_mobile_urls() if enabled and configured else []
+    https_ready = bool(
+        enabled
+        and configured
+        and https_enabled
+        and tailscale_https_url
+        and tailscale_https_supported
+        and not blocking_https_error
+        and serve_target == expected_serve_target
+        and serve_matches_expected_target
+    )
+    secure_url = tailscale_https_url if https_ready else ""
+    https_pending_reason = ""
+    if not https_enabled:
+        https_pending_reason = "https_disabled"
+    elif not enabled:
+        https_pending_reason = "ui_disabled"
+    elif not configured:
+        https_pending_reason = "pin_missing"
+    elif not tailscale_https_url:
+        https_pending_reason = "tailscale_dns_missing"
+    elif not tailscale_https_supported:
+        https_pending_reason = "tailscale_https_cert_missing"
+    elif blocking_https_error:
+        https_pending_reason = "https_error"
+    elif not https_ready:
+        https_pending_reason = "serve_pending"
+    active_urls = []
+    if secure_url:
+        active_urls.append(secure_url)
+    for url in active_http_urls:
+        if url not in active_urls:
+            active_urls.append(url)
     return {
-        "enabled": bool(settings.get("enabled")),
-        "configured": bool(str(settings.get("pin_hash", "")).strip()),
+        "enabled": enabled,
+        "configured": configured,
         "port": port,
         "job_timeout_seconds": job_timeout_seconds,
+        "https_enabled": https_enabled,
+        "https_ready": https_ready,
+        "https_pending_reason": "" if https_ready else https_pending_reason,
+        "tailscale_https_supported": tailscale_https_supported,
+        "tailscale_serve_matches_target": serve_matches_expected_target,
+        "tailscale_serve_current_targets": sorted(serve_current_targets),
         "local_url": f"http://127.0.0.1:{port}",
         "tailscale_ip": tailscale_ip,
         "tailscale_url": f"http://{tailscale_ip}:{port}" if tailscale_ip else "",
-        "active_urls": _active_mobile_urls(),
-        "last_bind_error": str(settings.get("last_bind_error", "")).strip(),
+        "tailscale_dns_name": tailscale_dns_name,
+        "tailscale_https_url": tailscale_https_url,
+        "tailscale_cert_domains": list(tailscale_cert_domains),
+        "secure_url": secure_url,
+        "active_urls": active_urls,
+        "last_bind_error": last_bind_error,
+        "https_last_error": https_last_error if blocking_https_error else "",
+        "stored_https_last_error": https_last_error,
+        "tailscale_serve_target": serve_target,
+        "tailscale_serve_expected_target": expected_serve_target,
     }
 
 
@@ -815,7 +1145,9 @@ def _mobile_health_status_from_state(state: dict, service_status: dict) -> dict:
             "configured": bool(str(mobile_settings.get("pin_hash", "")).strip()),
             "port": mobile_settings.get("port"),
             "job_timeout_seconds": mobile_settings.get("job_timeout_seconds", DEFAULT_MOBILE_UI_JOB_TIMEOUT_SECONDS),
+            "https_enabled": bool(mobile_settings.get("https_enabled", DEFAULT_MOBILE_UI_HTTPS_ENABLED)),
             "last_bind_error": str(mobile_settings.get("last_bind_error", "")).strip(),
+            "https_last_error": str(mobile_settings.get("https_last_error", "")).strip(),
         },
         "operation": {
             "active": operation_active,
@@ -1381,7 +1713,10 @@ def _execute_action(action: str, payload: dict | None = None) -> dict:
             port=payload.get("port", DEFAULT_MOBILE_UI_PORT),
             job_timeout_seconds=payload.get("job_timeout_seconds"),
             pin=str(payload.get("pin", "")),
+            https_enabled=bool(payload.get("https_enabled", DEFAULT_MOBILE_UI_HTTPS_ENABLED)),
         )}
+    if action == "mobile_https_claim":
+        return {"result": claim_mobile_https_for_current_instance()}
     if action == "voice_settings":
         tts_provider = _payload_text(payload, "tts_provider", "system") or "system"
         return {"result": yarbis_voice.update_voice_settings_text(
@@ -1961,6 +2296,8 @@ let liveVoiceRecorder = null;
 let liveVoiceStream = null;
 let liveVoiceSessionId = "";
 let liveVoiceBusy = false;
+let liveVoiceSegmentTimer = null;
+let liveVoiceStopping = false;
 let localTtsVoices = [];
 let browserVoices = [];
 let voiceOptionsLoaded = false;
@@ -1970,6 +2307,8 @@ let visualSelection = { projectId: "", boardId: "", nodeId: "" };
 let codingSelection = { proposalId: "" };
 let visualDrag = null;
 let visualPan = null;
+const LIVE_VOICE_SEGMENT_MS = 5200;
+const LIVE_VOICE_RESTART_DELAY_MS = 120;
 const $ = (id) => document.getElementById(id);
 
 function escapeHtml(value) {
@@ -2111,9 +2450,20 @@ function refreshBrowserVoices() {
 }
 
 function liveRecordingBlockReason() {
-  if (!window.isSecureContext) return "iPhone exige HTTPS para abrir el microfono aqui. Usa Grabar archivo.";
-  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) return "Este navegador no expone microfono directo. Usa Grabar archivo.";
-  if (!window.MediaRecorder) return "Este navegador no soporta grabacion directa. Usa Grabar archivo.";
+  const mobile = ((appState && appState.service) || {}).mobile_ui || {};
+  const secureUrl = mobile.secure_url || "";
+  const expectedSecureUrl = mobile.tailscale_https_url || "";
+  if (!window.isSecureContext) {
+    if (secureUrl) return `Abre Yarbis desde el enlace HTTPS para usar el microfono: ${secureUrl}`;
+    if (mobile.https_last_error) return `HTTPS de Tailscale no esta listo: ${mobile.https_last_error}`;
+    if (mobile.https_pending_reason === "tailscale_https_cert_missing") {
+      return "Activa HTTPS Certificates en Tailscale Admin > DNS para usar el microfono en iPhone.";
+    }
+    if (expectedSecureUrl) return `El enlace HTTPS de Tailscale todavia no esta listo: ${expectedSecureUrl}`;
+    return "Abre Yarbis desde el enlace HTTPS de Tailscale para usar el microfono.";
+  }
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) return "Este navegador no expone microfono directo.";
+  if (!window.MediaRecorder) return "Este navegador no soporta grabacion directa.";
   return "";
 }
 
@@ -2125,6 +2475,27 @@ function bytesToBase64(bytes) {
     binary += String.fromCharCode.apply(null, chunk);
   }
   return btoa(binary);
+}
+
+function preferredAudioRecorderOptions() {
+  if (!window.MediaRecorder || !MediaRecorder.isTypeSupported) return {};
+  const candidates = [
+    "audio/webm;codecs=opus",
+    "audio/webm",
+    "audio/mp4",
+    "audio/aac"
+  ];
+  for (const mimeType of candidates) {
+    try {
+      if (MediaRecorder.isTypeSupported(mimeType)) return { mimeType };
+    } catch (_error) {}
+  }
+  return {};
+}
+
+function audioBlobFromChunks(chunks, recorder) {
+  const type = (recorder && recorder.mimeType) || (chunks[0] && chunks[0].type) || "audio/webm";
+  return new Blob(chunks, { type });
 }
 
 async function transcribeBlob(blob) {
@@ -2169,21 +2540,17 @@ async function toggleReplyRecording() {
   }
   if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia || !window.MediaRecorder) {
     toast(liveRecordingBlockReason());
-    const fileInput = $("voiceFileInput");
-    if (fileInput) fileInput.click();
     return;
   }
   const blockedReason = liveRecordingBlockReason();
   if (blockedReason) {
     toast(blockedReason);
-    const fileInput = $("voiceFileInput");
-    if (fileInput) fileInput.click();
     return;
   }
   try {
     voiceStream = await navigator.mediaDevices.getUserMedia({ audio: true });
     voiceChunks = [];
-    voiceRecorder = new MediaRecorder(voiceStream);
+    voiceRecorder = new MediaRecorder(voiceStream, preferredAudioRecorderOptions());
     voiceRecorder.ondataavailable = (event) => {
       if (event.data && event.data.size > 0) voiceChunks.push(event.data);
     };
@@ -2191,7 +2558,7 @@ async function toggleReplyRecording() {
       window.clearTimeout(voiceStopTimer);
       stopVoiceTracks();
       try {
-        const blob = new Blob(voiceChunks, { type: voiceRecorder.mimeType || "audio/webm" });
+        const blob = audioBlobFromChunks(voiceChunks, voiceRecorder);
         await transcribeVoiceBlob(blob);
       } catch (error) {
         toast(error.message);
@@ -2239,34 +2606,8 @@ async function startLiveVoice() {
     csrfToken = data.csrf || csrfToken;
     window._lastLiveVoiceSession = data.voice_session || {};
     liveVoiceSessionId = (data.voice_session || {}).id || "";
-    liveVoiceRecorder = new MediaRecorder(liveVoiceStream);
-    liveVoiceRecorder.ondataavailable = async (event) => {
-      if (!event.data || event.data.size <= 0 || liveVoiceBusy || !liveVoiceSessionId) return;
-      liveVoiceBusy = true;
-      try {
-        const bytes = new Uint8Array(await event.data.arrayBuffer());
-        const chunk = await api("/api/voice/live/chunk", {
-          method: "POST",
-          headers: { "X-CSRF-Token": csrfToken },
-          body: {
-            csrf: csrfToken,
-            session_id: liveVoiceSessionId,
-            audio_b64: bytesToBase64(bytes),
-            mime_type: event.data.type || liveVoiceRecorder.mimeType || "audio/webm"
-          }
-        });
-        csrfToken = chunk.csrf || csrfToken;
-        window._lastLiveVoiceSession = chunk.voice_session || {};
-        const spoken = (chunk.voice_session || {}).spoken_text || "";
-        if (spoken) await speakText(spoken);
-        renderCurrent();
-      } catch (error) {
-        toast(error.message);
-      } finally {
-        liveVoiceBusy = false;
-      }
-    };
-    liveVoiceRecorder.start(3000);
+    liveVoiceStopping = false;
+    startLiveVoiceSegment();
     toast("Conversación en vivo activa");
     renderCurrent();
   } catch (error) {
@@ -2276,7 +2617,62 @@ async function startLiveVoice() {
   }
 }
 
+function startLiveVoiceSegment() {
+  if (!liveVoiceSessionId || !liveVoiceStream || liveVoiceBusy || liveVoiceStopping) return;
+  const recorder = new MediaRecorder(liveVoiceStream, preferredAudioRecorderOptions());
+  const chunks = [];
+  liveVoiceRecorder = recorder;
+  recorder.ondataavailable = (event) => {
+    if (event.data && event.data.size > 0) chunks.push(event.data);
+  };
+  recorder.onstop = async () => {
+    window.clearTimeout(liveVoiceSegmentTimer);
+    if (liveVoiceRecorder === recorder) liveVoiceRecorder = null;
+    if (!liveVoiceSessionId || liveVoiceStopping) return;
+    if (!chunks.length) {
+      scheduleLiveVoiceSegment();
+      return;
+    }
+    liveVoiceBusy = true;
+    try {
+      const blob = audioBlobFromChunks(chunks, recorder);
+      const bytes = new Uint8Array(await blob.arrayBuffer());
+      const chunk = await api("/api/voice/live/chunk", {
+        method: "POST",
+        headers: { "X-CSRF-Token": csrfToken },
+        body: {
+          csrf: csrfToken,
+          session_id: liveVoiceSessionId,
+          audio_b64: bytesToBase64(bytes),
+          mime_type: blob.type || recorder.mimeType || "audio/webm"
+        }
+      });
+      csrfToken = chunk.csrf || csrfToken;
+      window._lastLiveVoiceSession = chunk.voice_session || {};
+      const spoken = (chunk.voice_session || {}).spoken_text || "";
+      if (spoken) await speakText(spoken);
+    } catch (error) {
+      toast(error.message);
+    } finally {
+      liveVoiceBusy = false;
+      renderCurrent();
+      scheduleLiveVoiceSegment();
+    }
+  };
+  recorder.start();
+  liveVoiceSegmentTimer = window.setTimeout(() => {
+    if (recorder.state === "recording") recorder.stop();
+  }, LIVE_VOICE_SEGMENT_MS);
+}
+
+function scheduleLiveVoiceSegment() {
+  if (!liveVoiceSessionId || !liveVoiceStream || liveVoiceStopping) return;
+  window.setTimeout(() => startLiveVoiceSegment(), LIVE_VOICE_RESTART_DELAY_MS);
+}
+
 function stopLiveVoiceTracks() {
+  liveVoiceStopping = true;
+  window.clearTimeout(liveVoiceSegmentTimer);
   if (liveVoiceRecorder && liveVoiceRecorder.state === "recording") {
     try { liveVoiceRecorder.stop(); } catch (_error) {}
   }
@@ -2503,7 +2899,8 @@ async function loadView(name, force = false) {
 function renderCurrent() {
   if (!appState) return;
   const mobile = (appState.service || {}).mobile_ui || {};
-  $("urlLine").textContent = mobile.tailscale_url || mobile.local_url || "";
+  const activeUrls = mobile.active_urls || [];
+  $("urlLine").textContent = mobile.secure_url || activeUrls[0] || mobile.tailscale_url || mobile.local_url || "";
   if (currentTab === "home") renderHome();
   else if (currentTab === "run") renderRun();
   else if (currentTab === "context") renderContext();
@@ -2610,7 +3007,7 @@ function renderRun() {
         <input id="voiceFileInput" class="hidden" type="file" accept="audio/*" capture>
         <div class="actions tight">
           <button data-action="record-reply">${voiceRecorder && voiceRecorder.state === "recording" ? "Detener voz" : "Grabar voz"}</button>
-          <button data-action="voice-file">Grabar archivo</button>
+          <button data-action="voice-file">Subir audio</button>
           <button class="primary" data-action="send-reply">Enviar y ejecutar</button>
         </div>
       </div>
@@ -3099,6 +3496,15 @@ function renderSettings() {
   const communication = appState.communication || ((appState.conversation || {}).communication || {});
   const voice = appState.voice || {};
   const live = voice.live_conversation || {};
+  const activeUrls = mobile.active_urls || [];
+  const mobileUrlText = [
+    mobile.secure_url || activeUrls[0] || mobile.tailscale_url || mobile.local_url || "",
+    mobile.secure_url ? "HTTPS activa en esta instancia." : "",
+    mobile.tailscale_https_url && !mobile.secure_url ? `HTTPS disponible, pero apunta a otra instancia o aun esta pendiente: ${mobile.tailscale_https_url}` : "",
+    mobile.https_pending_reason === "tailscale_https_cert_missing" ? "Activa HTTPS Certificates en Tailscale Admin > DNS." : "",
+    mobile.https_last_error ? `HTTPS iPhone: ${mobile.https_last_error}` : "",
+    mobile.last_bind_error || ""
+  ].filter(Boolean).join("\n");
   refreshBrowserVoices();
   if (!voiceOptionsLoaded) window.setTimeout(() => loadVoiceOptions(false, true), 0);
   const systemVoiceOptions = localTtsVoices.filter(item => (item.provider || "system") === "system").map(item => {
@@ -3137,11 +3543,13 @@ function renderSettings() {
       <h2>UI móvil</h2>
       <div class="setting-group form-grid wide">
         <label><input id="mobileEnabled" type="checkbox" ${mobile.enabled ? "checked" : ""}> Activa</label>
+        <label><input id="mobileHttpsEnabled" type="checkbox" ${mobile.https_enabled !== false ? "checked" : ""}> HTTPS por Tailscale para iPhone</label>
         <div><label>Puerto</label><input id="mobilePort" type="number" value="${escapeHtml(mobile.port || 8787)}"></div>
         <div><label>Timeout operaciones</label><input id="mobileJobTimeout" type="number" min="60" max="86400" value="${escapeHtml(mobile.job_timeout_seconds || 1800)}"></div>
         <div><label>Nuevo PIN</label><input id="mobilePin" type="password" placeholder="${mobile.configured ? "conservar PIN" : "PIN requerido"}"></div>
-        <div class="panel"><pre>${escapeHtml((mobile.tailscale_url || mobile.local_url || "") + (mobile.last_bind_error ? "\n" + mobile.last_bind_error : ""))}</pre></div>
+        <div class="panel"><pre>${escapeHtml(mobileUrlText)}</pre></div>
         <button data-action="save-mobile">Guardar UI movil</button>
+        <button data-action="claim-mobile-https">Usar HTTPS aqui</button>
       </div>
     </section>
     <section class="section">
@@ -3550,7 +3958,15 @@ document.addEventListener("click", async (event) => {
         api_key: $("modelApiKey").value
       });
     } else if (name === "save-mobile") {
-      await action("mobile_ui", { enabled: $("mobileEnabled").checked, port: $("mobilePort").value, job_timeout_seconds: $("mobileJobTimeout").value, pin: $("mobilePin").value });
+      await action("mobile_ui", {
+        enabled: $("mobileEnabled").checked,
+        https_enabled: $("mobileHttpsEnabled").checked,
+        port: $("mobilePort").value,
+        job_timeout_seconds: $("mobileJobTimeout").value,
+        pin: $("mobilePin").value
+      });
+    } else if (name === "claim-mobile-https") {
+      await action("mobile_https_claim");
     } else if (name === "save-communication") {
       await saveCommunicationSettings();
     } else if (name === "refresh-voice-catalog") {
@@ -4060,19 +4476,22 @@ def ensure_mobile_ui_servers() -> str:
     enabled = bool(settings.get("enabled"))
     configured = bool(str(settings.get("pin_hash", "")).strip())
     port = int(settings.get("port", DEFAULT_MOBILE_UI_PORT) or DEFAULT_MOBILE_UI_PORT)
+    https_enabled = bool(settings.get("https_enabled", DEFAULT_MOBILE_UI_HTTPS_ENABLED))
 
     if not enabled:
         stopped = stop_mobile_ui_servers()
+        _set_mobile_https_status("")
         return stopped or ""
     if not configured:
         stopped = stop_mobile_ui_servers()
         message = "UI movil activada, pero falta configurar PIN."
         _set_mobile_bind_error(message)
+        _set_mobile_https_status("")
         return "\n".join(part for part in (stopped, message) if part)
 
     settings = _ensure_mobile_session_secret(settings)
     hosts = _bind_hosts()
-    key = (port, hosts, settings.get("pin_hash"), settings.get("session_secret"))
+    key = (port, hosts, settings.get("pin_hash"), settings.get("session_secret"), https_enabled)
     with _MOBILE_LOCK:
         if _MOBILE_SERVER_KEY == key and _MOBILE_SERVERS:
             return ""
@@ -4098,16 +4517,37 @@ def ensure_mobile_ui_servers() -> str:
         _set_mobile_bind_error(message)
         return message
 
+    https_url = ""
+    https_error = ""
+    if https_enabled:
+        try:
+            https_result = _configure_tailscale_https(port, settings)
+            https_url = str(https_result.get("url", "")).strip()
+        except MobileUiError as exc:
+            https_error = str(exc).strip()
+            _set_mobile_https_status(https_error)
+        except Exception as exc:
+            https_error = f"{type(exc).__name__}: {exc}"
+            _set_mobile_https_status(https_error)
+    else:
+        _set_mobile_https_status("")
+
     warning = ""
     if len(hosts) == 1:
         warning = "Tailscale no detectado; UI movil solo disponible en localhost."
     elif errors:
         warning = "Algunos enlaces fallaron: " + "; ".join(errors)
     _set_mobile_bind_error(warning)
-    urls = ", ".join(entry["url"] for entry in started)
+    urls = ", ".join(url for url in [https_url, *[entry["url"] for entry in started]] if url)
+    notes = []
     if warning:
-        return f"UI movil activa en {urls}. {warning}"
-    return f"UI movil activa en {urls}."
+        notes.append(warning)
+    if https_error:
+        notes.append("HTTPS iPhone no activo: " + https_error)
+    elif https_enabled and https_url:
+        notes.append("HTTPS iPhone listo.")
+    suffix = " " + " ".join(notes) if notes else ""
+    return f"UI movil activa en {urls}.{suffix}"
 
 
 def start_mobile_ui_from_state() -> str:

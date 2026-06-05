@@ -2,6 +2,7 @@ import http.client
 import base64
 import json
 import socket
+import subprocess
 import threading
 import unittest
 from pathlib import Path
@@ -74,8 +75,10 @@ class YarbisMobileTestCase(unittest.TestCase):
         self.assertTrue(state["service"]["mobile_ui"]["enabled"])
         self.assertEqual(state["service"]["mobile_ui"]["port"], 8787)
         self.assertEqual(state["service"]["mobile_ui"]["job_timeout_seconds"], 3600)
+        self.assertTrue(state["service"]["mobile_ui"]["https_enabled"])
         self.assertTrue(state["service"]["mobile_ui"]["pin_hash"])
         self.assertTrue(state["service"]["mobile_ui"]["session_secret"])
+        self.assertIn("HTTPS iPhone: activo", result)
 
     def test_update_mobile_ui_settings_rejects_invalid_job_timeout(self):
         state_path = TEST_RUNTIME_DIR / "mobile_invalid_timeout_state.json"
@@ -695,6 +698,7 @@ class YarbisMobileTestCase(unittest.TestCase):
         self.assertIn("statePath(name)", html)
         self.assertIn("currentTab === \"activity\"", html)
         self.assertIn("mobileJobTimeout", html)
+        self.assertIn("mobileHttpsEnabled", html)
         self.assertIn("}, 15000);", html)
         self.assertIn("type=\"file\" accept=\"audio/*\" capture", html)
         self.assertIn("Detener habla", html)
@@ -703,6 +707,15 @@ class YarbisMobileTestCase(unittest.TestCase):
         self.assertIn("/api/voice/live/start", html)
         self.assertIn("toggle-live-voice", html)
         self.assertIn("Conversacion en vivo", html)
+        self.assertIn("preferredAudioRecorderOptions", html)
+        self.assertIn("audioBlobFromChunks", html)
+        self.assertIn("LIVE_VOICE_SEGMENT_MS", html)
+        self.assertIn("startLiveVoiceSegment", html)
+        self.assertNotIn("start(3000)", html)
+        self.assertIn("Subir audio", html)
+        self.assertNotIn("Usa Grabar archivo", html)
+        self.assertNotIn("iPhone exige HTTPS", html)
+        self.assertNotIn("Grabar archivo", html)
         self.assertIn("communicationTone", html)
         self.assertIn("save-communication", html)
         self.assertIn("preferredLocalSpeechFormat", html)
@@ -821,6 +834,345 @@ class YarbisMobileTestCase(unittest.TestCase):
         range_mock.assert_called_once_with(path="app.py", start_line=2, line_count=5)
         plan_mock.assert_called_once_with("proposal-1")
 
+    def test_detect_tailscale_dns_name_reads_magicdns(self):
+        payload = {"Self": {"DNSName": "desktop-2p3ou07.tail82d7a7.ts.net."}}
+        completed = subprocess.CompletedProcess(
+            ["tailscale", "status", "--json"],
+            0,
+            stdout=json.dumps(payload),
+            stderr="",
+        )
+
+        with patch.object(yarbis_mobile, "_run_tailscale_command", return_value=completed) as run_mock:
+            dns_name = yarbis_mobile.detect_tailscale_dns_name()
+
+        self.assertEqual(dns_name, "desktop-2p3ou07.tail82d7a7.ts.net")
+        run_mock.assert_called_once_with(["status", "--json"], timeout_seconds=2.0)
+
+    def test_detect_tailscale_cert_domains_reads_status(self):
+        payload = {
+            "CertDomains": [
+                "desktop-2p3ou07.tail82d7a7.ts.net.",
+                "other.tail82d7a7.ts.net",
+                "",
+            ],
+        }
+        completed = subprocess.CompletedProcess(
+            ["tailscale", "status", "--json"],
+            0,
+            stdout=json.dumps(payload),
+            stderr="",
+        )
+
+        with patch.object(yarbis_mobile, "_run_tailscale_command", return_value=completed) as run_mock:
+            domains = yarbis_mobile.detect_tailscale_cert_domains()
+
+        self.assertEqual(
+            domains,
+            ("desktop-2p3ou07.tail82d7a7.ts.net", "other.tail82d7a7.ts.net"),
+        )
+        run_mock.assert_called_once_with(["status", "--json"], timeout_seconds=2.0)
+
+    def test_current_tailscale_serve_targets_extracts_proxy_targets(self):
+        status = {
+            "Web": {
+                "desktop.tail.ts.net:443": {
+                    "Handlers": {
+                        "/": {"Proxy": "http://127.0.0.1:9304/"},
+                    },
+                },
+                "other.tail.ts.net:443": "https://localhost:9443/",
+            },
+        }
+
+        with patch.object(yarbis_mobile, "_cached_tailscale_serve_status", return_value=status):
+            targets = yarbis_mobile.current_tailscale_serve_targets()
+
+        self.assertEqual(targets, ("http://127.0.0.1:9304", "https://localhost:9443"))
+
+    def test_public_mobile_status_prioritizes_https_url(self):
+        settings = {
+            "enabled": True,
+            "pin_hash": "hash",
+            "port": 8787,
+            "https_enabled": True,
+            "https_last_error": "",
+            "tailscale_serve_target": "http://127.0.0.1:8787",
+        }
+
+        with patch.object(yarbis_mobile, "_cached_tailscale_ipv4", return_value="100.99.240.111"):
+            with patch.object(yarbis_mobile, "_cached_tailscale_dns_name", return_value="desktop.tail.ts.net"):
+                with patch.object(yarbis_mobile, "_cached_tailscale_cert_domains", return_value=("desktop.tail.ts.net",)):
+                    with patch.object(
+                        yarbis_mobile,
+                        "_cached_tailscale_serve_status",
+                        return_value={"Web": {"desktop.tail.ts.net:443": {"Handlers": {"/": {"Proxy": "http://127.0.0.1:8787"}}}}},
+                    ):
+                        with patch.object(yarbis_mobile, "_active_mobile_urls", return_value=["http://127.0.0.1:8787"]):
+                            status = yarbis_mobile.public_mobile_ui_status(settings)
+
+        self.assertEqual(status["secure_url"], "https://desktop.tail.ts.net/")
+        self.assertEqual(status["tailscale_https_url"], "https://desktop.tail.ts.net/")
+        self.assertEqual(status["active_urls"][0], "https://desktop.tail.ts.net/")
+        self.assertIn("http://127.0.0.1:8787", status["active_urls"])
+        self.assertTrue(status["https_ready"])
+        self.assertEqual(status["https_pending_reason"], "")
+        self.assertTrue(status["tailscale_https_supported"])
+        self.assertTrue(status["tailscale_serve_matches_target"])
+
+    def test_public_mobile_status_does_not_advertise_inactive_https(self):
+        settings = {
+            "enabled": False,
+            "pin_hash": "",
+            "port": 8787,
+            "https_enabled": True,
+            "https_last_error": "",
+            "tailscale_serve_target": "",
+        }
+
+        with patch.object(yarbis_mobile, "_cached_tailscale_ipv4", return_value="100.99.240.111"):
+            with patch.object(yarbis_mobile, "_cached_tailscale_dns_name", return_value="desktop.tail.ts.net"):
+                with patch.object(yarbis_mobile, "_cached_tailscale_cert_domains", return_value=("desktop.tail.ts.net",)):
+                    with patch.object(yarbis_mobile, "_active_mobile_urls", return_value=["http://127.0.0.1:8787"]):
+                        status = yarbis_mobile.public_mobile_ui_status(settings)
+
+        self.assertEqual(status["tailscale_https_url"], "https://desktop.tail.ts.net/")
+        self.assertEqual(status["secure_url"], "")
+        self.assertEqual(status["active_urls"], [])
+        self.assertFalse(status["https_ready"])
+        self.assertEqual(status["https_pending_reason"], "ui_disabled")
+
+    def test_public_mobile_status_requires_tailscale_serve_target_for_https(self):
+        settings = {
+            "enabled": True,
+            "pin_hash": "hash",
+            "port": 8787,
+            "https_enabled": True,
+            "https_last_error": "",
+            "tailscale_serve_target": "",
+        }
+
+        with patch.object(yarbis_mobile, "_cached_tailscale_ipv4", return_value="100.99.240.111"):
+            with patch.object(yarbis_mobile, "_cached_tailscale_dns_name", return_value="desktop.tail.ts.net"):
+                with patch.object(yarbis_mobile, "_cached_tailscale_cert_domains", return_value=("desktop.tail.ts.net",)):
+                    with patch.object(yarbis_mobile, "_active_mobile_urls", return_value=["http://127.0.0.1:8787"]):
+                        status = yarbis_mobile.public_mobile_ui_status(settings)
+
+        self.assertEqual(status["tailscale_https_url"], "https://desktop.tail.ts.net/")
+        self.assertEqual(status["secure_url"], "")
+        self.assertEqual(status["active_urls"], ["http://127.0.0.1:8787"])
+        self.assertFalse(status["https_ready"])
+        self.assertEqual(status["https_pending_reason"], "serve_pending")
+
+    def test_public_mobile_status_rejects_stale_serve_target(self):
+        settings = {
+            "enabled": True,
+            "pin_hash": "hash",
+            "port": 8946,
+            "https_enabled": True,
+            "https_last_error": "",
+            "tailscale_serve_target": "http://127.0.0.1:8946",
+        }
+
+        with patch.object(yarbis_mobile, "_cached_tailscale_ipv4", return_value="100.99.240.111"):
+            with patch.object(yarbis_mobile, "_cached_tailscale_dns_name", return_value="desktop.tail.ts.net"):
+                with patch.object(yarbis_mobile, "_cached_tailscale_cert_domains", return_value=("desktop.tail.ts.net",)):
+                    with patch.object(
+                        yarbis_mobile,
+                        "_cached_tailscale_serve_status",
+                        return_value={"Web": {"desktop.tail.ts.net:443": {"Handlers": {"/": {"Proxy": "http://127.0.0.1:9304"}}}}},
+                    ):
+                        with patch.object(yarbis_mobile, "_active_mobile_urls", return_value=["http://127.0.0.1:8946"]):
+                            status = yarbis_mobile.public_mobile_ui_status(settings)
+
+        self.assertEqual(status["secure_url"], "")
+        self.assertFalse(status["https_ready"])
+        self.assertFalse(status["tailscale_serve_matches_target"])
+        self.assertEqual(status["https_pending_reason"], "serve_pending")
+
+    def test_public_mobile_status_treats_known_other_instance_as_pending_not_error(self):
+        settings = {
+            "enabled": True,
+            "pin_hash": "hash",
+            "port": 8946,
+            "https_enabled": True,
+            "https_last_error": "error viejo",
+            "tailscale_serve_target": "http://127.0.0.1:8946",
+        }
+
+        with patch.object(yarbis_mobile, "_cached_tailscale_ipv4", return_value="100.99.240.111"):
+            with patch.object(yarbis_mobile, "_cached_tailscale_dns_name", return_value="desktop.tail.ts.net"):
+                with patch.object(yarbis_mobile, "_cached_tailscale_cert_domains", return_value=("desktop.tail.ts.net",)):
+                    with patch.object(
+                        yarbis_mobile,
+                        "_cached_tailscale_serve_status",
+                        return_value={"Web": {"desktop.tail.ts.net:443": {"Handlers": {"/": {"Proxy": "http://127.0.0.1:9304"}}}}},
+                    ):
+                        with patch.object(
+                            yarbis_mobile,
+                            "_known_yarbis_mobile_serve_targets",
+                            return_value={"http://127.0.0.1:9304", "http://127.0.0.1:8946"},
+                        ):
+                            status = yarbis_mobile.public_mobile_ui_status(settings)
+
+        self.assertEqual(status["secure_url"], "")
+        self.assertFalse(status["https_ready"])
+        self.assertEqual(status["https_pending_reason"], "serve_pending")
+        self.assertEqual(status["https_last_error"], "")
+        self.assertEqual(status["stored_https_last_error"], "error viejo")
+        self.assertEqual(status["tailscale_serve_current_targets"], ["http://127.0.0.1:9304"])
+
+    def test_public_mobile_status_reports_missing_tailscale_https_certs(self):
+        settings = {
+            "enabled": True,
+            "pin_hash": "hash",
+            "port": 8787,
+            "https_enabled": True,
+            "https_last_error": "",
+            "tailscale_serve_target": "",
+        }
+
+        with patch.object(yarbis_mobile, "_cached_tailscale_ipv4", return_value="100.99.240.111"):
+            with patch.object(yarbis_mobile, "_cached_tailscale_dns_name", return_value="desktop.tail.ts.net"):
+                with patch.object(yarbis_mobile, "_cached_tailscale_cert_domains", return_value=()):
+                    with patch.object(yarbis_mobile, "_active_mobile_urls", return_value=["http://127.0.0.1:8787"]):
+                        status = yarbis_mobile.public_mobile_ui_status(settings)
+
+        self.assertEqual(status["tailscale_https_url"], "https://desktop.tail.ts.net/")
+        self.assertEqual(status["secure_url"], "")
+        self.assertFalse(status["tailscale_https_supported"])
+        self.assertEqual(status["https_pending_reason"], "tailscale_https_cert_missing")
+
+    def test_ensure_mobile_ui_servers_configures_tailscale_serve_https(self):
+        state_path = TEST_RUNTIME_DIR / "mobile_server_https_state.json"
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+        port = _free_port()
+        completed = subprocess.CompletedProcess(["tailscale"], 0, stdout="", stderr="")
+
+        with patch.object(memory, "STATE_FILE", state_path):
+            memory.save_state(memory.default_state())
+            with patch.object(yarbis_mobile, "_cached_tailscale_ipv4", return_value=""):
+                with patch.object(yarbis_mobile, "_cached_tailscale_dns_name", return_value="desktop.tail.ts.net"):
+                    with patch.object(yarbis_mobile, "_cached_tailscale_cert_domains", return_value=("desktop.tail.ts.net",)):
+                        yarbis_mobile.update_mobile_ui_settings(enabled=True, port=port, pin="2468")
+            with patch.object(yarbis_mobile, "detect_tailscale_ipv4", return_value=""):
+                with patch.object(yarbis_mobile, "detect_tailscale_dns_name", return_value="desktop.tail.ts.net"):
+                    with patch.object(yarbis_mobile, "detect_tailscale_cert_domains", return_value=("desktop.tail.ts.net",)):
+                        with patch.object(yarbis_mobile, "_tailscale_serve_status", return_value={}):
+                            with patch.object(yarbis_mobile, "_run_tailscale_command", return_value=completed) as run_mock:
+                                result = yarbis_mobile.ensure_mobile_ui_servers()
+            state = memory.load_state()
+
+        target = f"http://127.0.0.1:{port}"
+        self.assertIn("HTTPS iPhone listo", result)
+        self.assertEqual(state["service"]["mobile_ui"]["tailscale_serve_target"], target)
+        run_mock.assert_called_once_with(["serve", "--bg", "--yes", target], timeout_seconds=10.0)
+
+    def test_configure_tailscale_https_refuses_foreign_serve_status(self):
+        foreign_status = {"Web": {"https://desktop.tail.ts.net/": "http://127.0.0.1:3000"}}
+
+        with patch.object(yarbis_mobile, "detect_tailscale_dns_name", return_value="desktop.tail.ts.net"):
+            with patch.object(yarbis_mobile, "detect_tailscale_cert_domains", return_value=("desktop.tail.ts.net",)):
+                with patch.object(yarbis_mobile, "_tailscale_serve_status", return_value=foreign_status):
+                    with patch.object(yarbis_mobile, "_known_yarbis_mobile_serve_targets", return_value=set()):
+                        with patch.object(yarbis_mobile, "_run_tailscale_command") as run_mock:
+                            with self.assertRaises(yarbis_mobile.MobileUiError) as raised:
+                                yarbis_mobile._configure_tailscale_https(8787, {})
+
+        self.assertIn("no parece ser de Yarbis", str(raised.exception))
+        run_mock.assert_not_called()
+
+    def test_configure_tailscale_https_can_move_between_yarbis_instances(self):
+        status = {"Web": {"https://desktop.tail.ts.net/": {"Handlers": {"/": {"Proxy": "http://127.0.0.1:8946"}}}}}
+        completed = subprocess.CompletedProcess(["tailscale"], 0, stdout="", stderr="")
+
+        with patch.object(yarbis_mobile, "detect_tailscale_dns_name", return_value="desktop.tail.ts.net"):
+            with patch.object(yarbis_mobile, "detect_tailscale_cert_domains", return_value=("desktop.tail.ts.net",)):
+                with patch.object(yarbis_mobile, "_tailscale_serve_status", return_value=status):
+                    with patch.object(
+                        yarbis_mobile,
+                        "_known_yarbis_mobile_serve_targets",
+                        return_value={"http://127.0.0.1:8946"},
+                    ):
+                        with patch.object(yarbis_mobile, "_run_tailscale_command", return_value=completed) as run_mock:
+                            result = yarbis_mobile._configure_tailscale_https(9304, {})
+
+        self.assertEqual(result["target"], "http://127.0.0.1:9304")
+        run_mock.assert_called_once_with(
+            ["serve", "--bg", "--yes", "http://127.0.0.1:9304"],
+            timeout_seconds=10.0,
+        )
+
+    def test_claim_mobile_https_for_current_instance_moves_serve_target(self):
+        state_path = TEST_RUNTIME_DIR / "mobile_claim_https_state.json"
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+        port = _free_port()
+        target = f"http://127.0.0.1:{port}"
+        completed = subprocess.CompletedProcess(["tailscale"], 0, stdout="", stderr="")
+        serve_status = {"Web": {"desktop.tail.ts.net:443": {"Handlers": {"/": {"Proxy": target}}}}}
+
+        with patch.object(memory, "STATE_FILE", state_path):
+            memory.save_state(memory.default_state())
+            yarbis_mobile.update_mobile_ui_settings(enabled=True, port=port, pin="2468")
+            with patch.object(yarbis_mobile, "detect_tailscale_dns_name", return_value="desktop.tail.ts.net"):
+                with patch.object(yarbis_mobile, "detect_tailscale_cert_domains", return_value=("desktop.tail.ts.net",)):
+                    with patch.object(yarbis_mobile, "_tailscale_serve_status", return_value={}):
+                        with patch.object(yarbis_mobile, "_run_tailscale_command", return_value=completed) as run_mock:
+                            with patch.object(yarbis_mobile, "_cached_tailscale_ipv4", return_value=""):
+                                with patch.object(yarbis_mobile, "_cached_tailscale_dns_name", return_value="desktop.tail.ts.net"):
+                                    with patch.object(yarbis_mobile, "_cached_tailscale_cert_domains", return_value=("desktop.tail.ts.net",)):
+                                        with patch.object(yarbis_mobile, "_cached_tailscale_serve_status", return_value=serve_status):
+                                            result = yarbis_mobile.claim_mobile_https_for_current_instance()
+            state = memory.load_state()
+
+        self.assertIn("HTTPS movil ahora apunta a esta instancia", result)
+        self.assertIn(target, result)
+        self.assertEqual(state["service"]["mobile_ui"]["tailscale_serve_target"], target)
+        run_mock.assert_called_once_with(["serve", "--bg", "--yes", target], timeout_seconds=10.0)
+
+    def test_configure_tailscale_https_requires_cert_domains(self):
+        with patch.object(yarbis_mobile, "detect_tailscale_dns_name", return_value="desktop.tail.ts.net"):
+            with patch.object(yarbis_mobile, "detect_tailscale_cert_domains", return_value=()):
+                with patch.object(yarbis_mobile, "_tailscale_serve_status") as status_mock:
+                    with patch.object(yarbis_mobile, "_run_tailscale_command") as run_mock:
+                        with self.assertRaises(yarbis_mobile.MobileUiError) as raised:
+                            yarbis_mobile._configure_tailscale_https(8787, {})
+
+        self.assertIn("HTTPS Certificates no esta habilitado", str(raised.exception))
+        status_mock.assert_not_called()
+        run_mock.assert_not_called()
+
+    def test_ensure_mobile_ui_servers_keeps_http_when_https_fails(self):
+        state_path = TEST_RUNTIME_DIR / "mobile_server_https_error_state.json"
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+        port = _free_port()
+
+        with patch.object(memory, "STATE_FILE", state_path):
+            memory.save_state(memory.default_state())
+            with patch.object(yarbis_mobile, "_cached_tailscale_ipv4", return_value=""):
+                with patch.object(yarbis_mobile, "_cached_tailscale_dns_name", return_value="desktop.tail.ts.net"):
+                    with patch.object(yarbis_mobile, "_cached_tailscale_cert_domains", return_value=("desktop.tail.ts.net",)):
+                        yarbis_mobile.update_mobile_ui_settings(enabled=True, port=port, pin="2468")
+            with patch.object(yarbis_mobile, "detect_tailscale_ipv4", return_value=""):
+                with patch.object(
+                    yarbis_mobile,
+                    "_configure_tailscale_https",
+                    side_effect=yarbis_mobile.MobileUiError("serve ocupado"),
+                ):
+                    result = yarbis_mobile.ensure_mobile_ui_servers()
+            state = memory.load_state()
+
+        self.assertIn(f"http://127.0.0.1:{port}", result)
+        self.assertIn("HTTPS iPhone no activo: serve ocupado", result)
+        self.assertEqual(state["service"]["mobile_ui"]["https_last_error"], "serve ocupado")
+
+    def test_mobile_settings_expose_https_claim_action(self):
+        source = Path(yarbis_mobile.__file__).read_text(encoding="utf-8")
+
+        self.assertIn('data-action="claim-mobile-https"', source)
+        self.assertIn('action("mobile_https_claim"', source)
+        self.assertIn('HTTPS disponible, pero apunta a otra instancia', source)
+
     def test_ensure_mobile_ui_servers_starts_localhost_when_tailscale_missing(self):
         state_path = TEST_RUNTIME_DIR / "mobile_server_state.json"
         state_path.parent.mkdir(parents=True, exist_ok=True)
@@ -828,7 +1180,7 @@ class YarbisMobileTestCase(unittest.TestCase):
 
         with patch.object(memory, "STATE_FILE", state_path):
             memory.save_state(memory.default_state())
-            yarbis_mobile.update_mobile_ui_settings(enabled=True, port=port, pin="2468")
+            yarbis_mobile.update_mobile_ui_settings(enabled=True, port=port, pin="2468", https_enabled=False)
             with patch.object(yarbis_mobile, "detect_tailscale_ipv4", return_value=""):
                 result = yarbis_mobile.ensure_mobile_ui_servers()
                 status = yarbis_mobile.public_mobile_ui_status()

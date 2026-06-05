@@ -3,6 +3,7 @@ import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
 from memory import (
+    DEFAULT_MOBILE_UI_HTTPS_ENABLED,
     DEFAULT_MOBILE_UI_JOB_TIMEOUT_SECONDS,
     DEFAULT_MOBILE_UI_PORT,
     DEFAULT_OLLAMA_API_KEY_ENV_VAR,
@@ -509,6 +510,9 @@ class ServiceMobileUiDialog(ThemedDialog):
             )
         )
         self.pin_var = tk.StringVar()
+        self.https_enabled_var = tk.BooleanVar(
+            value=bool(self.initial_settings.get("https_enabled", DEFAULT_MOBILE_UI_HTTPS_ENABLED))
+        )
         self.preview_var = tk.StringVar()
         self._configured = bool(str(self.initial_settings.get("pin_hash", "")).strip())
 
@@ -565,12 +569,18 @@ class ServiceMobileUiDialog(ThemedDialog):
             style="Yarbis.TSpinbox",
         )
         self.timeout_spin.grid(row=1, column=1, sticky="w", padx=10)
+        ttk.Checkbutton(
+            network,
+            text="HTTPS por Tailscale para iPhone",
+            variable=self.https_enabled_var,
+            command=self._refresh_preview,
+        ).grid(row=2, column=0, columnspan=2, sticky="w", padx=10, pady=(8, 0))
         ttk.Label(
             network,
-            text="Escucha en localhost y en la IP Tailscale detectada. El timeout aplica a ejecutar/responder desde iPhone.",
+            text="Escucha en localhost y, si Tailscale esta disponible, publica un enlace HTTPS para voz en iPhone.",
             foreground=self.theme_palette["muted"],
             wraplength=440,
-        ).grid(row=2, column=0, columnspan=2, sticky="ew", padx=10, pady=(6, 10))
+        ).grid(row=3, column=0, columnspan=2, sticky="ew", padx=10, pady=(6, 10))
 
         access = ttk.LabelFrame(master, text="Acceso")
         access.grid(row=2, column=0, sticky="ew", padx=6, pady=(0, 10))
@@ -588,12 +598,31 @@ class ServiceMobileUiDialog(ThemedDialog):
         status_frame = ttk.LabelFrame(master, text="URL")
         status_frame.grid(row=3, column=0, sticky="ew", padx=6)
         status_frame.columnconfigure(0, weight=1)
-        url = self.status.get("tailscale_url") or self.status.get("local_url") or ""
+        url = (
+            self.status.get("secure_url")
+            or self.status.get("tailscale_url")
+            or self.status.get("local_url")
+            or ""
+        )
         active_urls = ", ".join(self.status.get("active_urls", []) or [])
         bind_error = str(self.status.get("last_bind_error", "")).strip()
+        https_error = str(self.status.get("https_last_error", "")).strip()
+        expected_https = str(self.status.get("tailscale_https_url", "")).strip()
+        pending_reason = str(self.status.get("https_pending_reason", "")).strip()
         url_text = "\n".join(
             part
-            for part in (url, f"Activo: {active_urls}" if active_urls else "", bind_error)
+            for part in (
+                url,
+                f"HTTPS pendiente: {expected_https}" if expected_https and not self.status.get("secure_url") else "",
+                (
+                    "Activa HTTPS Certificates en Tailscale Admin > DNS."
+                    if pending_reason == "tailscale_https_cert_missing"
+                    else ""
+                ),
+                f"Activo: {active_urls}" if active_urls else "",
+                f"HTTPS iPhone: {https_error}" if https_error else "",
+                bind_error,
+            )
             if part
         )
         ttk.Label(
@@ -623,7 +652,8 @@ class ServiceMobileUiDialog(ThemedDialog):
         pin_text = "PIN configurado" if self._configured else "sin PIN"
         if self.pin_var.get():
             pin_text = "PIN nuevo"
-        self.preview_var.set(f"{enabled_text} | puerto {port} | timeout {timeout}s | {pin_text}")
+        https_text = "HTTPS iPhone" if self.https_enabled_var.get() else "solo HTTP"
+        self.preview_var.set(f"{enabled_text} | puerto {port} | timeout {timeout}s | {https_text} | {pin_text}")
 
     def validate(self):
         try:
@@ -661,6 +691,7 @@ class ServiceMobileUiDialog(ThemedDialog):
     def apply(self):
         self.result = {
             "enabled": self.enabled_var.get(),
+            "https_enabled": self.https_enabled_var.get(),
             "port": self.port_var.get().strip(),
             "job_timeout_seconds": self.timeout_var.get().strip(),
             "pin": self.pin_var.get(),

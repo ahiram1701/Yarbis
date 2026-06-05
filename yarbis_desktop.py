@@ -138,7 +138,12 @@ from ui_theme import (
     style_text_widget,
     use_bootstrap_theme,
 )
-from yarbis_mobile import get_mobile_ui_settings, public_mobile_ui_status, update_mobile_ui_settings
+from yarbis_mobile import (
+    current_tailscale_serve_targets,
+    get_mobile_ui_settings,
+    public_mobile_ui_status,
+    update_mobile_ui_settings,
+)
 
 _SINGLE_INSTANCE_MUTEX_NAME = yarbis_instance.desktop_mutex_name()
 _SINGLE_INSTANCE_MUTEX_HANDLE = None
@@ -418,6 +423,31 @@ def _instance_mobile_port(instance_id: str, state: dict) -> int:
         return yarbis_instance.default_mobile_ui_port(instance_id)
 
 
+def _instance_mobile_settings(state: dict) -> dict:
+    service = state.get("service", {}) if isinstance(state, dict) else {}
+    mobile_ui = service.get("mobile_ui", {}) if isinstance(service, dict) else {}
+    return mobile_ui if isinstance(mobile_ui, dict) else {}
+
+
+def _instance_mobile_https_target(port: int) -> str:
+    return f"http://127.0.0.1:{port}"
+
+
+def _instance_mobile_https_text(mobile_ui: dict, port: int, active: bool, current_targets: set[str]) -> str:
+    target = _instance_mobile_https_target(port)
+    if target in current_targets:
+        return "duena" if active else "duena apagada"
+    if not bool(mobile_ui.get("enabled")):
+        return "apagada"
+    if not str(mobile_ui.get("pin_hash", "")).strip():
+        return "sin PIN"
+    if not bool(mobile_ui.get("https_enabled", True)):
+        return "solo HTTP"
+    if not active:
+        return "inactiva"
+    return "lista"
+
+
 def _instance_archive_enabled(row: dict, current_instance_id: str | None = None) -> bool:
     current = yarbis_instance.normalize_instance_id(current_instance_id or yarbis_instance.current_instance_id())
     return (
@@ -430,6 +460,10 @@ def _instance_archive_enabled(row: dict, current_instance_id: str | None = None)
 def _instance_overview_rows() -> tuple[list[dict], list[str]]:
     rows = []
     active_tokens: dict[str, list[str]] = {}
+    try:
+        current_https_targets = set(current_tailscale_serve_targets())
+    except Exception:
+        current_https_targets = set()
     for item in yarbis_instance.list_instances():
         instance_id = item["id"]
         state = _read_instance_state(instance_id)
@@ -438,13 +472,24 @@ def _instance_overview_rows() -> tuple[list[dict], list[str]]:
         if active and token:
             active_tokens.setdefault(token, []).append(instance_id)
         counts = yarbis_bus.message_counts(instance_id)
+        mobile_ui = _instance_mobile_settings(state)
+        mobile_port = _instance_mobile_port(instance_id, state)
+        mobile_https_target = _instance_mobile_https_target(mobile_port)
         row = {
             "id": instance_id,
             "display_name": item.get("display_name") or instance_id,
             "active": active,
             "active_text": "activa" if active else "inactiva",
             "service_name": item.get("service_name") or yarbis_instance.service_name(instance_id),
-            "mobile_port": _instance_mobile_port(instance_id, state),
+            "mobile_port": mobile_port,
+            "mobile_https_target": mobile_https_target,
+            "mobile_https_text": _instance_mobile_https_text(mobile_ui, mobile_port, active, current_https_targets),
+            "mobile_https_owner": mobile_https_target in current_https_targets,
+            "mobile_https_available": bool(
+                active
+                and mobile_ui.get("enabled")
+                and str(mobile_ui.get("pin_hash", "")).strip()
+            ),
             "pending_messages": counts.get("total_unread", 0),
             "state_file": item.get("state_file", ""),
             "runtime_dir": item.get("runtime_dir", ""),
@@ -459,6 +504,17 @@ def _instance_overview_rows() -> tuple[list[dict], list[str]]:
             warnings.append(
                 "Telegram duplicado en instancias activas: " + ", ".join(sorted(ids))
             )
+    owners = [row for row in rows if row.get("mobile_https_owner")]
+    if owners:
+        warnings.append(
+            "HTTPS movil: "
+            + ", ".join(f"{row['display_name']} ({row['id']}:{row['mobile_port']})" for row in owners)
+            + "."
+        )
+    known_https_targets = {str(row.get("mobile_https_target", "")) for row in rows}
+    unknown_targets = sorted(target for target in current_https_targets if target not in known_https_targets)
+    if unknown_targets:
+        warnings.append("HTTPS movil apunta fuera de estas instancias: " + ", ".join(unknown_targets))
     return rows, warnings
 
 
@@ -495,7 +551,7 @@ def _select_instance_before_launch() -> bool:
     warning_var = tk.StringVar(value="")
     ttk.Label(frame, textvariable=warning_var, foreground="#c97a16").grid(row=1, column=0, sticky="w", pady=(4, 8))
 
-    columns = ("name", "id", "active", "service", "port", "pending", "path")
+    columns = ("name", "id", "active", "service", "port", "https", "pending", "path")
     tree = ttk.Treeview(frame, columns=columns, show="headings", height=9)
     headings = {
         "name": "Nombre",
@@ -503,6 +559,7 @@ def _select_instance_before_launch() -> bool:
         "active": "Estado",
         "service": "Servicio",
         "port": "Puerto",
+        "https": "HTTPS",
         "pending": "Mensajes",
         "path": "Estado",
     }
@@ -512,6 +569,7 @@ def _select_instance_before_launch() -> bool:
         "active": 80,
         "service": 120,
         "port": 70,
+        "https": 95,
         "pending": 75,
         "path": 230,
     }
@@ -544,6 +602,7 @@ def _select_instance_before_launch() -> bool:
                     row["active_text"],
                     row["service_name"],
                     row["mobile_port"],
+                    row["mobile_https_text"],
                     row["pending_messages"],
                     row["state_file"],
                 ),
@@ -1127,7 +1186,7 @@ class YarbisDesktop(tk.Tk):
             sticky="ew",
             pady=(0, 8),
         )
-        columns = ("name", "id", "active", "service", "port", "pending", "path")
+        columns = ("name", "id", "active", "service", "port", "https", "pending", "path")
         self.instances_tree = ttk.Treeview(instances, columns=columns, show="headings", height=9)
         for column, label, width in (
             ("name", "Nombre", 140),
@@ -1135,6 +1194,7 @@ class YarbisDesktop(tk.Tk):
             ("active", "Estado", 75),
             ("service", "Servicio", 115),
             ("port", "Puerto", 60),
+            ("https", "HTTPS", 90),
             ("pending", "Msg", 45),
             ("path", "Estado", 210),
         ):
@@ -1148,13 +1208,14 @@ class YarbisDesktop(tk.Tk):
 
         instance_buttons = ttk.Frame(instances)
         instance_buttons.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(10, 0))
-        for column in range(4):
+        for column in range(5):
             instance_buttons.columnconfigure(column, weight=1, uniform="instance_buttons")
         self.open_instance_button = ttk.Button(instance_buttons, text="Abrir", command=self._open_selected_instance)
         self.create_instance_button = ttk.Button(instance_buttons, text="Crear", command=self._create_instance_from_panel)
         self.rename_instance_button = ttk.Button(instance_buttons, text="Renombrar", command=self._rename_selected_instance)
         self.copy_instance_path_button = ttk.Button(instance_buttons, text="Copiar ruta", command=self._copy_selected_instance_path)
         self.copy_instance_command_button = ttk.Button(instance_buttons, text="Copiar comando", command=self._copy_selected_instance_command)
+        self.claim_instance_https_button = ttk.Button(instance_buttons, text="Usar HTTPS", command=self._claim_selected_instance_https)
         self.start_instance_service_button = ttk.Button(instance_buttons, text="Iniciar servicio", command=self._start_selected_instance_service)
         self.stop_instance_service_button = ttk.Button(instance_buttons, text="Detener servicio", command=self._stop_selected_instance_service)
         self.autostart_instance_service_button = ttk.Button(instance_buttons, text="Autostart", command=self._toggle_selected_instance_autostart)
@@ -1170,15 +1231,17 @@ class YarbisDesktop(tk.Tk):
             self.rename_instance_button,
             self.copy_instance_path_button,
             self.copy_instance_command_button,
+            self.claim_instance_https_button,
             self.start_instance_service_button,
             self.stop_instance_service_button,
             self.autostart_instance_service_button,
             self.archive_instance_button,
         )):
-            button.grid(row=index // 4, column=index % 4, sticky="ew", padx=(0 if index % 4 == 0 else 6, 0), pady=(0, 6))
+            button.grid(row=index // 5, column=index % 5, sticky="ew", padx=(0 if index % 5 == 0 else 6, 0), pady=(0, 6))
         self._action_buttons.extend([
             self.create_instance_button,
             self.rename_instance_button,
+            self.claim_instance_https_button,
             self.start_instance_service_button,
             self.stop_instance_service_button,
             self.autostart_instance_service_button,
@@ -1429,6 +1492,7 @@ class YarbisDesktop(tk.Tk):
                         row["active_text"],
                         row["service_name"],
                         row["mobile_port"],
+                        row["mobile_https_text"],
                         row["pending_messages"],
                         row["state_file"],
                     ),
@@ -1519,6 +1583,7 @@ class YarbisDesktop(tk.Tk):
             ("rename_instance_button", has_row),
             ("copy_instance_path_button", has_row),
             ("copy_instance_command_button", has_row),
+            ("claim_instance_https_button", bool(row and row.get("mobile_https_available"))),
             ("start_instance_service_button", has_row),
             ("stop_instance_service_button", has_row),
             ("autostart_instance_service_button", has_row),
@@ -1596,6 +1661,45 @@ class YarbisDesktop(tk.Tk):
         instance_id = self._selected_instance_id()
         command = f'"{_python_window_path()}" "{_WORKSPACE_ROOT / "yarbis_desktop.py"}" --instance "{instance_id}"'
         self._copy_to_clipboard("Comando de instancia", command)
+
+    @staticmethod
+    def _claim_instance_mobile_https(instance_id: str) -> str:
+        normalized = yarbis_instance.normalize_instance_id(instance_id)
+        process = subprocess.run(
+            [
+                str(_python_console_path()),
+                "-c",
+                "import yarbis_mobile; print(yarbis_mobile.claim_mobile_https_for_current_instance())",
+            ],
+            cwd=str(_WORKSPACE_ROOT),
+            env=yarbis_instance.with_instance_env(normalized),
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=30,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+        output = "\n".join(part.strip() for part in (process.stdout, process.stderr) if part and part.strip()).strip()
+        if process.returncode != 0:
+            raise RuntimeError(output or f"No pude mover HTTPS a {normalized}.")
+        return output or f"HTTPS movil reclamada por {normalized}."
+
+    def _claim_selected_instance_https(self):
+        instance_id = self._selected_instance_id()
+        row = next((item for item in self._instance_rows if item["id"] == instance_id), {})
+        if not row.get("mobile_https_available"):
+            messagebox.showinfo(
+                "Yarbis",
+                "Esa instancia debe estar activa y tener la UI movil con PIN para usar HTTPS.",
+                parent=self,
+            )
+            return
+        self._start_background_job(
+            f"HTTPS {instance_id}",
+            self._claim_instance_mobile_https,
+            instance_id,
+        )
 
     def _start_selected_instance_service(self):
         self._start_background_job(
@@ -2409,7 +2513,11 @@ class YarbisDesktop(tk.Tk):
         )
         mobile_status = public_mobile_ui_status(state.get("service", {}).get("mobile_ui", {}))
         if mobile_status["enabled"]:
-            mobile_url = mobile_status.get("tailscale_url") or mobile_status.get("local_url")
+            mobile_url = (
+                mobile_status.get("secure_url")
+                or mobile_status.get("tailscale_url")
+                or mobile_status.get("local_url")
+            )
             mobile_timeout = mobile_status.get("job_timeout_seconds")
             mobile_text = f"UI móvil activa ({mobile_url}, timeout={mobile_timeout}s)."
         else:
@@ -3231,7 +3339,11 @@ class YarbisDesktop(tk.Tk):
             return
 
         status = public_mobile_ui_status()
-        url = status.get("tailscale_url") or status.get("local_url")
+        url = (
+            status.get("secure_url")
+            or status.get("tailscale_url")
+            or status.get("local_url")
+        )
         if url:
             try:
                 self.clipboard_clear()
@@ -3436,7 +3548,12 @@ class YarbisDesktop(tk.Tk):
             return
 
         active_urls = status.get("active_urls") or []
-        base_url = (active_urls[0] if active_urls else "") or status.get("tailscale_url") or status.get("local_url")
+        base_url = (
+            status.get("secure_url")
+            or (active_urls[0] if active_urls else "")
+            or status.get("tailscale_url")
+            or status.get("local_url")
+        )
         if not base_url:
             messagebox.showwarning("Yarbis", "No encontre URL disponible para la UI movil.", parent=self)
             return

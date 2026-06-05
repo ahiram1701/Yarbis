@@ -773,6 +773,8 @@ class MemoryTestCase(unittest.TestCase):
                     "pin_salt": "s" * 300,
                     "session_secret": "x" * 300,
                     "last_bind_error": "error" * 200,
+                    "https_last_error": "https" * 200,
+                    "tailscale_serve_target": "target" * 200,
                 }
             }
         })
@@ -783,10 +785,13 @@ class MemoryTestCase(unittest.TestCase):
         expected_port = memory.default_state()["service"]["mobile_ui"]["port"]
         self.assertEqual(mobile_ui["port"], expected_port)
         self.assertEqual(mobile_ui["job_timeout_seconds"], memory.DEFAULT_MOBILE_UI_JOB_TIMEOUT_SECONDS)
+        self.assertTrue(mobile_ui["https_enabled"])
         self.assertEqual(len(mobile_ui["pin_hash"]), memory.MAX_MOBILE_UI_HASH_CHARS)
         self.assertEqual(len(mobile_ui["pin_salt"]), memory.MAX_MOBILE_UI_SALT_CHARS)
         self.assertEqual(len(mobile_ui["session_secret"]), memory.MAX_MOBILE_UI_SESSION_SECRET_CHARS)
         self.assertEqual(len(mobile_ui["last_bind_error"]), memory.MAX_MOBILE_UI_BIND_ERROR_CHARS)
+        self.assertEqual(len(mobile_ui["https_last_error"]), memory.MAX_MOBILE_UI_BIND_ERROR_CHARS)
+        self.assertEqual(len(mobile_ui["tailscale_serve_target"]), memory.MAX_MOBILE_UI_SERVE_TARGET_CHARS)
 
     def test_normalize_state_migrates_legacy_cycle_defaults_to_unlimited(self):
         normalized = memory.normalize_state({
