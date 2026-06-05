@@ -3,6 +3,30 @@ import re
 
 MAX_TIMELINE_TEXT_CHARS = 1400
 MAX_SPOKEN_REPLY_CHARS = 1800
+MAX_TELEGRAM_REPLY_CHARS = 3200
+MAX_NOTIFICATION_TEXT_CHARS = 220
+COMMUNICATION_DEFAULTS = {
+    "tone": "warm_brief",
+    "detail_level": "balanced",
+    "proactivity": "moderate",
+}
+COMMUNICATION_LABELS = {
+    "tone": {
+        "warm_brief": "cálido y breve",
+        "human": "muy humano",
+        "direct": "operativo directo",
+    },
+    "detail_level": {
+        "brief": "breve",
+        "balanced": "balanceado",
+        "detailed": "detallado",
+    },
+    "proactivity": {
+        "low": "solo solicitado",
+        "moderate": "contextual moderada",
+        "high": "alta iniciativa",
+    },
+}
 
 
 def _clean_text(value: object) -> str:
@@ -14,6 +38,37 @@ def _compact_text(value: object, max_chars: int = MAX_TIMELINE_TEXT_CHARS) -> st
     if len(text) <= max_chars:
         return text
     return text[: max(0, max_chars - 1)].rstrip() + "..."
+
+
+def _setting_value(value: object, allowed: set[str], default: str) -> str:
+    rendered = _clean_text(value).lower().replace("-", "_").replace(" ", "_")
+    return rendered if rendered in allowed else default
+
+
+def communication_settings(state: dict | None) -> dict:
+    state = state if isinstance(state, dict) else {}
+    raw = state.get("communication", {})
+    if not isinstance(raw, dict):
+        raw = {}
+    tone = _setting_value(raw.get("tone"), {"warm_brief", "human", "direct"}, COMMUNICATION_DEFAULTS["tone"])
+    detail = _setting_value(
+        raw.get("detail_level"),
+        {"brief", "balanced", "detailed"},
+        COMMUNICATION_DEFAULTS["detail_level"],
+    )
+    proactivity = _setting_value(
+        raw.get("proactivity"),
+        {"low", "moderate", "high"},
+        COMMUNICATION_DEFAULTS["proactivity"],
+    )
+    return {
+        "tone": tone,
+        "detail_level": detail,
+        "proactivity": proactivity,
+        "tone_label": COMMUNICATION_LABELS["tone"][tone],
+        "detail_label": COMMUNICATION_LABELS["detail_level"][detail],
+        "proactivity_label": COMMUNICATION_LABELS["proactivity"][proactivity],
+    }
 
 
 def _open_task_count(state: dict) -> int:
@@ -180,6 +235,40 @@ def _actions_for(mode: str, pending: dict, operation: dict, voice: dict) -> list
     return actions
 
 
+def _next_step_for(pending: dict, operation: dict, voice: dict, open_tasks: int) -> str:
+    if pending.get("active"):
+        return "Responde la pregunta pendiente para que pueda continuar."
+    if operation.get("active"):
+        return "Estoy trabajando; puedes detener la operación si hace falta."
+    if voice.get("live_state") in {"wake_listening", "capturing"}:
+        return f"Di {voice.get('wake_phrase', 'Yarbis')} y luego tu instrucción."
+    if voice.get("live_state") in {"transcribing", "thinking", "speaking"}:
+        return "Sigue la conversación cuando termine este turno."
+    if open_tasks:
+        return "Puedes ejecutar un ciclo o agregar contexto nuevo."
+    return "Dime qué quieres hacer y lo convertimos en el siguiente paso."
+
+
+def _attention_for(pending: dict, operation: dict, voice: dict) -> dict:
+    if voice.get("live_state") == "error":
+        return {"active": True, "kind": "voice_error", "text": voice.get("detail") or "La voz necesita atención."}
+    if pending.get("active"):
+        return {"active": True, "kind": "pending_question", "text": pending.get("question", "")}
+    if operation.get("active"):
+        return {"active": False, "kind": "operation", "text": operation.get("label", "")}
+    return {"active": False, "kind": "", "text": ""}
+
+
+def _channel_text_limit(channel: str, settings: dict) -> int:
+    if channel == "voice":
+        return MAX_SPOKEN_REPLY_CHARS
+    if channel == "notification":
+        return MAX_NOTIFICATION_TEXT_CHARS
+    if channel == "telegram":
+        return MAX_TELEGRAM_REPLY_CHARS if settings.get("detail_level") != "brief" else 1800
+    return MAX_TIMELINE_TEXT_CHARS
+
+
 def build_conversation_view(
     state: dict,
     *,
@@ -193,6 +282,8 @@ def build_conversation_view(
     pending = _pending_input(state)
     operation = _operation_status(state)
     voice = _voice_settings(state, voice_status=voice_status)
+    communication = communication_settings(state)
+    open_tasks = _open_task_count(state)
     live_state = voice.get("live_state", "idle")
     mode = "ready"
     headline = "Yarbis está listo."
@@ -230,11 +321,22 @@ def build_conversation_view(
         })
 
     recent_jobs = jobs if isinstance(jobs, list) else []
+    next_step = _next_step_for(pending, operation, voice, open_tasks)
+    attention = _attention_for(pending, operation, voice)
     return {
         "channel": str(channel or "desktop"),
         "mode": mode,
         "headline": headline,
         "detail": detail,
+        "next_step": next_step,
+        "attention": attention,
+        "communication": communication,
+        "channel_copy": {
+            "headline": headline,
+            "detail": detail,
+            "next_step": next_step,
+            "tone": communication["tone_label"],
+        },
         "pending": pending,
         "operation": operation,
         "voice": voice,
@@ -248,10 +350,71 @@ def build_conversation_view(
         "timeline": timeline,
         "continuity": {
             "cycle_count": state.get("cycle_count", 0),
-            "open_tasks": _open_task_count(state),
+            "open_tasks": open_tasks,
             "service_running": bool((service_status or {}).get("running")),
             "jobs": len(recent_jobs),
         },
+    }
+
+
+def format_channel_reply(channel: str, label: str, content: str, state: dict | None = None) -> dict:
+    state = state if isinstance(state, dict) else {}
+    channel = _clean_text(channel).lower() or "text"
+    settings = communication_settings(state)
+    pending = _pending_input(state)
+    operation = _operation_status(state)
+    voice = _voice_settings(state)
+    open_tasks = _open_task_count(state)
+    next_step = _next_step_for(pending, operation, voice, open_tasks)
+    attention = _attention_for(pending, operation, voice)
+    body = spoken_reply_text(content) or _clean_text(content) or "Operación completada sin salida visible."
+    body = _compact_text(body, _channel_text_limit(channel, settings))
+    operation_label = _clean_text(label) or "Yarbis"
+
+    if pending.get("active") and pending.get("question") and pending["question"] not in body:
+        body = f"{body}\n\nPregunta pendiente: {pending['question']}".strip()
+
+    title = "Yarbis" if operation_label == "Yarbis" else f"Yarbis | {operation_label}"
+    status = "esperando tu respuesta" if pending.get("active") else "listo para seguir"
+    if operation.get("active"):
+        status = f"trabajando en {operation['label']}"
+    continuity = (
+        f"Continuidad: {state.get('cycle_count', 0)} ciclo(s) | "
+        f"{open_tasks} tarea(s) abierta(s) | {status}."
+    )
+    telegram_next_step = next_step
+    if pending.get("active"):
+        telegram_next_step = "responde por este chat y Yarbis retomara los ciclos."
+    elif open_tasks:
+        telegram_next_step = "puedes mandar /run o /auto para continuar desde este mismo punto."
+    elif channel == "telegram":
+        telegram_next_step = "manda contexto nuevo, /status o /auto cuando quieras seguir."
+
+    if channel == "telegram":
+        text = "\n".join([
+            title,
+            f"Estado: {continuity}",
+            "",
+            "Resultado:",
+            body,
+            "",
+            f"Siguiente: {telegram_next_step}",
+        ]).strip()
+    elif channel == "notification":
+        text = f"{body}\n{next_step}".strip()
+    else:
+        text = body
+
+    return {
+        "channel": channel,
+        "title": title,
+        "body": body,
+        "text": text,
+        "voice_text": spoken_reply_text(body),
+        "notification_text": _compact_text(text, MAX_NOTIFICATION_TEXT_CHARS),
+        "next_step": next_step,
+        "attention": attention,
+        "communication": settings,
     }
 
 
@@ -262,6 +425,8 @@ def spoken_reply_text(text: str) -> str:
     rendered = re.sub(r"(?m)^={3,}\s*CICLO\s+\d+\s*={3,}\s*$", "", rendered)
     rendered = re.sub(r"(?m)^---\s*Paso\s+\d+\s*---\s*$", "", rendered)
     rendered = re.sub(r"(?m)^>\s*(Ejecutando tool|Argumentos|Resultado):.*$", "", rendered)
+    rendered = re.sub(r"\n?\.\.\.\[truncado \d+ caracteres\]", "", rendered, flags=re.IGNORECASE)
+    rendered = re.sub(r"\n?\.\.\. diff truncado, \d+ lineas mas\.", "", rendered, flags=re.IGNORECASE)
     rendered = rendered.replace("Yarbis decidio usar tools.", "")
     rendered = rendered.replace("Decidi usar herramientas.", "")
     marker = "\nYarbis:\n"

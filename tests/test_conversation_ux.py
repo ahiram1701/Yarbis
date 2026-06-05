@@ -50,6 +50,23 @@ class ConversationUxTestCase(unittest.TestCase):
         self.assertTrue(view["voice"]["live_enabled"])
         self.assertIn("Yarbis", view["voice"]["headline"])
 
+    def test_build_conversation_view_includes_communication_and_next_step(self):
+        state = memory.normalize_state({
+            "communication": {
+                "tone": "human",
+                "detail_level": "brief",
+                "proactivity": "low",
+            },
+            "tasks": [{"id": "task-1", "title": "Seguir", "status": "pending"}],
+        })
+
+        view = conversation_ux.build_conversation_view(state)
+
+        self.assertEqual(view["communication"]["tone"], "human")
+        self.assertEqual(view["communication"]["detail_level"], "brief")
+        self.assertIn("ciclo", view["next_step"])
+        self.assertFalse(view["attention"]["active"])
+
     def test_spoken_reply_text_removes_operational_prefix(self):
         text = (
             "Respuesta guardada. Ejecutando un ciclo con esta informacion.\n\n"
@@ -59,6 +76,24 @@ class ConversationUxTestCase(unittest.TestCase):
         )
 
         self.assertEqual(conversation_ux.spoken_reply_text(text), "La respuesta final.")
+
+    def test_format_channel_reply_keeps_telegram_continuity_and_cleans_noise(self):
+        state = memory.normalize_state({
+            "cycle_count": 2,
+            "tasks": [{"id": "task-1", "title": "Seguir", "status": "pending"}],
+        })
+
+        reply = conversation_ux.format_channel_reply(
+            "telegram",
+            "Ciclo",
+            "Yarbis:\nListo.\n\n...[truncado 20 caracteres]",
+            state=state,
+        )
+
+        self.assertIn("Estado: Continuidad: 2 ciclo(s) | 1 tarea(s) abierta(s)", reply["text"])
+        self.assertIn("Resultado:", reply["text"])
+        self.assertNotIn("truncado", reply["text"].lower())
+        self.assertIn("/run o /auto", reply["text"])
 
 
 if __name__ == "__main__":

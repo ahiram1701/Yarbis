@@ -77,7 +77,6 @@ def telegram_next_step_line(state: dict) -> str:
 
 
 def format_telegram_operation_reply(label: str, content: str, state: dict | None = None) -> str:
-    operation_label = str(label).strip() or "Yarbis"
     if state is None:
         try:
             from memory import load_state
@@ -85,25 +84,4 @@ def format_telegram_operation_reply(label: str, content: str, state: dict | None
             state = load_state()
         except Exception:
             state = {}
-
-    body = (
-        extract_telegram_operation_body(conversation_ux.spoken_reply_text(content))
-        or extract_telegram_operation_body(content)
-        or "Operacion completada sin salida visible."
-    )
-
-    lines = [
-        f"Yarbis | {operation_label}",
-        f"Estado: {telegram_continuity_line(state)}",
-        "",
-        "Resultado:",
-        body,
-    ]
-
-    awaiting_user_input = state.get("awaiting_user_input", {})
-    question = str(awaiting_user_input.get("question", "")).strip()
-    if awaiting_user_input.get("pending") and question and question not in body:
-        lines.extend(["", f"Pregunta pendiente: {question}"])
-
-    lines.extend(["", telegram_next_step_line(state)])
-    return "\n".join(line.rstrip() for line in lines).strip()
+    return conversation_ux.format_channel_reply("telegram", label, content, state=state)["text"]

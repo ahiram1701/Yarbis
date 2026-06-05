@@ -377,6 +377,40 @@ class TelegramInboxTestCase(unittest.TestCase):
         self.assertEqual(state["voice"]["tts_rate"], 190)
         self.assertEqual(state["voice"]["telegram_reply_mode"], "off")
 
+    def test_telegram_communication_command_updates_settings(self):
+        state_path = TEST_RUNTIME_DIR / "telegram_communication_commands_state.json"
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+
+        seeded_state = memory.normalize_state({
+            "notifications": {
+                "enabled": True,
+                "channels": ["telegram"],
+                "telegram": {
+                    "bot_token": "bot-123",
+                    "chat_id": "123",
+                },
+            },
+        })
+        updates = [
+            {"update_id": 223, "message": {"chat": {"id": 123, "type": "private"}, "text": "/comunicacion status"}},
+            {"update_id": 224, "message": {"chat": {"id": 123, "type": "private"}, "text": "/comunicacion tono humano"}},
+            {"update_id": 225, "message": {"chat": {"id": 123, "type": "private"}, "text": "/comunicacion detalle breve"}},
+            {"update_id": 226, "message": {"chat": {"id": 123, "type": "private"}, "text": "/comunicacion proactividad alta"}},
+        ]
+
+        with patch.object(memory, "STATE_FILE", state_path):
+            memory.save_state(seeded_state)
+            with patch.object(telegram_inbox, "send_telegram_message", return_value=True) as send_mock:
+                for update in updates:
+                    telegram_inbox.process_telegram_update(update)
+            state = memory.load_state()
+
+        sent_text = "\n".join(call.args[0] for call in send_mock.call_args_list)
+        self.assertIn("Comunicacion:", sent_text)
+        self.assertEqual(state["communication"]["tone"], "human")
+        self.assertEqual(state["communication"]["detail_level"], "brief")
+        self.assertEqual(state["communication"]["proactivity"], "high")
+
     def test_telegram_voice_kokoro_catalog_provider_and_select(self):
         state_path = TEST_RUNTIME_DIR / "telegram_voice_kokoro_commands_state.json"
         state_path.parent.mkdir(parents=True, exist_ok=True)

@@ -20,6 +20,7 @@ yarbis_instance.configure_from_argv()
 yarbis_instance.ensure_instance_registered()
 
 import activity
+import conversation_ux
 import yarbis_bus
 import memory as memory_store
 import voice as yarbis_voice
@@ -729,6 +730,9 @@ class YarbisDesktop(tk.Tk):
         self.health_var = tk.StringVar()
         self.readiness_var = tk.StringVar()
         self.status_var = tk.StringVar(value="Listo.")
+        self.conversation_headline_var = tk.StringVar(value="Yarbis está listo.")
+        self.conversation_detail_var = tk.StringVar(value="Escribe, dicta o inicia voz en vivo.")
+        self.conversation_next_step_var = tk.StringVar(value="Dime qué quieres hacer y lo convertimos en el siguiente paso.")
         self.instance_chip_var = tk.StringVar()
         self.instance_warning_var = tk.StringVar()
         self.message_target_var = tk.StringVar()
@@ -1016,7 +1020,7 @@ class YarbisDesktop(tk.Tk):
 
     def _build_run_view(self, parent):
         parent.columnconfigure(0, weight=1)
-        parent.rowconfigure(1, weight=1)
+        parent.rowconfigure(2, weight=1)
 
         actions = create_section(parent, "Ejecutar", "Acciones principales del ciclo actual.")
         actions.grid(row=0, column=0, sticky="ew", pady=(0, 12))
@@ -1036,8 +1040,29 @@ class YarbisDesktop(tk.Tk):
             if disable_when_busy:
                 self._action_buttons.append(button)
 
+        conversation = create_section(parent, "Conversacion", "Estado actual y siguiente paso.")
+        conversation.grid(row=1, column=0, sticky="ew", pady=(0, 12))
+        conversation.columnconfigure(0, weight=1)
+        ttk.Label(conversation, textvariable=self.conversation_headline_var, style="CardTitle.TLabel").grid(
+            row=0,
+            column=0,
+            sticky="ew",
+        )
+        ttk.Label(conversation, textvariable=self.conversation_detail_var, wraplength=920).grid(
+            row=1,
+            column=0,
+            sticky="ew",
+            pady=(6, 0),
+        )
+        ttk.Label(conversation, textvariable=self.conversation_next_step_var, style="Muted.TLabel", wraplength=920).grid(
+            row=2,
+            column=0,
+            sticky="ew",
+            pady=(4, 0),
+        )
+
         workspace = ttk.Frame(parent)
-        workspace.grid(row=1, column=0, sticky="nsew")
+        workspace.grid(row=2, column=0, sticky="nsew")
         workspace.columnconfigure(0, weight=3)
         workspace.columnconfigure(1, weight=2)
         workspace.rowconfigure(0, weight=1)
@@ -2355,6 +2380,23 @@ class YarbisDesktop(tk.Tk):
             self.readiness_var.set("Consultando...")
         else:
             self.readiness_var.set(format_readiness_status(readiness))
+
+        conversation_view = conversation_ux.build_conversation_view(
+            state,
+            service_status=service_status or {},
+            voice_status=voice_conversation.desktop_status(),
+            channel="desktop",
+            limit=5,
+        )
+        conversation_vars = (
+            ("conversation_headline_var", conversation_view.get("headline", "Yarbis está listo.")),
+            ("conversation_detail_var", conversation_view.get("detail", "")),
+            ("conversation_next_step_var", conversation_view.get("next_step", "")),
+        )
+        for variable_name, value in conversation_vars:
+            variable = self.__dict__.get(variable_name)
+            if hasattr(variable, "set"):
+                variable.set(value)
 
         helper_text = (
             format_context_helper_status(helper_status)

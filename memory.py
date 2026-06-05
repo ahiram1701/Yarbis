@@ -129,6 +129,12 @@ VALID_VISUAL_BOARD_KIND = {"idea_canvas", "decision_matrix", "roadmap_kanban", "
 VALID_UI_THEME = {"light", "dark"}
 VALID_NOTIFICATION_CHANNELS = {"windows", "ntfy", "telegram"}
 VALID_NTFY_PRIORITIES = {"", "min", "low", "default", "high", "urgent", "1", "2", "3", "4", "5"}
+DEFAULT_COMMUNICATION_TONE = "warm_brief"
+DEFAULT_COMMUNICATION_DETAIL_LEVEL = "balanced"
+DEFAULT_COMMUNICATION_PROACTIVITY = "moderate"
+VALID_COMMUNICATION_TONES = {"warm_brief", "human", "direct"}
+VALID_COMMUNICATION_DETAIL_LEVELS = {"brief", "balanced", "detailed"}
+VALID_COMMUNICATION_PROACTIVITY = {"low", "moderate", "high"}
 DEFAULT_NTFY_SERVER = "https://ntfy.sh"
 DEFAULT_NTFY_TIMEOUT_SECONDS = 10
 DEFAULT_TELEGRAM_API_BASE = "https://api.telegram.org"
@@ -455,6 +461,11 @@ def default_state():
                     "requested_at": "",
                 },
             },
+        },
+        "communication": {
+            "tone": DEFAULT_COMMUNICATION_TONE,
+            "detail_level": DEFAULT_COMMUNICATION_DETAIL_LEVEL,
+            "proactivity": DEFAULT_COMMUNICATION_PROACTIVITY,
         },
         "voice": {
             "enabled": DEFAULT_VOICE_ENABLED,
@@ -1888,6 +1899,72 @@ def _normalize_notifications(notifications):
     }
 
 
+def _communication_value(value, aliases: dict[str, str], valid_values: set[str], default: str) -> str:
+    rendered = _coerce_text(value, 40).strip().lower().replace("-", "_").replace(" ", "_")
+    rendered = aliases.get(rendered, rendered)
+    return rendered if rendered in valid_values else default
+
+
+def _normalize_communication_settings(communication):
+    defaults = default_state()["communication"]
+    if not isinstance(communication, dict):
+        communication = {}
+
+    tone_aliases = {
+        "calido": "warm_brief",
+        "cálido": "warm_brief",
+        "breve": "warm_brief",
+        "warm": "warm_brief",
+        "warm_brief": "warm_brief",
+        "humano": "human",
+        "human": "human",
+        "directo": "direct",
+        "operativo": "direct",
+        "direct": "direct",
+    }
+    detail_aliases = {
+        "breve": "brief",
+        "corto": "brief",
+        "brief": "brief",
+        "balanceado": "balanced",
+        "medio": "balanced",
+        "balanced": "balanced",
+        "detallado": "detailed",
+        "detalle": "detailed",
+        "detailed": "detailed",
+    }
+    proactivity_aliases = {
+        "baja": "low",
+        "low": "low",
+        "moderada": "moderate",
+        "moderado": "moderate",
+        "media": "moderate",
+        "moderate": "moderate",
+        "alta": "high",
+        "high": "high",
+    }
+    return {
+        "tone": _communication_value(
+            communication.get("tone", defaults["tone"]),
+            tone_aliases,
+            VALID_COMMUNICATION_TONES,
+            defaults["tone"],
+        ),
+        "detail_level": _communication_value(
+            communication.get("detail_level", defaults["detail_level"]),
+            detail_aliases,
+            VALID_COMMUNICATION_DETAIL_LEVELS,
+            defaults["detail_level"],
+        ),
+        "proactivity": _communication_value(
+            communication.get("proactivity", defaults["proactivity"]),
+            proactivity_aliases,
+            VALID_COMMUNICATION_PROACTIVITY,
+            defaults["proactivity"],
+        ),
+    }
+
+
 def _normalize_voice_settings(voice):
     defaults = default_state()["voice"]
     if not isinstance(voice, dict):
@@ -2296,6 +2373,7 @@ def normalize_state(state):
     normalized["internet"] = _normalize_internet(state.get("internet", {}))
     normalized["self_knowledge"] = _normalize_self_knowledge(state.get("self_knowledge", {}))
     normalized["notifications"] = _normalize_notifications(state.get("notifications", {}))
+    normalized["communication"] = _normalize_communication_settings(state.get("communication", {}))
     normalized["voice"] = _normalize_voice_settings(state.get("voice", {}))
     normalized["social"] = _normalize_social(state.get("social", {}))
 
@@ -2431,6 +2509,14 @@ def render_state_summary(
         f"tts={voice_settings.get('tts_provider', DEFAULT_VOICE_TTS_PROVIDER)}, "
         f"telegram={voice_settings['telegram_reply_mode']}, "
         f"{live_text}"
+    )
+
+    communication = normalized["communication"]
+    lines.append(
+        "Comunicacion: "
+        f"tono={communication['tone']}, "
+        f"detalle={communication['detail_level']}, "
+        f"proactividad={communication['proactivity']}"
     )
 
     if include_last_result:

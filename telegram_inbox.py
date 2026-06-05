@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from typing import Any, Callable
 
 import activity
+import conversation_ux
 import yarbis_instance
 from memory import (
     DEFAULT_OLLAMA_CLOUD_HOST,
@@ -66,6 +67,7 @@ from session import (
     run_auto_with_output,
     run_cycle_with_output,
     submit_user_reply,
+    update_communication_settings_text,
     update_model_provider,
     update_goal,
     update_ollama_settings,
@@ -87,6 +89,7 @@ TELEGRAM_OPERATION_LABELS = {
     "Respuesta diferida",
     "Timeout",
     "Voz",
+    "Comunicacion",
     "Coding",
 }
 _poller_thread = None
@@ -411,7 +414,8 @@ def _help_text() -> str:
         "/modelo NOMBRE\n"
         "/timeout SEGUNDOS\n"
         "/ollama ... /openrouter ...\n"
-        "/voz status|voces|catalogo|usar NUMERO|velocidad NUMERO|callar\n\n"
+        "/voz status|voces|catalogo|usar NUMERO|velocidad NUMERO|callar\n"
+        "/comunicacion status|tono|detalle|proactividad\n\n"
         "Energía\n"
         "/apagar, /reiniciar, /cancelar_apagado, /cancelar_reinicio\n"
         "/confirmar_apagado CODIGO, /confirmar_reinicio CODIGO\n\n"
@@ -618,6 +622,34 @@ def _dispatch_voice_command(argument_text: str) -> str:
         return yarbis_voice.update_voice_settings_text(tts_rate=rate)
 
     return "Uso: /voz auto, /voz on, /voz off, /voz status, /voz voces, /voz catalogo, /voz proveedor kokoro|sistema, /voz usar NUMERO, /voz velocidad NUMERO o /voz callar"
+
+
+def _communication_status_text() -> str:
+    settings = conversation_ux.communication_settings(load_state())
+    return (
+        "Comunicacion:\n"
+        f"- tono: {settings['tone_label']} ({settings['tone']})\n"
+        f"- detalle: {settings['detail_label']} ({settings['detail_level']})\n"
+        f"- proactividad: {settings['proactivity_label']} ({settings['proactivity']})"
+    )
+
+
+def _dispatch_communication_command(argument_text: str) -> str:
+    argument = str(argument_text or "").strip()
+    normalized = _normalize_intent_text(argument)
+    if normalized in {"", "status", "estado"}:
+        return _communication_status_text()
+    if normalized.startswith("tono "):
+        return update_communication_settings_text(tone=argument.split(maxsplit=1)[1])
+    if normalized.startswith("detalle "):
+        return update_communication_settings_text(detail_level=argument.split(maxsplit=1)[1])
+    if normalized.startswith("proactividad "):
+        return update_communication_settings_text(proactivity=argument.split(maxsplit=1)[1])
+    return (
+        "Uso: /comunicacion status, /comunicacion tono calido|humano|directo, "
+        "/comunicacion detalle breve|balanceado|detallado, "
+        "/comunicacion proactividad baja|moderada|alta"
+    )
 
 
 def _send_optional_telegram_voice_reply(text: str, chat_id: str, source_was_voice: bool) -> bool:
@@ -1435,6 +1467,9 @@ def _dispatch_command(command_text: str, chat_id: str = "") -> str:
 
     if command in {"/voz", "/voice"}:
         return _dispatch_voice_command(argument_text)
+
+    if command in {"/comunicacion", "/comunicación", "/communication"}:
+        return _dispatch_communication_command(argument_text)
 
     if command == "/coding":
         return _dispatch_coding_command(argument_text)

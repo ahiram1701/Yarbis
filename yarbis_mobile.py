@@ -80,6 +80,7 @@ from session import (
     save_note_text,
     send_test_notification,
     start_social_oauth_text,
+    update_communication_settings_text,
     update_goal,
     update_idea_project_text,
     update_local_context_settings,
@@ -951,6 +952,7 @@ def _public_base_state(state: dict) -> dict:
         "cycle_count": state.get("cycle_count", 0),
         "last_result": _truncate_text(state.get("last_result", "")),
         "awaiting_user_input": state.get("awaiting_user_input", {}),
+        "communication": state.get("communication", {}),
         "conversation": conversation,
         "service": {
             "status": service_status,
@@ -1398,6 +1400,12 @@ def _execute_action(action: str, payload: dict | None = None) -> dict:
             live_max_turn_seconds=payload.get("live_max_turn_seconds"),
             live_auto_speak=bool(payload.get("live_auto_speak", True)),
             live_barge_in=bool(payload.get("live_barge_in", True)),
+        )}
+    if action == "communication_settings":
+        return {"result": update_communication_settings_text(
+            tone=_payload_text(payload, "tone"),
+            detail_level=_payload_text(payload, "detail_level"),
+            proactivity=_payload_text(payload, "proactivity"),
         )}
     if action == "memory_protection":
         return {"result": update_memory_protection_settings_text(**payload)}
@@ -2361,6 +2369,14 @@ async function saveVoiceSettings(providerOverride = null, kokoroVoiceOverride = 
   return data;
 }
 
+async function saveCommunicationSettings() {
+  return action("communication_settings", {
+    tone: $("communicationTone").value,
+    detail_level: $("communicationDetail").value,
+    proactivity: $("communicationProactivity").value
+  });
+}
+
 async function api(path, options = {}) {
   const init = { credentials: "same-origin", ...options };
   if (init.body && typeof init.body !== "string") {
@@ -2543,19 +2559,21 @@ function renderRun() {
   const conversation = appState.conversation || {};
   const voice = conversation.voice || {};
   const pending = conversation.pending || {};
+  const communication = conversation.communication || {};
   const liveActive = Boolean(liveVoiceSessionId);
   const liveLabel = liveActive ? "Detener conversacion" : "Conversacion en vivo";
   const liveDetail = liveVoiceSessionText();
   const timeline = conversation.timeline || [];
   $("run").innerHTML = `
     <section class="hero">
-      <h2>Ejecuta, responde o dicta sin salir del teléfono.</h2>
-      <div class="muted">Las operaciones largas quedan como trabajos y se actualizan automáticamente.</div>
+      <h2>${escapeHtml(conversation.headline || "Yarbis está listo.")}</h2>
+      <div class="muted">${escapeHtml(conversation.detail || "Escribe, dicta o inicia voz en vivo.")}</div>
+      <div class="muted">${escapeHtml(conversation.next_step || "")}</div>
     </section>
     <section class="section">
       <h2>Conversacion</h2>
       <div class="panel">
-        <div class="muted">${escapeHtml(pending.active ? "Pregunta pendiente" : "Hilo reciente")}</div>
+        <div class="muted">${escapeHtml(pending.active ? "Pregunta pendiente" : "Hilo reciente")} | ${escapeHtml(communication.tone_label || "cálido y breve")}</div>
         <div class="list">${timeline.map(item => `
           <div class="item">
             <strong>${item.role === "user" ? "Tu" : "Yarbis"}</strong>
@@ -3078,6 +3096,7 @@ function renderSettings() {
     `Telegram: ${notificationChannels.includes("telegram") ? (telegram.chat_id ? "listo" : (telegram.bot_token_configured ? "falta chat" : "falta token")) : "off"}`
   ].join(" | ");
   const internet = appState.internet || {};
+  const communication = appState.communication || ((appState.conversation || {}).communication || {});
   const voice = appState.voice || {};
   const live = voice.live_conversation || {};
   refreshBrowserVoices();
@@ -3123,6 +3142,15 @@ function renderSettings() {
         <div><label>Nuevo PIN</label><input id="mobilePin" type="password" placeholder="${mobile.configured ? "conservar PIN" : "PIN requerido"}"></div>
         <div class="panel"><pre>${escapeHtml((mobile.tailscale_url || mobile.local_url || "") + (mobile.last_bind_error ? "\n" + mobile.last_bind_error : ""))}</pre></div>
         <button data-action="save-mobile">Guardar UI movil</button>
+      </div>
+    </section>
+    <section class="section">
+      <h2>Comunicacion</h2>
+      <div class="setting-group form-grid wide">
+        <div><label>Tono</label><select id="communicationTone"><option value="warm_brief">calido y breve</option><option value="human">muy humano</option><option value="direct">operativo directo</option></select></div>
+        <div><label>Detalle</label><select id="communicationDetail"><option value="brief">breve</option><option value="balanced">balanceado</option><option value="detailed">detallado</option></select></div>
+        <div><label>Proactividad</label><select id="communicationProactivity"><option value="low">solo solicitado</option><option value="moderate">contextual moderada</option><option value="high">alta iniciativa</option></select></div>
+        <button data-action="save-communication">Guardar comunicacion</button>
       </div>
     </section>
     <section class="section">
@@ -3236,6 +3264,12 @@ function renderSettings() {
   if (localMode) localMode.value = local.mode || "safe";
   const internetMode = $("internetMode");
   if (internetMode) internetMode.value = internet.mode || "auto";
+  const communicationTone = $("communicationTone");
+  if (communicationTone) communicationTone.value = communication.tone || "warm_brief";
+  const communicationDetail = $("communicationDetail");
+  if (communicationDetail) communicationDetail.value = communication.detail_level || "balanced";
+  const communicationProactivity = $("communicationProactivity");
+  if (communicationProactivity) communicationProactivity.value = communication.proactivity || "moderate";
   const ttsVoiceId = $("ttsVoiceId");
   if (ttsVoiceId) ttsVoiceId.value = voice.tts_voice_id || "";
   const voiceProvider = $("voiceProvider");
@@ -3517,6 +3551,8 @@ document.addEventListener("click", async (event) => {
       });
     } else if (name === "save-mobile") {
       await action("mobile_ui", { enabled: $("mobileEnabled").checked, port: $("mobilePort").value, job_timeout_seconds: $("mobileJobTimeout").value, pin: $("mobilePin").value });
+    } else if (name === "save-communication") {
+      await saveCommunicationSettings();
     } else if (name === "refresh-voice-catalog") {
       toast("Cargando voces Kokoro...");
       await loadVoiceOptions(true, true, true);

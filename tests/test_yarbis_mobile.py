@@ -555,6 +555,24 @@ class YarbisMobileTestCase(unittest.TestCase):
         self.assertFalse(state["voice"]["live_conversation"]["auto_speak"])
         self.assertFalse(state["voice"]["live_conversation"]["barge_in"])
 
+    def test_mobile_communication_settings_action_updates_state(self):
+        state_path = TEST_RUNTIME_DIR / "mobile_communication_settings_state.json"
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+
+        with patch.object(memory, "STATE_FILE", state_path):
+            memory.save_state(memory.default_state())
+            result = yarbis_mobile._execute_action("communication_settings", {
+                "tone": "directo",
+                "detail_level": "breve",
+                "proactivity": "alta",
+            })
+            state = memory.load_state()
+
+        self.assertIn("Comunicacion actualizada", result["result"])
+        self.assertEqual(state["communication"]["tone"], "direct")
+        self.assertEqual(state["communication"]["detail_level"], "brief")
+        self.assertEqual(state["communication"]["proactivity"], "high")
+
     def test_mobile_voice_settings_action_updates_kokoro_state(self):
         state_path = TEST_RUNTIME_DIR / "mobile_voice_kokoro_settings_state.json"
         state_path.parent.mkdir(parents=True, exist_ok=True)
@@ -590,6 +608,8 @@ class YarbisMobileTestCase(unittest.TestCase):
         self.assertEqual(load_mock.call_count, 1)
         self.assertIn("jobs", payload)
         self.assertIn("conversation", payload)
+        self.assertIn("communication", payload)
+        self.assertIn("communication", payload["conversation"])
         self.assertIn("voice", payload["conversation"])
         self.assertIn("health_text", payload)
         self.assertNotIn("messages", payload)
@@ -683,6 +703,8 @@ class YarbisMobileTestCase(unittest.TestCase):
         self.assertIn("/api/voice/live/start", html)
         self.assertIn("toggle-live-voice", html)
         self.assertIn("Conversacion en vivo", html)
+        self.assertIn("communicationTone", html)
+        self.assertIn("save-communication", html)
         self.assertIn("preferredLocalSpeechFormat", html)
         self.assertIn("Catálogo Kokoro", html)
         self.assertIn("modalBackdrop", html)

@@ -1003,6 +1003,21 @@ class MemoryTestCase(unittest.TestCase):
         self.assertFalse(live["barge_in"])
         self.assertTrue(live["save_audio_debug"])
 
+    def test_normalize_state_sanitizes_communication_settings(self):
+        normalized = memory.normalize_state({
+            "communication": {
+                "tone": " humano ",
+                "detail_level": " DETALLADO ",
+                "proactivity": " alta ",
+            },
+        })
+
+        settings = normalized["communication"]
+        self.assertEqual(settings["tone"], "human")
+        self.assertEqual(settings["detail_level"], "detailed")
+        self.assertEqual(settings["proactivity"], "high")
+        self.assertIn("Comunicacion: tono=human", memory.render_state_summary(normalized))
+
     def test_render_state_summary_highlights_unlinked_telegram(self):
         summary = memory.render_state_summary({
             "internet": {

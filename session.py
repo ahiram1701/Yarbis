@@ -1205,6 +1205,34 @@ def get_notification_settings() -> dict:
         return load_state().get("notifications", {})
 
 
+def update_communication_settings_text(
+    tone: str = "",
+    detail_level: str = "",
+    proactivity: str = "",
+) -> str:
+    with SESSION_LOCK:
+        def mutate(state):
+            communication = state.setdefault("communication", {})
+            if not isinstance(communication, dict):
+                communication = {}
+                state["communication"] = communication
+            if str(tone).strip():
+                communication["tone"] = str(tone).strip()
+            if str(detail_level).strip():
+                communication["detail_level"] = str(detail_level).strip()
+            if str(proactivity).strip():
+                communication["proactivity"] = str(proactivity).strip()
+
+        state_transaction("update_communication_settings", mutate)
+        settings = load_state().get("communication", {})
+        return (
+            "Comunicacion actualizada.\n"
+            f"Tono: {settings.get('tone', 'warm_brief')}\n"
+            f"Detalle: {settings.get('detail_level', 'balanced')}\n"
+            f"Proactividad: {settings.get('proactivity', 'moderate')}"
+        )
+
+
 def update_notification_settings(
     enabled: bool,
     windows_enabled: bool,
