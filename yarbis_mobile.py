@@ -2297,11 +2297,16 @@ let liveVoiceStream = null;
 let liveVoiceSessionId = "";
 let liveVoiceBusy = false;
 let liveVoiceSegmentTimer = null;
+let liveVoiceRestartTimer = null;
 let liveVoiceStopping = false;
+let liveVoiceLastSpokenTurnId = "";
+let liveVoiceLastSpokenText = "";
 let localTtsVoices = [];
 let browserVoices = [];
 let voiceOptionsLoaded = false;
 let localSpeechAudio = null;
+let mobileSpeechUnlocked = false;
+let mobileSpeechUnlockAudio = null;
 let kokoroVoiceFilter = "";
 let visualSelection = { projectId: "", boardId: "", nodeId: "" };
 let codingSelection = { proposalId: "" };
@@ -2309,6 +2314,9 @@ let visualDrag = null;
 let visualPan = null;
 const LIVE_VOICE_SEGMENT_MS = 5200;
 const LIVE_VOICE_RESTART_DELAY_MS = 120;
+const LIVE_VOICE_RETRY_DELAY_MS = 900;
+const LIVE_VOICE_POST_SPEECH_PAUSE_MS = 650;
+const LIVE_VOICE_SPEECH_WATCHDOG_MS = 22000;
 const $ = (id) => document.getElementById(id);
 
 function escapeHtml(value) {
@@ -2377,10 +2385,177 @@ function base64ToBlob(base64Text, mimeType) {
   return new Blob([bytes], { type: mimeType || "audio/wav" });
 }
 
+function revokeObjectUrl(value) {
+  if (value && String(value).startsWith("blob:")) URL.revokeObjectURL(value);
+}
+
+function speechAudioElement() {
+  if (!mobileSpeechUnlockAudio) {
+    mobileSpeechUnlockAudio = new Audio();
+    mobileSpeechUnlockAudio.preload = "auto";
+    mobileSpeechUnlockAudio.playsInline = true;
+  }
+  return mobileSpeechUnlockAudio;
+}
+
 function preferredLocalSpeechFormat() {
   const audio = document.createElement("audio");
   if (audio.canPlayType && audio.canPlayType("audio/ogg; codecs=opus")) return "ogg";
   return "wav";
+}
+
+function sleep(ms) {
+  return new Promise(resolve => window.setTimeout(resolve, ms));
+}
+
+function speechTimeoutMs(text) {
+  return Math.min(45000, Math.max(5000, String(text || "").length * 90));
+}
+
+function liveVoiceSpeechWatchdogMs(text) {
+  return Math.min(LIVE_VOICE_SPEECH_WATCHDOG_MS, Math.max(4500, String(text || "").length * 75));
+}
+
+function waitForPromiseOrTimeout(promise, ms) {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const finish = (value) => {
+      if (settled) return;
+      settled = true;
+      window.clearTimeout(timer);
+      resolve(value);
+    };
+    const fail = (error) => {
+      if (settled) return;
+      settled = true;
+      window.clearTimeout(timer);
+      reject(error);
+    };
+    const timer = window.setTimeout(() => finish(false), ms);
+    Promise.resolve(promise).then(() => finish(true)).catch(fail);
+  });
+}
+
+async function unlockMobileSpeechOutput() {
+  if (mobileSpeechUnlocked) return true;
+  let unlocked = false;
+  try {
+    const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+    if (AudioContextClass) {
+      if (!window._yarbisAudioContext) window._yarbisAudioContext = new AudioContextClass();
+      if (window._yarbisAudioContext.state === "suspended") await window._yarbisAudioContext.resume();
+      unlocked = true;
+    }
+  } catch (_error) {}
+  try {
+    const audio = speechAudioElement();
+    audio.muted = true;
+    audio.volume = 0;
+    audio.src = "data:audio/wav;base64,UklGRigAAABXQVZFZm10IBAAAAABAAEAESsAACJWAAACABAAZGF0YQQAAAAAAA==";
+    await audio.play();
+    audio.pause();
+    audio.currentTime = 0;
+    audio.muted = false;
+    audio.volume = 1;
+    audio.removeAttribute("src");
+    audio.load();
+    unlocked = true;
+  } catch (_error) {
+    if (mobileSpeechUnlockAudio) {
+      mobileSpeechUnlockAudio.muted = false;
+      mobileSpeechUnlockAudio.volume = 1;
+    }
+  }
+  try {
+    if ("speechSynthesis" in window) {
+      const utterance = new SpeechSynthesisUtterance(" ");
+      utterance.volume = 0;
+      window.speechSynthesis.speak(utterance);
+      unlocked = true;
+    }
+  } catch (_error) {}
+  mobileSpeechUnlocked = unlocked;
+  return unlocked;
+}
+
+function playLocalSpeechAudio(audio, objectUrl, text) {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    let timer = null;
+    const cleanup = () => {
+      if (timer) window.clearTimeout(timer);
+      audio.onended = null;
+      audio.onerror = null;
+    };
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      revokeObjectUrl(objectUrl);
+      if (localSpeechAudio === audio) localSpeechAudio = null;
+      resolve();
+    };
+    const fail = (message) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      revokeObjectUrl(objectUrl);
+      if (localSpeechAudio === audio) localSpeechAudio = null;
+      reject(new Error(message || "No pude reproducir voz local"));
+    };
+    audio.onended = finish;
+    audio.onerror = () => fail("No pude reproducir voz local");
+    timer = window.setTimeout(finish, speechTimeoutMs(text));
+    try {
+      const playback = audio.play();
+      if (playback && typeof playback.then === "function") {
+        playback.then(() => toast("Voz local reproduciendo")).catch((error) => fail(error.message || "Safari bloqueo la voz local"));
+      } else {
+        toast("Voz local reproduciendo");
+      }
+    } catch (error) {
+      fail(error.message);
+    }
+  });
+}
+
+function speakWithBrowserVoice(clean, voiceSettings) {
+  if (!("speechSynthesis" in window)) {
+    toast("Este navegador no tiene lectura de voz");
+    return Promise.resolve();
+  }
+  refreshBrowserVoices();
+  window.speechSynthesis.cancel();
+  const utterance = new SpeechSynthesisUtterance(clean);
+  const browserVoiceName = voiceSettings.browser_voice_name || window.localStorage.getItem("yarbis_browser_voice_name") || "";
+  const selectedVoice = browserVoices.find(voice => voice.name === browserVoiceName);
+  if (selectedVoice) utterance.voice = selectedVoice;
+  utterance.lang = (selectedVoice && selectedVoice.lang) || "es-MX";
+  utterance.rate = Number(voiceSettings.browser_tts_rate || window.localStorage.getItem("yarbis_browser_tts_rate") || 1);
+  utterance.pitch = Number(voiceSettings.browser_tts_pitch || window.localStorage.getItem("yarbis_browser_tts_pitch") || 1);
+  return new Promise((resolve) => {
+    let settled = false;
+    let timer = null;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      if (timer) window.clearTimeout(timer);
+      resolve();
+    };
+    utterance.onstart = () => toast("Voz del navegador reproduciendo");
+    utterance.onend = finish;
+    utterance.onerror = (event) => {
+      toast(`No pude reproducir voz: ${event.error || "speechSynthesis"}`);
+      finish();
+    };
+    timer = window.setTimeout(finish, speechTimeoutMs(clean));
+    try {
+      window.speechSynthesis.speak(utterance);
+    } catch (error) {
+      toast(`No pude reproducir voz: ${error.message}`);
+      finish();
+    }
+  });
 }
 
 async function speakText(text) {
@@ -2389,6 +2564,7 @@ async function speakText(text) {
     toast("No hay texto para escuchar");
     return;
   }
+  await unlockMobileSpeechOutput();
   const voiceSettings = (appState && appState.voice) || {};
   if (voiceSettings.tts_provider === "kokoro") {
     try {
@@ -2401,33 +2577,21 @@ async function speakText(text) {
       });
       csrfToken = data.csrf || csrfToken;
       const blob = base64ToBlob(data.audio_b64, data.mime_type);
-      localSpeechAudio = new Audio(URL.createObjectURL(blob));
+      const objectUrl = URL.createObjectURL(blob);
+      localSpeechAudio = speechAudioElement();
+      revokeObjectUrl(localSpeechAudio.src);
+      localSpeechAudio.src = objectUrl;
       localSpeechAudio.preload = "auto";
       localSpeechAudio.playsInline = true;
-      localSpeechAudio.onended = () => {
-        if (localSpeechAudio && localSpeechAudio.src) URL.revokeObjectURL(localSpeechAudio.src);
-        localSpeechAudio = null;
-      };
-      await localSpeechAudio.play();
-      toast("Voz local reproduciendo");
+      localSpeechAudio.muted = false;
+      localSpeechAudio.volume = 1;
+      await playLocalSpeechAudio(localSpeechAudio, objectUrl, clean);
       return;
     } catch (error) {
       toast(`${error.message}; usando voz del navegador`);
     }
   }
-  if (!("speechSynthesis" in window)) {
-    toast("Este navegador no tiene lectura de voz");
-    return;
-  }
-  window.speechSynthesis.cancel();
-  const utterance = new SpeechSynthesisUtterance(clean);
-  const browserVoiceName = voiceSettings.browser_voice_name || window.localStorage.getItem("yarbis_browser_voice_name") || "";
-  const selectedVoice = browserVoices.find(voice => voice.name === browserVoiceName);
-  if (selectedVoice) utterance.voice = selectedVoice;
-  utterance.lang = (selectedVoice && selectedVoice.lang) || "es-MX";
-  utterance.rate = Number(voiceSettings.browser_tts_rate || window.localStorage.getItem("yarbis_browser_tts_rate") || 1);
-  utterance.pitch = Number(voiceSettings.browser_tts_pitch || window.localStorage.getItem("yarbis_browser_tts_pitch") || 1);
-  window.speechSynthesis.speak(utterance);
+  await speakWithBrowserVoice(clean, voiceSettings);
 }
 
 function stopSpeech(showToast = true) {
@@ -2435,7 +2599,9 @@ function stopSpeech(showToast = true) {
   if (localSpeechAudio) {
     localSpeechAudio.pause();
     localSpeechAudio.currentTime = 0;
-    if (localSpeechAudio.src) URL.revokeObjectURL(localSpeechAudio.src);
+    revokeObjectUrl(localSpeechAudio.src);
+    localSpeechAudio.removeAttribute("src");
+    localSpeechAudio.load();
     localSpeechAudio = null;
   }
   if (showToast) toast("Voz detenida");
@@ -2589,6 +2755,52 @@ function liveVoiceSessionText() {
   return voice.headline || "Di Yarbis cuando la conversación en vivo esté activa.";
 }
 
+function liveVoiceSpeechText(sessionState) {
+  const spoken = String((sessionState || {}).spoken_text || "").trim();
+  if (!spoken) return "";
+  const turnId = String((sessionState || {}).spoken_turn_id || "").trim();
+  if (turnId) {
+    if (turnId === liveVoiceLastSpokenTurnId) return "";
+    liveVoiceLastSpokenTurnId = turnId;
+    liveVoiceLastSpokenText = spoken;
+    return spoken;
+  }
+  if (spoken === liveVoiceLastSpokenText) return "";
+  liveVoiceLastSpokenText = spoken;
+  return spoken;
+}
+
+async function speakLiveVoiceText(text) {
+  const clean = String(text || "").trim();
+  if (!clean) return;
+  const finished = await waitForPromiseOrTimeout(speakText(clean), liveVoiceSpeechWatchdogMs(clean));
+  if (!finished) toast("Listo para escucharte de nuevo");
+  await sleep(LIVE_VOICE_POST_SPEECH_PAUSE_MS);
+}
+
+function liveVoiceStreamReady() {
+  if (!liveVoiceStream) return false;
+  const tracks = typeof liveVoiceStream.getAudioTracks === "function"
+    ? liveVoiceStream.getAudioTracks()
+    : liveVoiceStream.getTracks();
+  return tracks.some(track => track.readyState === "live");
+}
+
+function stopLiveVoiceStreamOnly() {
+  if (liveVoiceStream) {
+    liveVoiceStream.getTracks().forEach(track => track.stop());
+    liveVoiceStream = null;
+  }
+}
+
+async function ensureLiveVoiceStreamReady() {
+  if (liveVoiceStreamReady()) return;
+  const blockedReason = liveRecordingBlockReason();
+  if (blockedReason) throw new Error(blockedReason);
+  stopLiveVoiceStreamOnly();
+  liveVoiceStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+}
+
 async function startLiveVoice() {
   const blockedReason = liveRecordingBlockReason();
   if (blockedReason) {
@@ -2597,6 +2809,8 @@ async function startLiveVoice() {
   }
   if (liveVoiceSessionId) return;
   try {
+    await unlockMobileSpeechOutput();
+    stopLiveVoiceStreamOnly();
     liveVoiceStream = await navigator.mediaDevices.getUserMedia({ audio: true });
     const data = await api("/api/voice/live/start", {
       method: "POST",
@@ -2607,6 +2821,9 @@ async function startLiveVoice() {
     window._lastLiveVoiceSession = data.voice_session || {};
     liveVoiceSessionId = (data.voice_session || {}).id || "";
     liveVoiceStopping = false;
+    liveVoiceBusy = false;
+    liveVoiceLastSpokenTurnId = "";
+    liveVoiceLastSpokenText = "";
     startLiveVoiceSegment();
     toast("Conversación en vivo activa");
     renderCurrent();
@@ -2617,9 +2834,26 @@ async function startLiveVoice() {
   }
 }
 
-function startLiveVoiceSegment() {
-  if (!liveVoiceSessionId || !liveVoiceStream || liveVoiceBusy || liveVoiceStopping) return;
-  const recorder = new MediaRecorder(liveVoiceStream, preferredAudioRecorderOptions());
+async function startLiveVoiceSegment() {
+  if (!liveVoiceSessionId || liveVoiceRecorder || liveVoiceBusy || liveVoiceStopping) return;
+  const segmentSessionId = liveVoiceSessionId;
+  try {
+    await ensureLiveVoiceStreamReady();
+  } catch (error) {
+    toast(error.message);
+    scheduleLiveVoiceSegment(LIVE_VOICE_RETRY_DELAY_MS);
+    return;
+  }
+  if (!liveVoiceSessionId || liveVoiceSessionId !== segmentSessionId || liveVoiceRecorder || liveVoiceBusy || liveVoiceStopping) return;
+  let recorder = null;
+  try {
+    recorder = new MediaRecorder(liveVoiceStream, preferredAudioRecorderOptions());
+  } catch (error) {
+    stopLiveVoiceStreamOnly();
+    toast(`No pude reiniciar el microfono: ${error.message}`);
+    scheduleLiveVoiceSegment(LIVE_VOICE_RETRY_DELAY_MS);
+    return;
+  }
   const chunks = [];
   liveVoiceRecorder = recorder;
   recorder.ondataavailable = (event) => {
@@ -2628,7 +2862,7 @@ function startLiveVoiceSegment() {
   recorder.onstop = async () => {
     window.clearTimeout(liveVoiceSegmentTimer);
     if (liveVoiceRecorder === recorder) liveVoiceRecorder = null;
-    if (!liveVoiceSessionId || liveVoiceStopping) return;
+    if (!liveVoiceSessionId || liveVoiceSessionId !== segmentSessionId || liveVoiceStopping) return;
     if (!chunks.length) {
       scheduleLiveVoiceSegment();
       return;
@@ -2642,51 +2876,66 @@ function startLiveVoiceSegment() {
         headers: { "X-CSRF-Token": csrfToken },
         body: {
           csrf: csrfToken,
-          session_id: liveVoiceSessionId,
+          session_id: segmentSessionId,
           audio_b64: bytesToBase64(bytes),
           mime_type: blob.type || recorder.mimeType || "audio/webm"
         }
       });
       csrfToken = chunk.csrf || csrfToken;
-      window._lastLiveVoiceSession = chunk.voice_session || {};
-      const spoken = (chunk.voice_session || {}).spoken_text || "";
-      if (spoken) await speakText(spoken);
+      const sessionState = chunk.voice_session || {};
+      window._lastLiveVoiceSession = sessionState;
+      const spoken = liveVoiceSpeechText(sessionState);
+      if (spoken) await speakLiveVoiceText(spoken);
     } catch (error) {
       toast(error.message);
     } finally {
       liveVoiceBusy = false;
       renderCurrent();
-      scheduleLiveVoiceSegment();
+      if (liveVoiceSessionId === segmentSessionId) scheduleLiveVoiceSegment();
     }
   };
-  recorder.start();
+  try {
+    recorder.start();
+  } catch (error) {
+    if (liveVoiceRecorder === recorder) liveVoiceRecorder = null;
+    stopLiveVoiceStreamOnly();
+    toast(`No pude reiniciar la escucha: ${error.message}`);
+    scheduleLiveVoiceSegment(LIVE_VOICE_RETRY_DELAY_MS);
+    return;
+  }
   liveVoiceSegmentTimer = window.setTimeout(() => {
     if (recorder.state === "recording") recorder.stop();
   }, LIVE_VOICE_SEGMENT_MS);
 }
 
-function scheduleLiveVoiceSegment() {
-  if (!liveVoiceSessionId || !liveVoiceStream || liveVoiceStopping) return;
-  window.setTimeout(() => startLiveVoiceSegment(), LIVE_VOICE_RESTART_DELAY_MS);
+function scheduleLiveVoiceSegment(delayMs = LIVE_VOICE_RESTART_DELAY_MS) {
+  if (!liveVoiceSessionId || liveVoiceRecorder || liveVoiceBusy || liveVoiceStopping) return;
+  window.clearTimeout(liveVoiceRestartTimer);
+  liveVoiceRestartTimer = window.setTimeout(() => {
+    liveVoiceRestartTimer = null;
+    startLiveVoiceSegment();
+  }, delayMs);
 }
 
 function stopLiveVoiceTracks() {
   liveVoiceStopping = true;
   window.clearTimeout(liveVoiceSegmentTimer);
+  window.clearTimeout(liveVoiceRestartTimer);
+  liveVoiceRestartTimer = null;
+  liveVoiceBusy = false;
   if (liveVoiceRecorder && liveVoiceRecorder.state === "recording") {
     try { liveVoiceRecorder.stop(); } catch (_error) {}
   }
   liveVoiceRecorder = null;
-  if (liveVoiceStream) {
-    liveVoiceStream.getTracks().forEach(track => track.stop());
-    liveVoiceStream = null;
-  }
+  stopLiveVoiceStreamOnly();
 }
 
 async function stopLiveVoice() {
   const sessionId = liveVoiceSessionId;
   stopLiveVoiceTracks();
   liveVoiceSessionId = "";
+  liveVoiceLastSpokenTurnId = "";
+  liveVoiceLastSpokenText = "";
   if (sessionId) {
     try {
       const data = await api("/api/voice/live/stop", {
@@ -3731,6 +3980,7 @@ document.addEventListener("click", async (event) => {
   if (!button) return;
   if (button.dataset.speak !== undefined) {
     try {
+      await unlockMobileSpeechOutput();
       await speakText(button.dataset.speak);
     } catch (error) {
       toast(error.message);

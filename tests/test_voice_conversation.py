@@ -13,12 +13,22 @@ class VoiceConversationTestCase(unittest.TestCase):
                 voice_conversation.wake_phrase_detected(f"Oye, {heard}, ayúdame", "Yarbis"),
                 heard,
             )
+        for heard in ("ger bis", "ger vis", "gar bis", "gar vis"):
+            self.assertTrue(
+                voice_conversation.wake_phrase_detected(f"Oye, {heard}, ayudame", "Yarbis"),
+                heard,
+            )
+        self.assertTrue(voice_conversation.wake_phrase_detected("Oye, gervis, ayudame", "Jarvis"))
         self.assertEqual(
             voice_conversation.text_after_wake_phrase("Oye Yarbis crea una nota", "Yarbis"),
             "crea una nota",
         )
         self.assertEqual(
             voice_conversation.text_after_wake_phrase("Oye, Jarvis, crea una nota", "Yarbis"),
+            "crea una nota",
+        )
+        self.assertEqual(
+            voice_conversation.text_after_wake_phrase("Oye, gar vis, crea una nota", "Yarbis"),
             "crea una nota",
         )
 
@@ -100,6 +110,59 @@ class VoiceConversationTestCase(unittest.TestCase):
         self.assertEqual(updated["state"], voice_conversation.STATE_SPEAKING)
         self.assertEqual(updated["last_transcript"], "suma contexto")
         self.assertEqual(updated["spoken_text"], "Hecho.")
+        self.assertTrue(updated["spoken_turn_id"])
+
+    def test_mobile_session_clears_spoken_text_after_transcription_error(self):
+        session = voice_conversation.start_mobile_session({
+            "voice": {
+                "enabled": True,
+                "live_conversation": {"wake_phrase": "Yarbis"},
+            }
+        })
+        runner = Mock(return_value="Yarbis:\nHecho.")
+
+        with patch.object(
+            voice_conversation,
+            "transcribe_live_audio_bytes",
+            return_value="Yarbis suma contexto",
+        ):
+            updated = voice_conversation.append_mobile_audio_chunk(
+                session["id"],
+                b"audio",
+                mime_type="audio/webm",
+                settings={
+                    "voice": {
+                        "enabled": True,
+                        "live_conversation": {"wake_phrase": "Yarbis"},
+                    }
+                },
+                runner=runner,
+            )
+
+        self.assertEqual(updated["spoken_text"], "Hecho.")
+        self.assertTrue(updated["spoken_turn_id"])
+
+        with patch.object(
+            voice_conversation,
+            "transcribe_live_audio_bytes",
+            side_effect=voice_conversation.yarbis_voice.VoiceError("No pude transcribir"),
+        ):
+            errored = voice_conversation.append_mobile_audio_chunk(
+                session["id"],
+                b"noise",
+                mime_type="audio/webm",
+                settings={
+                    "voice": {
+                        "enabled": True,
+                        "live_conversation": {"wake_phrase": "Yarbis"},
+                    }
+                },
+                runner=runner,
+            )
+
+        self.assertEqual(errored["state"], voice_conversation.STATE_WAKE_LISTENING)
+        self.assertEqual(errored["spoken_text"], "")
+        self.assertEqual(errored["spoken_turn_id"], "")
 
     def test_mobile_session_accepts_command_after_wake_only_chunk(self):
         session = voice_conversation.start_mobile_session({

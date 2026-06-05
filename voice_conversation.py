@@ -30,24 +30,23 @@ _MOBILE_SESSIONS: dict[str, dict] = {}
 _MOBILE_SESSION_LIMIT = 8
 _MOBILE_SESSION_TTL_SECONDS = 30 * 60
 _ARMED_COMMAND_SECONDS = 12.0
-_WAKE_ALIASES = {
-    "yarbis": {
-        "yarbis",
-        "jarbis",
-        "jarvis",
-        "yarvis",
-        "yerbis",
-        "yervis",
-        "iarbis",
-        "iarvis",
-        "garbis",
-        "garvis",
-        "gerbis",
-        "gervis",
-        "yardis",
-        "yarbiz",
-    }
+_YARBIS_WAKE_ALIAS_GROUP = {
+    "yarbis",
+    "jarbis",
+    "jarvis",
+    "yarvis",
+    "yerbis",
+    "yervis",
+    "iarbis",
+    "iarvis",
+    "garbis",
+    "garvis",
+    "gerbis",
+    "gervis",
+    "yardis",
+    "yarbiz",
 }
+_WAKE_ALIASES = {alias: set(_YARBIS_WAKE_ALIAS_GROUP) for alias in _YARBIS_WAKE_ALIAS_GROUP}
 
 
 def _utc_now_text() -> str:
@@ -82,6 +81,7 @@ def _wake_phrase_aliases(wake_phrase: str) -> set[str]:
 
 def _wake_match_span(words: list[str], wake_phrase: str) -> tuple[int, int] | None:
     normalized_words = [_normalize_for_match(word) for word in words]
+    normalized_words = [word for word in normalized_words if word]
     for alias in _wake_phrase_aliases(wake_phrase):
         wake_parts = alias.split()
         if not wake_parts:
@@ -89,6 +89,10 @@ def _wake_match_span(words: list[str], wake_phrase: str) -> tuple[int, int] | No
         for index in range(0, len(normalized_words) - len(wake_parts) + 1):
             if normalized_words[index:index + len(wake_parts)] == wake_parts:
                 return index, index + len(wake_parts)
+            for extra_parts in (1, 2):
+                end = index + len(wake_parts) + extra_parts
+                if end <= len(normalized_words) and "".join(normalized_words[index:end]) == "".join(wake_parts):
+                    return index, end
     return None
 
 
@@ -342,6 +346,7 @@ def start_mobile_session(settings: dict | None = None) -> dict:
         "last_transcript": "",
         "last_reply": "",
         "spoken_text": "",
+        "spoken_turn_id": "",
         "awaiting_command": False,
         "armed_until": 0.0,
         "created_at": _utc_now_text(),
@@ -396,6 +401,8 @@ def append_mobile_audio_chunk(
             session = _MOBILE_SESSIONS[str(session_id).strip()]
             session["state"] = STATE_WAKE_LISTENING
             session["detail"] = str(exc)
+            session["spoken_text"] = ""
+            session["spoken_turn_id"] = ""
             session["updated_at"] = _utc_now_text()
             session["updated_monotonic"] = time.time()
             return dict(session)
@@ -406,6 +413,7 @@ def append_mobile_audio_chunk(
         session = _MOBILE_SESSIONS[str(session_id).strip()]
         session["last_transcript"] = transcript
         session["spoken_text"] = ""
+        session["spoken_turn_id"] = ""
         session["updated_at"] = _utc_now_text()
         session["updated_monotonic"] = time.time()
 
@@ -440,9 +448,11 @@ def append_mobile_audio_chunk(
             else "Respuesta lista para escuchar." if result.get("spoken_text")
             else "Respuesta lista."
         )
+        spoken_text = result.get("spoken_text", "")
         session["last_transcript"] = result.get("transcript", transcript)
         session["last_reply"] = result.get("reply", "")
-        session["spoken_text"] = result.get("spoken_text", "")
+        session["spoken_text"] = spoken_text
+        session["spoken_turn_id"] = uuid.uuid4().hex if spoken_text else ""
         session["awaiting_command"] = bool(result.get("awaiting_command"))
         session["armed_until"] = time.time() + _ARMED_COMMAND_SECONDS if result.get("awaiting_command") else 0.0
         session["updated_at"] = _utc_now_text()
