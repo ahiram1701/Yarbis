@@ -395,7 +395,7 @@ def _read_instance_state(instance_id: str) -> dict:
     path = _resolve_workspace_path(str(yarbis_instance.state_file(instance_id)))
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
-    except (FileNotFoundError, OSError, json.JSONDecodeError):
+    except (FileNotFoundError, OSError, json.JSONDecodeError, UnicodeDecodeError):
         return {}
     return payload if isinstance(payload, dict) else {}
 

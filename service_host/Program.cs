@@ -207,6 +207,12 @@ internal static class Program
         startInfo.Environment["YARBIS_INSTANCE"] = _instanceId;
         startInfo.Environment["YARBIS_SERVICE_NAME"] = _serviceName;
 
+        var ollamaKey = Environment.GetEnvironmentVariable("OLLAMA_API_KEY");
+        if (!string.IsNullOrEmpty(ollamaKey))
+        {
+            startInfo.Environment["OLLAMA_API_KEY"] = ollamaKey;
+        }
+
         _childProcess = Process.Start(startInfo);
 
         if (_childProcess is null)

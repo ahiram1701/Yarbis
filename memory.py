@@ -2906,7 +2906,7 @@ def _load_state_unlocked():
     try:
         with open(state_path, "r", encoding="utf-8") as file:
             state = json.load(file)
-    except (OSError, json.JSONDecodeError) as exc:
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError) as exc:
         recovered_state = _recover_state_from_backups_unlocked("corrupt", exc)
         return recovered_state or default_state()
 
