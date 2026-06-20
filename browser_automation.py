@@ -97,8 +97,44 @@ def _require_selector(action: dict) -> str:
     return selector
 
 
-def _launch_browser(playwright, headless: bool, browser_channel: str):
-    channel = str(browser_channel).strip()
+def _launch_or_connect_browser(playwright, headless: bool, browser_channel: str):
+    """
+    Lanza o conecta un navegador via Playwright.
+
+    Si browser_channel es "brave" (u otro canal CDP), intenta conectar a un
+    navegador ya abierto con --remote-debugging-port=9222. Si no lo encuentra,
+    lanza Brave automaticamente con el flag de debugging.
+
+    Para otros canales, funciona como antes: lanza una instancia nueva.
+    """
+    channel = str(browser_channel).strip().lower()
+
+    # Canales que soportan conexion CDP para sesion persistente
+    cdp_channels = {"brave", "chrome", "chromium", "msedge", "edge"}
+
+    if channel in cdp_channels:
+        # Intentar conectar a navegador ya abierto con remote-debugging
+        cdp_url = "http://127.0.0.1:9222"
+        try:
+            browser = playwright.chromium.connect_over_cdp(cdp_url)
+            return browser
+        except Exception:
+            pass  # No habia navegador escuchando, lanzaremos uno nuevo
+
+        # Lanzar navegador con remote-debugging automaticamente
+        launch_options = {"headless": False}
+        if channel:
+            launch_options["channel"] = channel
+        launch_options["args"] = ["--remote-debugging-port=9222"]
+        try:
+            return playwright.chromium.launch(**launch_options)
+        except Exception:
+            if not channel:
+                raise
+            launch_options.pop("channel", None)
+            return playwright.chromium.launch(**launch_options)
+
+    # Canales sin CDP: lanzamiento normal (headless respeta el parametro)
     launch_options = {"headless": headless}
     if channel:
         launch_options["channel"] = channel
@@ -206,7 +242,7 @@ def run_browser_automation(
     lines = ["Automatizacion de navegador completada."]
 
     with sync_playwright() as playwright:
-        browser = _launch_browser(
+        browser = _launch_or_connect_browser(
             playwright,
             headless=_normalize_bool(headless),
             browser_channel=browser_channel,
