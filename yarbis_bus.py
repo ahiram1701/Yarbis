@@ -1,5 +1,6 @@
 import json
 import os
+import random
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -49,6 +50,24 @@ def _message_path(message_id: str) -> Path:
     return yarbis_instance.bus_dir() / f"{cleaned}.json"
 
 
+def _atomic_replace_with_retry(tmp_path: Path, target_path: Path, max_retries: int = 5) -> None:
+    """Reemplaza target_path con tmp_path usando reintentos con backoff exponencial y jitter.
+
+    Resuelve contencion entre multiples instancias de Yarbis escribiendo
+    concurrentemente en el mismo directorio (bus de mensajes, memory_backup).
+    """
+    base_delay = 0.05
+    for attempt in range(max_retries):
+        try:
+            tmp_path.replace(target_path)
+            return
+        except OSError:
+            if attempt == max_retries - 1:
+                raise
+            delay = base_delay * (2 ** attempt) + random.uniform(0, base_delay)
+            time.sleep(delay)
+
+
 def _write_message(message: dict) -> dict:
     yarbis_instance.bus_dir().mkdir(parents=True, exist_ok=True)
     message_id = str(message.get("id", "")).strip()
@@ -57,7 +76,7 @@ def _write_message(message: dict) -> dict:
     path = _message_path(message_id)
     tmp_path = path.with_name(f"{path.name}.tmp-{os.getpid()}-{time.time_ns()}")
     tmp_path.write_text(json.dumps(message, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
-    tmp_path.replace(path)
+    _atomic_replace_with_retry(tmp_path, path)
     return dict(message)
 
 

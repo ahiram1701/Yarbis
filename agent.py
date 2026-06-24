@@ -369,7 +369,8 @@ def _host_uses_ollama_cloud(host: str) -> bool:
 def _ollama_api_key(host: str, api_key_env_var: str, configured_api_key: str = "") -> tuple[str, str]:
     cleaned_host = _normalize_host(host)
     cleaned_env_var = str(api_key_env_var).strip() or DEFAULT_OLLAMA_API_KEY_ENV_VAR
-    if not _host_uses_ollama_cloud(cleaned_host):
+    _uses_cloud = _host_uses_ollama_cloud(cleaned_host) or str(MODEL).strip().lower().endswith(":cloud")
+    if not _uses_cloud:
         return "", cleaned_env_var
     direct_key = os.getenv("YARBIS_OLLAMA_API_KEY", "").strip()
     if direct_key:
