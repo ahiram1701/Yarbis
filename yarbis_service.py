@@ -12,6 +12,23 @@ from pathlib import Path
 WORKSPACE_ROOT = Path(__file__).resolve().parent
 os.chdir(WORKSPACE_ROOT)
 
+# Si OLLAMA_API_KEY no esta en el entorno (ej: servicio SCM sin herencia),
+# leerla del registro de Windows donde setx la dejo.
+if not os.getenv("OLLAMA_API_KEY"):
+    try:
+        import winreg
+        with winreg.OpenKey(
+            winreg.HKEY_LOCAL_MACHINE,
+            r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment",
+            0,
+            winreg.KEY_READ,
+        ) as key:
+            value, _ = winreg.QueryValueEx(key, "OLLAMA_API_KEY")
+            if value:
+                os.environ["OLLAMA_API_KEY"] = value
+    except Exception:
+        pass
+
 import yarbis_instance
 
 yarbis_instance.configure_from_argv()
