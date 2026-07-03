@@ -11,6 +11,7 @@ from pathlib import Path
 
 from pc_context import local_context_enabled, normalize_local_context_settings
 from memory import load_state
+from process_utils import no_window_creationflags
 import yarbis_instance
 
 WORKSPACE_ROOT = Path(__file__).resolve().parent
@@ -34,9 +35,7 @@ def _utc_timestamp() -> str:
 
 
 def _creationflags() -> int:
-    if os.name != "nt":
-        return 0
-    return getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    return no_window_creationflags()
 
 
 def _windows_only() -> None:

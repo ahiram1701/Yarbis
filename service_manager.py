@@ -9,6 +9,7 @@ from urllib.parse import urlparse
 
 import activity
 import yarbis_instance
+from process_utils import no_window_creationflags
 from memory import (
     DEFAULT_MODEL_PROVIDER,
     DEFAULT_OLLAMA_API_KEY_ENV_VAR,
@@ -147,9 +148,7 @@ def _sc_exe() -> str:
 
 
 def _creationflags() -> int:
-    if os.name != "nt":
-        return 0
-    return getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    return no_window_creationflags()
 
 
 def _run_sc(args: list[str], timeout_seconds: int = 30) -> subprocess.CompletedProcess:

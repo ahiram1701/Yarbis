@@ -10,8 +10,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
 
+from atomic_io import atomic_replace
 from browser_automation import run_browser_automation
 from credential_store import CredentialStoreError, load_secret, save_secret
+from process_utils import no_window_creationflags
 from integrations import (
     compose_email_draft,
     create_calendar_event_file,
@@ -245,9 +247,7 @@ def _bounded_text(text: str, limit: int) -> str:
 
 
 def _subprocess_creationflags() -> int:
-    if os.name != "nt":
-        return 0
-    return getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    return no_window_creationflags()
 
 
 def _terminate_process_tree(process: subprocess.Popen) -> None:
@@ -485,7 +485,7 @@ def _save_coding_proposal(proposal: dict, proposal_path: Path | None = None) -> 
     target_path = proposal_path or _coding_proposal_path(proposal_id)
     tmp_path = target_path.with_name(f"{target_path.name}.tmp")
     tmp_path.write_text(json.dumps(proposal, ensure_ascii=True, indent=2), encoding="utf-8")
-    tmp_path.replace(target_path)
+    atomic_replace(tmp_path, target_path)
 
 
 def _set_coding_pending_proposal(proposal_id: str, pending: bool) -> None:

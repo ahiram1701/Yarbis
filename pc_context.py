@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from secrets_redaction import redact_secrets
+from process_utils import no_window_creationflags
 import yarbis_instance
 
 WORKSPACE_ROOT = Path(__file__).resolve().parent
@@ -128,9 +129,7 @@ def local_context_enabled(settings: dict | None) -> bool:
 
 
 def _windows_creationflags() -> int:
-    if os.name != "nt":
-        return 0
-    return getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    return no_window_creationflags()
 
 
 def _safe_run_command(args: list[str], timeout_seconds: float = 2.0) -> str:

@@ -30,6 +30,7 @@ if not os.getenv("OLLAMA_API_KEY"):
         pass
 
 import yarbis_instance
+from process_utils import no_window_creationflags
 
 yarbis_instance.configure_from_argv()
 yarbis_instance.ensure_instance_registered()
@@ -539,9 +540,7 @@ def _run_proactive_pulse_inline(settings: dict, last_pulse_at: str) -> str:
 
 
 def _creationflags() -> int:
-    if os.name != "nt":
-        return 0
-    return getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    return no_window_creationflags()
 
 
 def _kill_process_tree(process: subprocess.Popen):

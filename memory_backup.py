@@ -7,6 +7,7 @@ from pathlib import Path
 from uuid import uuid4
 
 import yarbis_instance
+from atomic_io import atomic_replace
 
 WORKSPACE_ROOT = Path(__file__).resolve().parent
 BACKUPS_DIR = yarbis_instance.memory_backups_dir()
@@ -119,7 +120,7 @@ def write_json_atomic(
             with open(tmp_path, "r", encoding="utf-8") as file:
                 json.load(file)
 
-        tmp_path.replace(target)
+        atomic_replace(tmp_path, target)
 
         if verify:
             with open(target, "r", encoding="utf-8") as file:
@@ -154,7 +155,7 @@ def copy_file_atomic(source_path: Path | str, target_path: Path | str) -> Path:
                 shutil.copyfileobj(source_file, target_file)
                 target_file.flush()
                 os.fsync(target_file.fileno())
-        tmp_path.replace(target)
+        atomic_replace(tmp_path, target)
     except OSError as exc:
         try:
             tmp_path.unlink()
