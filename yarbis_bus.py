@@ -57,8 +57,22 @@ def _write_message(message: dict) -> dict:
     path = _message_path(message_id)
     tmp_path = path.with_name(f"{path.name}.tmp-{os.getpid()}-{time.time_ns()}")
     tmp_path.write_text(json.dumps(message, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
-    tmp_path.replace(path)
-    return dict(message)
+    # El _bus es compartido entre instancias; en Windows os.replace falla de forma
+    # intermitente con PermissionError [WinError 5] si otra instancia (o el antivirus)
+    # tiene el destino abierto un instante. Reintentamos brevemente antes de rendirnos.
+    last_error: OSError | None = None
+    for _ in range(5):
+        try:
+            tmp_path.replace(path)
+            return dict(message)
+        except OSError as exc:
+            last_error = exc
+            time.sleep(0.05)
+    try:
+        tmp_path.unlink()
+    except OSError:
+        pass
+    raise last_error if last_error is not None else OSError(f"No pude escribir {path}.")
 
 
 def _read_message(path: Path) -> dict | None:

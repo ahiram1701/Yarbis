@@ -365,6 +365,21 @@ def mobile_session_status(session_id: str) -> dict | None:
         return dict(session) if session else None
 
 
+def _expired_session_snapshot(session_id: str) -> dict:
+    return {
+        "id": str(session_id or "").strip(),
+        "state": STATE_IDLE,
+        "detail": "Sesión de voz en vivo caducada. Inicia una nueva.",
+        "last_transcript": "",
+        "last_reply": "",
+        "spoken_text": "",
+        "spoken_turn_id": "",
+        "awaiting_command": False,
+        "armed_until": 0.0,
+        "updated_at": _utc_now_text(),
+    }
+
+
 def stop_mobile_session(session_id: str) -> dict:
     with _MOBILE_LOCK:
         session = _MOBILE_SESSIONS.pop(str(session_id or "").strip(), None)
@@ -394,11 +409,14 @@ def append_mobile_audio_chunk(
         session["updated_at"] = _utc_now_text()
         session["updated_monotonic"] = time.time()
 
+    key = str(session_id).strip()
     try:
         transcript = transcribe_live_audio_bytes(raw_audio, mime_type=mime_type, settings=current_settings)
     except yarbis_voice.VoiceError as exc:
         with _MOBILE_LOCK:
-            session = _MOBILE_SESSIONS[str(session_id).strip()]
+            session = _MOBILE_SESSIONS.get(key)
+            if session is None:
+                return _expired_session_snapshot(key)
             session["state"] = STATE_WAKE_LISTENING
             session["detail"] = str(exc)
             session["spoken_text"] = ""
@@ -409,25 +427,23 @@ def append_mobile_audio_chunk(
 
     live = live_voice_settings(current_settings)
     wake_phrase = str(live.get("wake_phrase", "Yarbis")).strip() or "Yarbis"
+    activation_detected = wake_phrase_detected(transcript, wake_phrase)
     with _MOBILE_LOCK:
-        session = _MOBILE_SESSIONS[str(session_id).strip()]
+        session = _MOBILE_SESSIONS.get(key)
+        if session is None:
+            return _expired_session_snapshot(key)
         session["last_transcript"] = transcript
         session["spoken_text"] = ""
         session["spoken_turn_id"] = ""
         session["updated_at"] = _utc_now_text()
         session["updated_monotonic"] = time.time()
-
-    activation_detected = wake_phrase_detected(transcript, wake_phrase)
-    already_armed = bool(session.get("awaiting_command")) and time.time() < float(session.get("armed_until", 0.0))
-    if not activation_detected and not already_armed:
-        with _MOBILE_LOCK:
+        already_armed = bool(session.get("awaiting_command")) and time.time() < float(session.get("armed_until", 0.0))
+        if not activation_detected and not already_armed:
             session["state"] = STATE_WAKE_LISTENING
             session["detail"] = f"Escuché voz, pero no la frase '{wake_phrase}'."
             session["awaiting_command"] = False
             session["armed_until"] = 0.0
             return dict(session)
-
-    with _MOBILE_LOCK:
         session["state"] = STATE_THINKING
         session["detail"] = "Yarbis está preparando una respuesta."
 
@@ -440,7 +456,9 @@ def append_mobile_audio_chunk(
         runner=runner,
     )
     with _MOBILE_LOCK:
-        session = _MOBILE_SESSIONS[str(session_id).strip()]
+        session = _MOBILE_SESSIONS.get(key)
+        if session is None:
+            return _expired_session_snapshot(key)
         session["state"] = STATE_SPEAKING if result.get("spoken_text") else STATE_WAKE_LISTENING
         session["detail"] = (
             "Te escucho, dime la instrucción."

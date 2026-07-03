@@ -87,10 +87,12 @@ DEFAULT_RECORD_CHANNELS = 1
 DEFAULT_SILENCE_THRESHOLD = 450
 _WHISPER_LOCK = threading.RLock()
 _WHISPER_MODELS = {}
+_WHISPER_TRANSCRIBE_LOCK = threading.Lock()
 _TTS_LOCK = threading.RLock()
 _TTS_ENGINE = None
 _KOKORO_LOCK = threading.RLock()
 _KOKORO_PIPELINES = {}
+_KOKORO_PIPELINE_CACHE_LIMIT = 2
 _KOKORO_SPACY_LOCK = threading.Lock()
 _KOKORO_ESPEAK_LANGUAGES = {"es", "pt-br", "it", "ja", "cmn", "hi"}
 
@@ -224,12 +226,16 @@ def transcribe_audio_file(path: str | Path, settings: dict | None = None) -> str
     model = _load_whisper_model(voice_settings)
     language = str(voice_settings.get("language", "es")).strip() or None
     try:
-        segments, _info = model.transcribe(
-            str(audio_path),
-            language=language,
-            vad_filter=True,
-        )
-        transcript = " ".join(str(segment.text).strip() for segment in segments if str(segment.text).strip())
+        # El modelo CPU no es reentrante y consumir el generador es donde ocurre
+        # la inferencia real; serializamos para que peticiones móviles concurrentes
+        # no saturen el CPU ni pisen el mismo modelo.
+        with _WHISPER_TRANSCRIBE_LOCK:
+            segments, _info = model.transcribe(
+                str(audio_path),
+                language=language,
+                vad_filter=True,
+            )
+            transcript = " ".join(str(segment.text).strip() for segment in segments if str(segment.text).strip())
     except Exception as exc:
         raise VoiceError(f"No pude transcribir el audio localmente: {exc}") from exc
 
@@ -322,39 +328,41 @@ def _list_system_voices(settings: dict | None = None) -> list[dict]:
     voice_settings = get_voice_settings(settings)
     engine = _tts_engine(voice_settings)
     try:
-        voices = engine.getProperty("voices") or []
-    except Exception as exc:
-        raise VoiceError(f"No pude listar voces del sistema: {exc}") from exc
+        try:
+            voices = engine.getProperty("voices") or []
+        except Exception as exc:
+            raise VoiceError(f"No pude listar voces del sistema: {exc}") from exc
 
-    rendered = []
-    for index, item in enumerate(voices, start=1):
-        voice_id = str(getattr(item, "id", "") or "").strip()
-        name = str(getattr(item, "name", "") or voice_id or f"Voz {index}").strip()
-        languages = getattr(item, "languages", []) or []
-        rendered_languages = []
-        for language in languages:
-            if isinstance(language, bytes):
-                rendered_languages.append(language.decode("utf-8", errors="ignore"))
-            else:
-                rendered_languages.append(str(language))
-        rendered.append({
-            "index": index,
-            "id": voice_id,
-            "voice_id": voice_id,
-            "name": name,
-            "languages": [item for item in rendered_languages if item],
-            "provider": "system",
-            "status": "system",
-            "installed": True,
-            "downloadable": False,
-            "gender": str(getattr(item, "gender", "") or "").strip(),
-            "age": str(getattr(item, "age", "") or "").strip(),
-        })
-    try:
-        engine.stop()
-    except Exception:
-        pass
-    return rendered
+        rendered = []
+        for index, item in enumerate(voices, start=1):
+            voice_id = str(getattr(item, "id", "") or "").strip()
+            name = str(getattr(item, "name", "") or voice_id or f"Voz {index}").strip()
+            languages = getattr(item, "languages", []) or []
+            rendered_languages = []
+            for language in languages:
+                if isinstance(language, bytes):
+                    rendered_languages.append(language.decode("utf-8", errors="ignore"))
+                else:
+                    rendered_languages.append(str(language))
+            rendered.append({
+                "index": index,
+                "id": voice_id,
+                "voice_id": voice_id,
+                "name": name,
+                "languages": [item for item in rendered_languages if item],
+                "provider": "system",
+                "status": "system",
+                "installed": True,
+                "downloadable": False,
+                "gender": str(getattr(item, "gender", "") or "").strip(),
+                "age": str(getattr(item, "age", "") or "").strip(),
+            })
+        return rendered
+    finally:
+        try:
+            engine.stop()
+        except Exception:
+            pass
 
 
 def list_tts_voices(
@@ -470,7 +478,8 @@ def _load_kokoro_pipeline(settings: dict):
             )
         except Exception as exc:
             raise VoiceError(f"No pude cargar Kokoro con la voz '{voice_id}': {exc}") from exc
-        _KOKORO_PIPELINES.clear()
+        while len(_KOKORO_PIPELINES) >= _KOKORO_PIPELINE_CACHE_LIMIT:
+            _KOKORO_PIPELINES.pop(next(iter(_KOKORO_PIPELINES)))
         _KOKORO_PIPELINES[key] = pipeline
         return pipeline
 

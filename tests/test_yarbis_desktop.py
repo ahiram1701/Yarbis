@@ -142,6 +142,8 @@ def _desktop_app_stub(service_status=None):
     app._instance_rows = []
     app._message_rows = {}
     app._archived_rows = {}
+    app._current_view = "home"
+    app._last_instance_panel_refresh_at = 0.0
     app._local_telegram_polling = False
     app._closing = False
     app._style_service_autostart_toggle = lambda: None
@@ -522,6 +524,81 @@ class YarbisDesktopTestCase(unittest.TestCase):
         self.assertEqual(started[0][0], "Servicio")
         self.assertIs(started[0][1], yarbis_desktop.set_autostart_enabled)
         self.assertTrue(started[0][2])
+
+    def test_launch_desktop_instance_passes_geometry_env(self):
+        with patch.object(yarbis_desktop.subprocess, "Popen") as popen_mock:
+            yarbis_desktop._launch_desktop_instance("alpha", geometry="800x600+12+34")
+
+        env = popen_mock.call_args.kwargs["env"]
+        self.assertEqual(env["YARBIS_DESKTOP_GEOMETRY"], "800x600+12+34")
+
+    def test_launch_desktop_instance_omits_geometry_when_absent(self):
+        with patch.dict(os.environ, {"YARBIS_DESKTOP_GEOMETRY": "stale"}):
+            with patch.object(yarbis_desktop.subprocess, "Popen") as popen_mock:
+                yarbis_desktop._launch_desktop_instance("alpha")
+
+        env = popen_mock.call_args.kwargs["env"]
+        self.assertNotIn("YARBIS_DESKTOP_GEOMETRY", env)
+
+    def test_switch_to_instance_blocks_when_target_desktop_open(self):
+        app = _desktop_app_stub()
+        app._busy = False
+
+        with patch.object(yarbis_desktop, "_desktop_pid_of", return_value=4321):
+            with patch.object(yarbis_desktop, "_launch_desktop_instance") as launch_mock:
+                with patch.object(yarbis_desktop, "messagebox") as messagebox_mock:
+                    yarbis_desktop.YarbisDesktop._switch_to_instance(app, "alpha")
+
+        launch_mock.assert_not_called()
+        messagebox_mock.showinfo.assert_called_once()
+
+    def test_switch_to_instance_closes_after_child_pid_appears(self):
+        app = _desktop_app_stub()
+        app._busy = False
+        app._closing = False
+        app.winfo_geometry = lambda: "1120x760+0+0"
+        shutdown_calls = []
+        app._shutdown_window = lambda: shutdown_calls.append(True)
+
+        with patch.object(yarbis_desktop, "_desktop_pid_of", return_value=0):
+            with patch.object(yarbis_desktop, "_launch_desktop_instance") as launch_mock:
+                # Primer _read_pid: pid previo (0). Segundo: pid del hijo ya arrancado.
+                with patch.object(yarbis_instance, "_read_pid", side_effect=[0, 987]):
+                    with patch.object(yarbis_instance, "_pid_is_running", return_value=True):
+                        yarbis_desktop.YarbisDesktop._switch_to_instance(app, "alpha")
+
+        launch_mock.assert_called_once()
+        self.assertEqual(launch_mock.call_args.kwargs["geometry"], "1120x760+0+0")
+        self.assertEqual(shutdown_calls, [True])
+
+    def test_switch_to_instance_keeps_window_on_timeout(self):
+        app = _desktop_app_stub()
+        app._closing = False
+        shutdown_calls = []
+        app._shutdown_window = lambda: shutdown_calls.append(True)
+
+        with patch.object(yarbis_instance, "_read_pid", return_value=0):
+            with patch.object(yarbis_desktop, "messagebox") as messagebox_mock:
+                yarbis_desktop.YarbisDesktop._await_instance_switch(
+                    app,
+                    "alpha",
+                    previous_pid=0,
+                    deadline=time.monotonic() - 1.0,
+                )
+
+        self.assertEqual(shutdown_calls, [])
+        messagebox_mock.showwarning.assert_called_once()
+        self.assertEqual(app.status_var.get(), "Listo.")
+
+    def test_refresh_instance_panels_throttles_when_view_hidden(self):
+        app = _desktop_app_stub()
+        app._current_view = "home"
+        app._last_instance_panel_refresh_at = time.monotonic()
+
+        with patch.object(yarbis_desktop, "_instance_overview_rows") as rows_mock:
+            yarbis_desktop.YarbisDesktop._refresh_instance_panels(app)
+
+        rows_mock.assert_not_called()
 
 
 if __name__ == "__main__":

@@ -11,6 +11,7 @@ from unittest.mock import patch
 
 import memory
 import tools
+import yarbis_instance
 import yarbis_mobile
 from ui_settings_dialogs import NotificationsDialog, ServiceMobileUiDialog, VoiceSettingsDialog
 
@@ -146,6 +147,82 @@ class YarbisMobileTestCase(unittest.TestCase):
             finally:
                 server.shutdown()
                 server.server_close()
+
+    def test_http_api_instances_requires_auth_and_lists_ports(self):
+        state_path = TEST_RUNTIME_DIR / "mobile_instances_state.json"
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+        instances_root = TEST_RUNTIME_DIR / f"mobile_instances_root-{socket.gethostname()}-{_free_port()}"
+
+        with patch.object(memory, "STATE_FILE", state_path):
+            with patch.object(yarbis_instance, "INSTANCES_ROOT", instances_root):
+                memory.save_state(memory.default_state())
+                yarbis_mobile.update_mobile_ui_settings(enabled=True, port=8787, pin="1357")
+                yarbis_instance.create_instance("alpha", display_name="Alpha")
+                for instance_id, port in (("alpha", 9101),):
+                    secondary_state = yarbis_instance.state_file(instance_id)
+                    secondary_state.parent.mkdir(parents=True, exist_ok=True)
+                    secondary_state.write_text(
+                        json.dumps({"service": {"mobile_ui": {"port": port, "enabled": True}}}),
+                        encoding="utf-8",
+                    )
+
+                server = yarbis_mobile._MobileHTTPServer(("127.0.0.1", 0), yarbis_mobile.MobileRequestHandler)
+                thread = threading.Thread(target=server.serve_forever, daemon=True)
+                thread.start()
+                port = int(server.server_address[1])
+                try:
+                    conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+                    conn.request("GET", "/api/instances")
+                    response = conn.getresponse()
+                    response.read()
+                    self.assertEqual(response.status, 401)
+
+                    conn.request("POST", "/api/login", body=json.dumps({"pin": "1357"}), headers={"Content-Type": "application/json"})
+                    response = conn.getresponse()
+                    response.read()
+                    cookie = response.getheader("Set-Cookie")
+
+                    with patch.object(yarbis_mobile, "_cached_tailscale_dns_name", return_value=""):
+                        with patch.object(yarbis_mobile, "current_tailscale_serve_targets", return_value=()):
+                            conn.request("GET", "/api/instances", headers={"Cookie": cookie})
+                            response = conn.getresponse()
+                            payload = json.loads(response.read().decode("utf-8"))
+                finally:
+                    server.shutdown()
+                    server.server_close()
+
+        self.assertEqual(response.status, 200)
+        self.assertEqual(payload["current_instance"], "default")
+        by_id = {item["id"]: item for item in payload["instances"]}
+        self.assertIn("default", by_id)
+        self.assertIn("alpha", by_id)
+        self.assertTrue(by_id["default"]["current"])
+        self.assertEqual(by_id["alpha"]["port"], 9101)
+        self.assertFalse(by_id["alpha"]["active"])
+
+    def test_load_state_cached_invalidates_on_mtime_change(self):
+        state_path = TEST_RUNTIME_DIR / "mobile_state_cache.json"
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+
+        with patch.object(memory, "STATE_FILE", state_path):
+            first = memory.default_state()
+            first["goal"] = "objetivo corto"
+            memory.save_state(first)
+            self.assertEqual(yarbis_mobile._load_state_cached()["goal"], "objetivo corto")
+
+            second = memory.default_state()
+            second["goal"] = "objetivo largo y distinto para cambiar el tamaño del archivo"
+            memory.save_state(second)
+            self.assertEqual(
+                yarbis_mobile._load_state_cached()["goal"],
+                "objetivo largo y distinto para cambiar el tamaño del archivo",
+            )
+
+    def test_session_operation_script_waits_for_memory_maintenance(self):
+        self.assertIn(
+            "wait_for_memory_protection_maintenance",
+            yarbis_mobile._MOBILE_SESSION_OPERATION_SCRIPT,
+        )
 
     def test_http_api_state_view_query_uses_partial_state(self):
         state_path = TEST_RUNTIME_DIR / "mobile_http_view_state.json"

@@ -74,6 +74,50 @@ class VoiceTestCase(unittest.TestCase):
         self.assertTrue(all(item["provider"] == "kokoro" for item in voices))
         self.assertIn("ef_dora", {item["id"] for item in voices})
 
+    def test_list_system_voices_stops_engine_on_error(self):
+        engine = Mock()
+        engine.getProperty.side_effect = RuntimeError("driver caído")
+
+        with patch.object(voice, "_tts_engine", return_value=engine):
+            with self.assertRaises(voice.VoiceError):
+                voice._list_system_voices({"enabled": True})
+
+        engine.stop.assert_called_once()
+
+    def test_kokoro_pipeline_cache_is_bounded_not_cleared(self):
+        import sys
+        import types
+
+        fake_pykokoro = types.ModuleType("pykokoro")
+        fake_pykokoro.GenerationConfig = lambda **kwargs: SimpleNamespace(**kwargs)
+        fake_pykokoro.PipelineConfig = lambda **kwargs: SimpleNamespace(**kwargs)
+        sentinel = object()
+        fake_pykokoro.KokoroPipeline = lambda _config: sentinel
+        fake_tokenizer = types.ModuleType("pykokoro.tokenizer")
+        fake_tokenizer.TokenizerConfig = lambda **kwargs: SimpleNamespace(**kwargs)
+
+        original_cache = dict(voice._KOKORO_PIPELINES)
+        try:
+            voice._KOKORO_PIPELINES.clear()
+            # Sembramos el cache al límite con dos entradas distintas al key nuevo.
+            oldest_key = ("seed_old", "en", 1.0)
+            newest_seed_key = ("seed_new", "en", 1.0)
+            voice._KOKORO_PIPELINES[oldest_key] = object()
+            voice._KOKORO_PIPELINES[newest_seed_key] = object()
+            self.assertEqual(len(voice._KOKORO_PIPELINES), voice._KOKORO_PIPELINE_CACHE_LIMIT)
+
+            with patch.dict(sys.modules, {"pykokoro": fake_pykokoro, "pykokoro.tokenizer": fake_tokenizer}):
+                pipeline = voice._load_kokoro_pipeline({"kokoro_voice_id": "ef_dora", "tts_rate": 175})
+
+            self.assertIs(pipeline, sentinel)
+            # El cache no crece más allá del límite y NO se vació por completo.
+            self.assertEqual(len(voice._KOKORO_PIPELINES), voice._KOKORO_PIPELINE_CACHE_LIMIT)
+            self.assertNotIn(oldest_key, voice._KOKORO_PIPELINES)
+            self.assertIn(newest_seed_key, voice._KOKORO_PIPELINES)
+        finally:
+            voice._KOKORO_PIPELINES.clear()
+            voice._KOKORO_PIPELINES.update(original_cache)
+
     def test_synthesize_speech_file_uses_kokoro_and_converts_to_ogg(self):
         def fake_run(args, **_kwargs):
             Path(args[-1]).write_bytes(b"ogg")

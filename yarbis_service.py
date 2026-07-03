@@ -1,9 +1,11 @@
+import ctypes
 import json
 import os
 import subprocess
 import sys
 import time
 import traceback
+from ctypes import wintypes
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -30,6 +32,7 @@ from memory import (
     load_state,
     normalize_cycle_count,
     state_transaction,
+    wait_for_memory_protection_maintenance,
 )
 from proactive_context import build_proactive_tick_message
 from proactive_context import PROACTIVE_TICK_BASE_MESSAGE
@@ -69,6 +72,69 @@ SERVICE_LOOP_SLEEP_SECONDS = 1.0
 DEFAULT_SERVICE_PROACTIVE_MAX_RUNTIME_SECONDS = 60
 MAX_PROACTIVE_OUTPUT_CHARS = 12_000
 PROACTIVE_TICK_PREFIX = PROACTIVE_TICK_BASE_MESSAGE.split(":", 1)[0] + ":"
+
+# El pulso proactivo lanza un subproceso que importa toda la app; si varias
+# instancias lo hacen a la vez agotan la RAM y sus procesos mueren de golpe
+# (exit 1, sin traceback). Serializamos el pulso entre instancias con un mutex
+# de sesion (namespace Local\, compartido por los servicios en sesion 0) y, si
+# el turno esta ocupado, reintentamos pronto en vez de saltar todo el intervalo.
+PROACTIVE_SLOT_BUSY_PREFIX = "Pulso proactivo aplazado"
+PROACTIVE_SLOT_RETRY_SECONDS = 45
+PROACTIVE_START_JITTER_MAX_SECONDS = 90
+_PROACTIVE_SLOT_MUTEX_NAME = "Local\\YarbisProactivePulseSlot"
+
+
+class _NoopSlot:
+    def release(self) -> None:
+        pass
+
+
+class _WinMutexSlot:
+    def __init__(self, kernel32, handle):
+        self._kernel32 = kernel32
+        self._handle = handle
+
+    def release(self) -> None:
+        try:
+            self._kernel32.ReleaseMutex(self._handle)
+        finally:
+            self._kernel32.CloseHandle(self._handle)
+
+
+def _acquire_proactive_slot():
+    """Reserva el turno global del pulso proactivo (0 espera).
+
+    Devuelve un objeto liberable si se obtuvo el turno, o None si otra instancia
+    lo tiene. Ante cualquier problema devuelve un slot no-op para no desactivar la
+    proactividad por accidente. El mutex de Windows se libera solo si el proceso
+    muere, asi que un turno abandonado (WAIT_ABANDONED) tambien cuenta como libre.
+    """
+    if os.name != "nt":
+        return _NoopSlot()
+    try:
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.CreateMutexW.restype = wintypes.HANDLE
+        kernel32.CreateMutexW.argtypes = [wintypes.LPVOID, wintypes.BOOL, wintypes.LPCWSTR]
+        kernel32.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+        handle = kernel32.CreateMutexW(None, False, _PROACTIVE_SLOT_MUTEX_NAME)
+        if not handle:
+            return _NoopSlot()
+        result = kernel32.WaitForSingleObject(handle, 0)
+        if result in (0x00000000, 0x00000080):  # WAIT_OBJECT_0 / WAIT_ABANDONED
+            return _WinMutexSlot(kernel32, handle)
+        kernel32.CloseHandle(handle)
+        return None
+    except Exception:
+        return _NoopSlot()
+
+
+def _proactive_start_jitter_seconds() -> int:
+    instance_id = str(yarbis_instance.current_instance_id())
+    if not instance_id:
+        return 0
+    return sum((index + 1) * ord(char) for index, char in enumerate(instance_id)) % (
+        PROACTIVE_START_JITTER_MAX_SECONDS + 1
+    )
 
 
 def _timestamp() -> str:
@@ -496,6 +562,19 @@ def _kill_process_tree(process: subprocess.Popen):
 
 
 def _run_proactive_pulse_with_timeout(settings: dict, last_pulse_at: str) -> str:
+    slot = _acquire_proactive_slot()
+    if slot is None:
+        return (
+            f"{PROACTIVE_SLOT_BUSY_PREFIX}: otra instancia esta ejecutando su pulso. "
+            f"Reintento en {PROACTIVE_SLOT_RETRY_SECONDS}s."
+        )
+    try:
+        return _run_proactive_pulse_child(settings, last_pulse_at)
+    finally:
+        slot.release()
+
+
+def _run_proactive_pulse_child(settings: dict, last_pulse_at: str) -> str:
     timeout_seconds = int(settings.get("max_runtime_seconds", DEFAULT_SERVICE_PROACTIVE_MAX_RUNTIME_SECONDS))
     child_code = (
         "import json, os, yarbis_service; "
@@ -508,6 +587,12 @@ def _run_proactive_pulse_with_timeout(settings: dict, last_pulse_at: str) -> str
     child_env["YARBIS_OLLAMA_TIMEOUT_SECONDS"] = str(
         max(15, min(60, timeout_seconds - 5))
     )
+    # El hijo hace print() de la salida del pulso hacia un pipe; en Windows eso se
+    # codifica en cp1252 por defecto y revienta con UnicodeEncodeError al imprimir
+    # caracteres como "->". Forzamos UTF-8 para que coincida con encoding="utf-8"
+    # del padre y el pulso deje de fallar.
+    child_env["PYTHONUTF8"] = "1"
+    child_env["PYTHONIOENCODING"] = "utf-8"
 
     try:
         process = subprocess.Popen(
@@ -599,7 +684,11 @@ def run_service_loop(should_stop=None):
             _log(mobile_start)
         start_telegram_polling(event_callback=lambda message: _log(_render_event(message)))
         settings = get_service_proactive_settings()
-        next_proactive_at = time.monotonic() + settings["start_delay_seconds"]
+        # Jitter por instancia para que, al arrancar todas juntas, sus primeros
+        # pulsos no caigan en la misma ventana y compitan por el turno global.
+        next_proactive_at = (
+            time.monotonic() + settings["start_delay_seconds"] + _proactive_start_jitter_seconds()
+        )
         if settings["enabled"]:
             cycles_text = format_cycle_count(settings["cycles"])
             model_text = (
@@ -630,10 +719,17 @@ def run_service_loop(should_stop=None):
             elif _stop_file_requests_current_run(ignored_stop_mtime):
                 break
 
-            settings = get_service_proactive_settings()
-            mobile_status = ensure_mobile_ui_servers()
-            if mobile_status:
-                _log(mobile_status)
+            try:
+                settings = get_service_proactive_settings()
+            except Exception:
+                _log("Error leyendo configuracion de proactividad:\n" + traceback.format_exc())
+                # Conservamos la ultima configuracion conocida para no detener el servicio.
+            try:
+                mobile_status = ensure_mobile_ui_servers()
+                if mobile_status:
+                    _log(mobile_status)
+            except Exception:
+                _log("Error asegurando la UI movil:\n" + traceback.format_exc())
             now = time.monotonic()
             try:
                 process_deferred_telegram_replies(limit=1)
@@ -662,11 +758,17 @@ def run_service_loop(should_stop=None):
                     else ", modelo principal"
                 )
                 _log(f"Pulso proactivo iniciado ({cycles_text}{model_text}).")
+                pulse_result = ""
                 try:
-                    _log(run_proactive_pulse())
+                    pulse_result = run_proactive_pulse()
+                    _log(pulse_result)
                 except Exception:
                     _log("Error en pulso proactivo:\n" + traceback.format_exc())
-                next_proactive_at = time.monotonic() + settings["interval_seconds"]
+                if isinstance(pulse_result, str) and pulse_result.startswith(PROACTIVE_SLOT_BUSY_PREFIX):
+                    # Otra instancia tenia el turno: reintentamos pronto, no dentro de un intervalo entero.
+                    next_proactive_at = time.monotonic() + PROACTIVE_SLOT_RETRY_SECONDS
+                else:
+                    next_proactive_at = time.monotonic() + settings["interval_seconds"]
             elif not settings["enabled"]:
                 next_proactive_at = now + settings["interval_seconds"]
 
@@ -678,6 +780,10 @@ def run_service_loop(should_stop=None):
     finally:
         stop_mobile_ui_servers()
         stop_telegram_polling()
+        try:
+            wait_for_memory_protection_maintenance(timeout_seconds=10)
+        except Exception:
+            pass
         _clear_runtime_files()
         _log("Servicio de Yarbis detenido.")
         activity.emit_event("service_stopped", pid=os.getpid())

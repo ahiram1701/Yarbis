@@ -217,6 +217,44 @@ class VoiceConversationTestCase(unittest.TestCase):
         self.assertEqual(updated["last_transcript"], "crea una nota")
         self.assertEqual(updated["spoken_text"], "Hecho.")
 
+    def test_mobile_chunk_survives_session_pruned_during_transcription(self):
+        session = voice_conversation.start_mobile_session({
+            "voice": {
+                "enabled": True,
+                "live_conversation": {"wake_phrase": "Yarbis"},
+            }
+        })
+        session_id = session["id"]
+        runner = Mock(return_value="Yarbis:\nHecho.")
+
+        def stop_mid_transcription(*_args, **_kwargs):
+            # Simula que la sesión se detiene (o caduca) mientras transcribimos,
+            # justo cuando el lock está liberado.
+            voice_conversation.stop_mobile_session(session_id)
+            return "Yarbis suma contexto"
+
+        with patch.object(
+            voice_conversation,
+            "transcribe_live_audio_bytes",
+            side_effect=stop_mid_transcription,
+        ):
+            result = voice_conversation.append_mobile_audio_chunk(
+                session_id,
+                b"audio",
+                mime_type="audio/webm",
+                settings={
+                    "voice": {
+                        "enabled": True,
+                        "live_conversation": {"wake_phrase": "Yarbis"},
+                    }
+                },
+                runner=runner,
+            )
+
+        self.assertEqual(result["state"], voice_conversation.STATE_IDLE)
+        self.assertEqual(result["id"], session_id)
+        runner.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

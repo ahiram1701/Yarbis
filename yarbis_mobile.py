@@ -18,6 +18,7 @@ from urllib.parse import parse_qs, urlparse
 
 import activity
 import conversation_ux
+import memory
 import yarbis_instance
 import voice as yarbis_voice
 import voice_conversation
@@ -113,6 +114,7 @@ MAX_REQUEST_BYTES = 512 * 1024
 MAX_VOICE_REQUEST_BYTES = int(yarbis_voice.MAX_VOICE_AUDIO_BYTES * 1.4) + 4096
 MAX_JOBS = 50
 MOBILE_CACHE_TTL_SECONDS = 10.0
+_MOBILE_STATE_CACHE_TTL_SECONDS = 2.0
 MOBILE_ACTIVITY_EVENT_LIMIT = 40
 MOBILE_ACTIVITY_MAX_BYTES = 32 * 1024
 MOBILE_LAST_RESULT_CHARS = 6_000
@@ -163,6 +165,13 @@ else:
 
 with open(response_path, "w", encoding="utf-8") as file:
     json.dump(response_payload, file, ensure_ascii=False)
+
+try:
+    import memory
+
+    memory.wait_for_memory_protection_maintenance(timeout_seconds=15)
+except Exception:
+    pass
 
 sys.exit(exit_code)
 """
@@ -221,6 +230,31 @@ def _cached_value(key: str, signature, ttl_seconds: float, builder):
             "value": value,
         }
     return value
+
+
+def _state_file_signature() -> tuple[str, int, int]:
+    state_path = Path(memory.STATE_FILE)
+    if not state_path.is_absolute():
+        state_path = WORKSPACE_ROOT / state_path
+    try:
+        stat = state_path.stat()
+    except OSError:
+        return (str(state_path), 0, 0)
+    return (str(state_path), int(stat.st_size), int(stat.st_mtime_ns))
+
+
+def _load_state_cached() -> dict:
+    # Cache de lectura de state.json para las rutas de solo-lectura del móvil:
+    # _require_session (cada petición) y el bucle del servicio (cada segundo)
+    # golpeaban load_state constantemente. La firma por tamaño+mtime invalida en
+    # cuanto una escritura (state_transaction) cambia el archivo, así que los
+    # cambios de estado siguen viéndose de inmediato.
+    return _cached_value(
+        "mobile_state",
+        _state_file_signature(),
+        _MOBILE_STATE_CACHE_TTL_SECONDS,
+        load_state,
+    )
 
 
 def _cached_tailscale_ipv4() -> str:
@@ -328,7 +362,7 @@ def _normalize_mobile_job_timeout(value) -> int:
 
 
 def get_mobile_ui_settings() -> dict:
-    state = load_state()
+    state = _load_state_cached()
     service = state.get("service", {}) if isinstance(state, dict) else {}
     settings = service.get("mobile_ui", {}) if isinstance(service, dict) else {}
     if isinstance(settings, dict):
@@ -1260,6 +1294,77 @@ def _mobile_activity_history(state: dict) -> str:
     ) or "")
 
 
+def _read_mobile_instance_state(instance_id: str) -> dict:
+    path = Path(str(yarbis_instance.state_file(instance_id)))
+    if not path.is_absolute():
+        path = WORKSPACE_ROOT / path
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (FileNotFoundError, OSError, json.JSONDecodeError):
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _instance_mobile_port_from_state(instance_id: str, state: dict) -> int:
+    service = state.get("service", {}) if isinstance(state, dict) else {}
+    mobile_ui = service.get("mobile_ui", {}) if isinstance(service, dict) else {}
+    if isinstance(mobile_ui, dict):
+        try:
+            port = int(mobile_ui.get("port") or 0)
+        except (TypeError, ValueError):
+            port = 0
+        if 1 <= port <= 65535:
+            return port
+    return yarbis_instance.default_mobile_ui_port(instance_id)
+
+
+def _build_instances_payload() -> dict:
+    current_id = yarbis_instance.current_instance_id()
+    serve_targets = set(current_tailscale_serve_targets())
+    dns_name = _cached_tailscale_dns_name()
+    instances = []
+    for item in yarbis_instance.list_instances():
+        instance_id = item["id"]
+        state = _read_mobile_instance_state(instance_id)
+        service = state.get("service", {}) if isinstance(state, dict) else {}
+        mobile_ui = service.get("mobile_ui", {}) if isinstance(service, dict) else {}
+        if not isinstance(mobile_ui, dict):
+            mobile_ui = {}
+        port = _instance_mobile_port_from_state(instance_id, state)
+        https_owner = bool(dns_name) and _tailscale_serve_target_for_port(port) in serve_targets
+        instances.append({
+            "id": instance_id,
+            "display_name": item.get("display_name") or instance_id,
+            "current": instance_id == current_id,
+            "active": yarbis_instance.instance_is_active(instance_id),
+            "mobile_enabled": bool(mobile_ui.get("enabled")),
+            "mobile_configured": bool(str(mobile_ui.get("pin_hash", "")).strip()),
+            "port": port,
+            "https_owner": https_owner,
+            "secure_url": f"https://{dns_name}/" if (https_owner and dns_name) else "",
+        })
+    return {"current_instance": current_id, "instances": instances}
+
+
+def _instances_payload() -> dict:
+    return _cached_value(
+        "instances_overview",
+        None,
+        MOBILE_CACHE_TTL_SECONDS,
+        _build_instances_payload,
+    )
+
+
+def _current_instance_identity() -> dict:
+    current = yarbis_instance.current_instance_id()
+    display_name = current
+    for item in _instances_payload().get("instances", []):
+        if item.get("id") == current:
+            display_name = item.get("display_name") or current
+            break
+    return {"id": current, "display_name": display_name}
+
+
 def _public_base_state(state: dict) -> dict:
     service = state.get("service", {}) if isinstance(state, dict) else {}
     if not isinstance(service, dict):
@@ -1286,6 +1391,7 @@ def _public_base_state(state: dict) -> dict:
         "awaiting_user_input": state.get("awaiting_user_input", {}),
         "communication": state.get("communication", {}),
         "conversation": conversation,
+        "instance": _current_instance_identity(),
         "service": {
             "status": service_status,
             "mobile_ui": public_mobile_ui_status(mobile_settings),
@@ -1353,7 +1459,7 @@ def _public_state(view: str = "") -> dict:
     if normalized_view not in {"", "home", "run", "context", "visual", "settings", "activity"}:
         raise ValueError("Vista movil invalida.")
 
-    state = load_state()
+    state = _load_state_cached()
     public = _public_base_state(state)
     view_state = {}
     if normalized_view == "context":
@@ -2258,7 +2364,7 @@ pre {
     <header class="topbar">
       <div class="title-row">
         <div>
-          <h1>Yarbis</h1>
+          <h1 id="appTitle">Yarbis</h1>
           <div id="urlLine" class="muted"></div>
         </div>
         <button class="compact" data-action="logout">Salir</button>
@@ -2304,6 +2410,8 @@ let liveVoiceLastSpokenText = "";
 let localTtsVoices = [];
 let browserVoices = [];
 let voiceOptionsLoaded = false;
+let instancesLoaded = false;
+let instancesData = null;
 let localSpeechAudio = null;
 let mobileSpeechUnlocked = false;
 let mobileSpeechUnlockAudio = null;
@@ -2974,6 +3082,34 @@ async function loadVoiceOptions(force = false, includeCatalog = false, refreshCa
   }
 }
 
+async function loadInstances(force = false) {
+  if (instancesLoaded && !force) return;
+  try {
+    const data = await api("/api/instances");
+    csrfToken = data.csrf || csrfToken;
+    instancesData = data;
+    instancesLoaded = true;
+    if (currentTab === "settings") renderCurrent();
+  } catch (error) {
+    toast(error.message);
+  }
+}
+
+function goToInstance(instanceId) {
+  const rows = (instancesData && instancesData.instances) || [];
+  const row = rows.find(item => item.id === instanceId);
+  if (!row || row.current) return;
+  if (!row.active) { toast("Esa instancia está detenida. Enciende su servicio primero."); return; }
+  if (!row.mobile_enabled || !row.mobile_configured) { toast("Esa instancia no tiene la UI móvil activa con PIN."); return; }
+  // Solo la instancia dueña del HTTPS de Tailscale responde por https://magicdns/.
+  // Las demás se sirven por http en su puerto, así que forzamos http:// (no
+  // location.protocol) para no navegar a un https://host:puerto que no existe.
+  const target = (row.https_owner && row.secure_url)
+    ? row.secure_url
+    : `http://${location.hostname}:${row.port}/`;
+  window.location.href = target;
+}
+
 function selectedKokoroVoiceId() {
   const selected = $("kokoroVoiceId") ? $("kokoroVoiceId").value : "";
   if (selected) return selected;
@@ -3150,6 +3286,13 @@ function renderCurrent() {
   const mobile = (appState.service || {}).mobile_ui || {};
   const activeUrls = mobile.active_urls || [];
   $("urlLine").textContent = mobile.secure_url || activeUrls[0] || mobile.tailscale_url || mobile.local_url || "";
+  const instance = appState.instance || {};
+  const titleNode = $("appTitle");
+  if (titleNode) {
+    titleNode.textContent = (instance.id && instance.id !== "default")
+      ? `Yarbis · ${instance.display_name || instance.id}`
+      : "Yarbis";
+  }
   if (currentTab === "home") renderHome();
   else if (currentTab === "run") renderRun();
   else if (currentTab === "context") renderContext();
@@ -3756,6 +3899,28 @@ function renderSettings() {
   ].filter(Boolean).join("\n");
   refreshBrowserVoices();
   if (!voiceOptionsLoaded) window.setTimeout(() => loadVoiceOptions(false, true), 0);
+  if (!instancesLoaded) window.setTimeout(() => loadInstances(false), 0);
+  const instanceRows = (instancesData && instancesData.instances) || [];
+  const instancesHtml = !instancesLoaded
+    ? `<div class="muted">Cargando instancias…</div>`
+    : (instanceRows.length
+        ? instanceRows.map(row => {
+            const badge = row.current ? "actual" : (row.active ? "activa" : "inactiva");
+            const mobileReady = row.mobile_enabled && row.mobile_configured;
+            const canSwitch = !row.current && row.active && mobileReady;
+            const detail = row.current
+              ? "Esta es la instancia que estás viendo."
+              : (!row.active
+                  ? "inactiva (enciende su servicio desde el escritorio)"
+                  : (mobileReady
+                      ? `Puerto ${row.port}${row.https_owner ? " · HTTPS" : ""}`
+                      : "activa, pero sin UI móvil con PIN configurado"));
+            const button = canSwitch
+              ? `<button class="compact" data-action="switch-instance" data-instance-id="${escapeHtml(row.id)}">Ir a esta</button>`
+              : "";
+            return `<div class="panel"><div><strong>${escapeHtml(row.display_name)}</strong> <span class="muted">(${escapeHtml(row.id)}) · ${badge}</span></div><div class="muted">${escapeHtml(detail)}</div>${button}</div>`;
+          }).join("")
+        : `<div class="muted">Sin instancias registradas.</div>`);
   const systemVoiceOptions = localTtsVoices.filter(item => (item.provider || "system") === "system").map(item => {
     const label = `${item.index}. ${item.name}${item.languages && item.languages.length ? " - " + item.languages.join(", ") : ""}`;
     return `<option value="${escapeHtml(item.id || "")}">${escapeHtml(label)}</option>`;
@@ -3799,6 +3964,14 @@ function renderSettings() {
         <div class="panel"><pre>${escapeHtml(mobileUrlText)}</pre></div>
         <button data-action="save-mobile">Guardar UI movil</button>
         <button data-action="claim-mobile-https">Usar HTTPS aqui</button>
+      </div>
+    </section>
+    <section class="section">
+      <h2>Instancias</h2>
+      <div class="setting-group">
+        <div class="muted">Cada instancia pide su propio PIN. Al usar la URL HTTPS de Tailscale solo responde la instancia dueña del HTTPS; las demás abren por http://host:puerto.</div>
+        ${instancesHtml}
+        <button data-action="refresh-instances">Refrescar instancias</button>
       </div>
     </section>
     <section class="section">
@@ -4000,6 +4173,10 @@ document.addEventListener("click", async (event) => {
       await refresh();
     } else if (name === "refresh") {
       await loadView(currentTab, true);
+    } else if (name === "switch-instance") {
+      goToInstance(button.dataset.instanceId);
+    } else if (name === "refresh-instances") {
+      await loadInstances(true);
     } else if (name === "run-cycle") {
       await action("run_cycle");
     } else if (name === "run-auto") {
@@ -4558,6 +4735,19 @@ class MobileRequestHandler(BaseHTTPRequestHandler):
                 self._send_json(HTTPStatus.UNAUTHORIZED, {"ok": False, "error": str(exc)})
             except ValueError as exc:
                 self._send_json(HTTPStatus.BAD_REQUEST, {"ok": False, "error": str(exc)})
+            except Exception as exc:
+                self._send_json(HTTPStatus.INTERNAL_SERVER_ERROR, {"ok": False, "error": str(exc)})
+            return
+        if parsed.path == "/api/instances":
+            try:
+                _settings, session = self._require_session({})
+                self._send_json(HTTPStatus.OK, {
+                    "ok": True,
+                    "csrf": session["csrf"],
+                    **_instances_payload(),
+                })
+            except PermissionError as exc:
+                self._send_json(HTTPStatus.UNAUTHORIZED, {"ok": False, "error": str(exc)})
             except Exception as exc:
                 self._send_json(HTTPStatus.INTERNAL_SERVER_ERROR, {"ok": False, "error": str(exc)})
             return

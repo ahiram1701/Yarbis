@@ -1,6 +1,7 @@
 import ctypes
 import json
 import os
+import re
 import sys
 import queue
 import subprocess
@@ -34,6 +35,7 @@ from memory import (
     load_state,
     normalize_cycle_count,
     render_state_summary,
+    wait_for_memory_protection_maintenance,
 )
 from pc_context import local_context_enabled
 from pc_context_runtime import (
@@ -216,6 +218,7 @@ _STATE_SYNC_INTERVAL_MS = 1000
 _EVENT_SYNC_INTERVAL_MS = 500
 _STATUS_REFRESH_INTERVAL_MS = 15000
 _CONTEXT_HELPER_SYNC_MS = 10000
+_INSTANCE_PANEL_SYNC_SECONDS = 10
 _YARBIS_MESSAGE_SYNC_MS = 5000
 _SERVICE_RUNTIME_EVENT_LABELS = {"pulso proactivo"}
 _WORKSPACE_ROOT = Path(__file__).resolve().parent
@@ -262,6 +265,13 @@ else:
 
 with open(response_path, "w", encoding="utf-8") as file:
     json.dump(response_payload, file, ensure_ascii=False)
+
+try:
+    import memory
+
+    memory.wait_for_memory_protection_maintenance(timeout_seconds=15)
+except Exception:
+    pass
 
 sys.exit(exit_code)
 """
@@ -347,9 +357,13 @@ def _python_window_path() -> Path:
     return executable
 
 
-def _launch_desktop_instance(instance_id: str) -> None:
+def _launch_desktop_instance(instance_id: str, *, geometry: str = "") -> None:
     normalized = yarbis_instance.normalize_instance_id(instance_id)
     env = yarbis_instance.with_instance_env(normalized)
+    if str(geometry or "").strip():
+        env["YARBIS_DESKTOP_GEOMETRY"] = str(geometry).strip()
+    else:
+        env.pop("YARBIS_DESKTOP_GEOMETRY", None)
     subprocess.Popen(
         [
             str(_python_window_path()),
@@ -382,6 +396,14 @@ def _launch_instance_selector() -> None:
         stderr=subprocess.DEVNULL,
         creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
     )
+
+
+def _desktop_pid_of(instance_id: str) -> int:
+    normalized = yarbis_instance.normalize_instance_id(instance_id)
+    pid = yarbis_instance._read_pid(yarbis_instance.runtime_dir(normalized) / "desktop.pid")
+    if pid and yarbis_instance._pid_is_running(pid):
+        return pid
+    return 0
 
 
 def _resolve_workspace_path(path_text: str) -> Path:
@@ -774,6 +796,12 @@ class YarbisDesktop(tk.Tk):
         self.title("Yarbis" if instance_id == yarbis_instance.DEFAULT_INSTANCE_ID else f"Yarbis - {instance_id}")
         self.geometry("1120x760")
         self.minsize(900, 620)
+        requested_geometry = os.environ.pop("YARBIS_DESKTOP_GEOMETRY", "").strip()
+        if requested_geometry and re.fullmatch(r"\d+x\d+[+-]-?\d+[+-]-?\d+", requested_geometry):
+            try:
+                self.geometry(requested_geometry)
+            except tk.TclError:
+                pass
 
         self.current_theme_name = get_ui_theme()
         self.theme_palette = THEMES.get(self.current_theme_name, THEMES["dark"])
@@ -805,6 +833,7 @@ class YarbisDesktop(tk.Tk):
         self._view_frames = {}
         self._nav_buttons = {}
         self._dashboard_badges = {}
+        self._last_instance_panel_refresh_at = 0.0
 
         self._result_queue = queue.Queue()
         self._worker_thread = None
@@ -930,12 +959,14 @@ class YarbisDesktop(tk.Tk):
             text="Estado, ejecución, configuración y actividad en una misma vista de trabajo.",
             style="Subtitle.TLabel",
         ).grid(row=1, column=0, sticky="w", pady=(2, 0))
-        ttk.Label(header, textvariable=self.instance_chip_var, style="Muted.TLabel").grid(
-            row=0,
-            column=1,
-            sticky="e",
-            padx=(12, 0),
-        )
+        instance_header = ttk.Frame(header)
+        instance_header.grid(row=0, column=1, sticky="e", padx=(12, 0))
+        ttk.Label(instance_header, textvariable=self.instance_chip_var, style="Muted.TLabel").grid(row=0, column=0, sticky="e")
+        ttk.Button(
+            instance_header,
+            text="Cambiar…",
+            command=lambda: self._show_view("instances"),
+        ).grid(row=0, column=1, sticky="e", padx=(8, 0))
         ttk.Button(header, text="Refrescar", command=self.refresh_state_view).grid(row=1, column=1, sticky="e")
 
         views = ttk.Frame(content_shell)
@@ -1211,6 +1242,7 @@ class YarbisDesktop(tk.Tk):
         for column in range(5):
             instance_buttons.columnconfigure(column, weight=1, uniform="instance_buttons")
         self.open_instance_button = ttk.Button(instance_buttons, text="Abrir", command=self._open_selected_instance)
+        self.switch_instance_button = ttk.Button(instance_buttons, text="Cambiar a esta", command=self._switch_selected_instance)
         self.create_instance_button = ttk.Button(instance_buttons, text="Crear", command=self._create_instance_from_panel)
         self.rename_instance_button = ttk.Button(instance_buttons, text="Renombrar", command=self._rename_selected_instance)
         self.copy_instance_path_button = ttk.Button(instance_buttons, text="Copiar ruta", command=self._copy_selected_instance_path)
@@ -1227,6 +1259,7 @@ class YarbisDesktop(tk.Tk):
         )
         for index, button in enumerate((
             self.open_instance_button,
+            self.switch_instance_button,
             self.create_instance_button,
             self.rename_instance_button,
             self.copy_instance_path_button,
@@ -1332,7 +1365,7 @@ class YarbisDesktop(tk.Tk):
         messages_scroll.grid(row=0, column=1, sticky="ns")
         inbox_buttons = ttk.Frame(inbox)
         inbox_buttons.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(8, 0))
-        ttk.Button(inbox_buttons, text="Refrescar", command=self._refresh_instance_panels).pack(side="left")
+        ttk.Button(inbox_buttons, text="Refrescar", command=lambda: self._refresh_instance_panels(force=True)).pack(side="left")
         ttk.Button(inbox_buttons, text="Responder", command=self._prepare_message_reply).pack(side="left", padx=(8, 0))
         ttk.Button(inbox_buttons, text="Marcar leÃ­do", command=self._mark_selected_messages_read).pack(
             side="left",
@@ -1456,6 +1489,8 @@ class YarbisDesktop(tk.Tk):
         self._view_frames[name].tkraise()
         for view_name, button in self._nav_buttons.items():
             button.configure(style="Active.Nav.TButton" if view_name == name else "Nav.TButton")
+        if name == "instances":
+            self._refresh_instance_panels(force=True)
 
     def _selected_instance_id(self) -> str:
         if "instances_tree" not in self.__dict__:
@@ -1471,7 +1506,15 @@ class YarbisDesktop(tk.Tk):
         selection = self.archived_tree.selection()
         return str(selection[0]).strip() if selection else ""
 
-    def _refresh_instance_panels(self):
+    def _refresh_instance_panels(self, force: bool = False):
+        now = time.monotonic()
+        if (
+            not force
+            and self._current_view != "instances"
+            and (now - self._last_instance_panel_refresh_at) < _INSTANCE_PANEL_SYNC_SECONDS
+        ):
+            return
+        self._last_instance_panel_refresh_at = now
         rows, warnings = _instance_overview_rows()
         self._instance_rows = rows
         self.instance_chip_var.set(_current_instance_chip_text(rows))
@@ -1578,8 +1621,10 @@ class YarbisDesktop(tk.Tk):
         has_row = row is not None
         can_archive = bool(row and row.get("can_archive"))
         has_archived = bool(self._selected_archive_id())
+        is_current = has_row and selected_id == yarbis_instance.current_instance_id()
         for button_name, enabled in (
             ("open_instance_button", has_row),
+            ("switch_instance_button", has_row and not is_current),
             ("rename_instance_button", has_row),
             ("copy_instance_path_button", has_row),
             ("copy_instance_command_button", has_row),
@@ -1609,7 +1654,7 @@ class YarbisDesktop(tk.Tk):
             messagebox.showwarning("Yarbis", f"No pude crear la instancia: {exc}", parent=self)
             return
         self._append_activity("Instancias", f"Instancia creada: {created['display_name']} ({created['id']}).")
-        self._refresh_instance_panels()
+        self._refresh_instance_panels(force=True)
 
     def _rename_selected_instance(self):
         instance_id = self._selected_instance_id()
@@ -1628,7 +1673,7 @@ class YarbisDesktop(tk.Tk):
             messagebox.showwarning("Yarbis", f"No pude renombrar la instancia: {exc}", parent=self)
             return
         self._append_activity("Instancias", f"Instancia renombrada: {renamed['display_name']} ({renamed['id']}).")
-        self._refresh_instance_panels()
+        self._refresh_instance_panels(force=True)
 
     def _open_selected_instance(self):
         instance_id = self._selected_instance_id()
@@ -1641,6 +1686,54 @@ class YarbisDesktop(tk.Tk):
             messagebox.showwarning("Yarbis", f"No pude abrir la instancia: {exc}", parent=self)
             return
         self._append_activity("Instancias", f"Abriendo instancia {instance_id}.")
+
+    def _switch_selected_instance(self):
+        self._switch_to_instance(self._selected_instance_id())
+
+    def _switch_to_instance(self, instance_id: str):
+        target = yarbis_instance.normalize_instance_id(instance_id)
+        if target == yarbis_instance.current_instance_id():
+            messagebox.showinfo("Yarbis", "Esa instancia ya está abierta en esta ventana.", parent=self)
+            return
+        if self._busy and not messagebox.askyesno(
+            "Cambiar de instancia",
+            "Hay una acción en curso. ¿Quieres cambiar de instancia de todos modos?",
+            parent=self,
+        ):
+            return
+        if _desktop_pid_of(target):
+            messagebox.showinfo("Yarbis", "Esa instancia ya está abierta en otra ventana.", parent=self)
+            return
+        previous_pid = yarbis_instance._read_pid(yarbis_instance.runtime_dir(target) / "desktop.pid")
+        try:
+            _launch_desktop_instance(target, geometry=self.winfo_geometry())
+        except Exception as exc:
+            messagebox.showwarning("Yarbis", f"No pude abrir la instancia {target}: {exc}", parent=self)
+            return
+        self.status_var.set(f"Cambiando a {target}...")
+        self._await_instance_switch(target, previous_pid, time.monotonic() + 15.0)
+
+    def _await_instance_switch(self, target: str, previous_pid: int, deadline: float):
+        if self._closing:
+            return
+        pid = yarbis_instance._read_pid(yarbis_instance.runtime_dir(target) / "desktop.pid")
+        if pid and pid != previous_pid and yarbis_instance._pid_is_running(pid):
+            self._append_activity("Instancias", f"Cambiando a {target}.")
+            self._shutdown_window()
+            return
+        if time.monotonic() >= deadline:
+            crash_log = yarbis_instance.runtime_dir(target) / "desktop_crash.log"
+            messagebox.showwarning(
+                "Yarbis",
+                (
+                    f"La instancia {target} no terminó de abrir a tiempo. "
+                    f"Reviso el registro en {crash_log} si el problema continúa."
+                ),
+                parent=self,
+            )
+            self.status_var.set("Listo.")
+            return
+        self.after(250, lambda: self._await_instance_switch(target, previous_pid, deadline))
 
     def _copy_to_clipboard(self, label: str, text: str):
         try:
@@ -1840,7 +1933,7 @@ class YarbisDesktop(tk.Tk):
         message_ids = [str(item) for item in self.messages_tree.selection()]
         marked = yarbis_bus.mark_messages_read(message_ids)
         self._append_activity("Mensajes Yarbis", f"Mensajes marcados como leidos: {marked}.")
-        self._refresh_instance_panels()
+        self._refresh_instance_panels(force=True)
 
     def _open_message_target_instance(self):
         target = self.message_target_var.get().strip()
@@ -3886,6 +3979,15 @@ class YarbisDesktop(tk.Tk):
 
         self._result_queue.put(("event", "Telegram", rendered))
 
+    def _shutdown_window(self):
+        self._closing = True
+        if self._voice_record_stop_event is not None:
+            self._voice_record_stop_event.set()
+        if self._live_voice_stop_event is not None:
+            self._live_voice_stop_event.set()
+        stop_telegram_polling()
+        self.destroy()
+
     def _on_close(self):
         if self._busy:
             should_close = messagebox.askyesno(
@@ -3895,13 +3997,7 @@ class YarbisDesktop(tk.Tk):
             )
             if not should_close:
                 return
-        self._closing = True
-        if self._voice_record_stop_event is not None:
-            self._voice_record_stop_event.set()
-        if self._live_voice_stop_event is not None:
-            self._live_voice_stop_event.set()
-        stop_telegram_polling()
-        self.destroy()
+        self._shutdown_window()
 
 
 def main():
@@ -3928,6 +4024,10 @@ def main():
         app._append_activity("Estado inicial", get_status_text())
         app.mainloop()
     finally:
+        try:
+            wait_for_memory_protection_maintenance(timeout_seconds=15)
+        except Exception:
+            pass
         _clear_desktop_pid()
         _release_single_instance_lock()
 
