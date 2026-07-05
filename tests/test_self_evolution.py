@@ -4,6 +4,7 @@ from unittest.mock import patch
 
 import memory
 import proactive_context
+import tools
 import yarbis_service
 
 
@@ -100,6 +101,71 @@ class EvolutionGatingTestCase(unittest.TestCase):
                         out = yarbis_service._run_self_evolution_inline({"max_pending": 2, "cycles": 4})
         self.assertIn("ya hay 2 propuesta", out)
         run_auto.assert_not_called()
+
+
+class EvolutionToolsTestCase(unittest.TestCase):
+    def _bind(self, state):
+        # Ejecuta las tools de evolucion sobre un state en memoria.
+        def fake_tx(label, mutate, **kwargs):
+            return mutate(state)
+
+        return (
+            patch.object(tools, "load_state", return_value=state),
+            patch.object(tools, "state_transaction", side_effect=fake_tx),
+        )
+
+    def test_directive_propose_apply_discard_cycle(self):
+        import tools as t
+        state = memory.default_state()
+        p1, p2 = self._bind(state)
+        with p1, p2:
+            out = t.evolution_propose_directive("Corre tests antes de proponer", "seguridad")
+            self.assertIn("Directriz propuesta", out)
+            self.assertEqual(len(state["evolution"]["directives_pending"]), 1)
+            did = state["evolution"]["directives_pending"][0]["id"]
+
+            listed = t.evolution_list_pending()
+            self.assertIn(did, listed)
+
+            applied = t.evolution_apply_directive(did)
+            self.assertIn("aprobada", applied)
+            self.assertEqual(len(state["evolution"]["directives_pending"]), 0)
+            self.assertEqual(len(state["evolution"]["directives"]), 1)
+
+            discarded = t.evolution_discard_directive(did)
+            self.assertIn("descartada", discarded)
+            self.assertEqual(len(state["evolution"]["directives"]), 0)
+
+    def test_apply_unknown_id(self):
+        import tools as t
+        state = memory.default_state()
+        p1, p2 = self._bind(state)
+        with p1, p2:
+            self.assertIn("No encontre", t.evolution_apply_directive("nope"))
+
+    def test_set_enabled_and_interval(self):
+        import tools as t
+        state = memory.default_state()
+        p1, p2 = self._bind(state)
+        with p1, p2:
+            self.assertIn("activada", t.evolution_set_enabled(True))
+            self.assertTrue(state["evolution"]["enabled"])
+            self.assertIn("12h", t.evolution_set_interval(12))
+            self.assertEqual(state["evolution"]["interval_hours"], 12)
+            # clamp
+            t.evolution_set_interval(9999)
+            self.assertEqual(state["evolution"]["interval_hours"], 168)
+
+
+class DirectiveInjectionTestCase(unittest.TestCase):
+    def test_approved_directives_injected_pending_not(self):
+        import agent
+        state = memory.default_state()
+        state["evolution"]["directives"] = [{"id": "d1", "text": "Se conciso", "reason": "", "created_at": ""}]
+        state["evolution"]["directives_pending"] = [{"id": "d2", "text": "NO DEBE APARECER", "reason": "", "created_at": ""}]
+        rendered = agent._render_learned_directives(state)
+        self.assertIn("Se conciso", rendered)
+        self.assertNotIn("NO DEBE APARECER", rendered)
 
 
 if __name__ == "__main__":

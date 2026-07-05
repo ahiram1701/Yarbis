@@ -25,6 +25,10 @@ import memory_transfer
 import yarbis_bus
 import yarbis_instance
 from memory import (
+    EVOLUTION_DIMENSIONS,
+    MAX_EVOLUTION_DIRECTIVE_CHARS,
+    MAX_EVOLUTION_DIRECTIVE_REASON_CHARS,
+    MAX_EVOLUTION_DIRECTIVES,
     MAX_VISUAL_BOARD_EDGES,
     MAX_VISUAL_BOARD_NODES,
     MAX_VISUAL_BOARDS_PER_PROJECT,
@@ -5477,3 +5481,241 @@ def open_assisted_social_post(
         state_transaction("open_assisted_social_post", mark_opened)
 
     return result
+
+
+# ---------------------------------------------------------------------------
+# Autoevolucion: control y capa de "directivas aprendidas" (comportamiento).
+# Todo pasa por aprobacion del usuario; nada se aplica solo.
+# ---------------------------------------------------------------------------
+
+def _evolution_state(state: dict | None = None) -> dict:
+    source_state = state if isinstance(state, dict) else load_state()
+    evolution = source_state.get("evolution", {})
+    return evolution if isinstance(evolution, dict) else {}
+
+
+def evolution_status() -> str:
+    """
+    Muestra el estado de la autoevolucion de Yarbis.
+
+    Returns:
+        str: enabled, cadencia, limites, dimensiones y conteo de pendientes.
+    """
+    evolution = _evolution_state()
+    directives = evolution.get("directives", []) if isinstance(evolution.get("directives"), list) else []
+    pending = evolution.get("directives_pending", []) if isinstance(evolution.get("directives_pending"), list) else []
+    dims = evolution.get("dimensions", []) if isinstance(evolution.get("dimensions"), list) else []
+    return (
+        "Autoevolucion de Yarbis:\n"
+        f"- Estado: {'activada' if evolution.get('enabled') else 'desactivada'}\n"
+        f"- Cadencia: cada {evolution.get('interval_hours', 6)}h\n"
+        f"- Maximo de propuestas pendientes: {evolution.get('max_pending', 2)}\n"
+        f"- Dimensiones: {', '.join(dims) or '-'}\n"
+        f"- Directrices aprobadas: {len(directives)}\n"
+        f"- Directrices propuestas por aprobar: {len(pending)}"
+    )
+
+
+def evolution_set_enabled(enabled: bool) -> str:
+    """
+    Activa o desactiva la autoevolucion (revision periodica que propone mejoras).
+
+    Args:
+        enabled (bool): True para activar, False para desactivar.
+
+    Returns:
+        str: Confirmacion.
+    """
+    value = bool(enabled)
+
+    def mutate(state):
+        evolution_state = state.setdefault("evolution", {})
+        evolution_state["enabled"] = value
+
+    state_transaction("evolution_set_enabled", mutate)
+    return f"Autoevolucion {'activada' if value else 'desactivada'}."
+
+
+def evolution_set_interval(hours: int) -> str:
+    """
+    Ajusta la cadencia de la autoevolucion en horas (1 a 168).
+
+    Args:
+        hours (int): Horas entre revisiones.
+
+    Returns:
+        str: Confirmacion.
+    """
+    try:
+        cleaned = int(hours)
+    except (TypeError, ValueError):
+        return "La cadencia debe ser un numero de horas."
+    cleaned = max(1, min(168, cleaned))
+
+    def mutate(state):
+        evolution_state = state.setdefault("evolution", {})
+        evolution_state["interval_hours"] = cleaned
+
+    state_transaction("evolution_set_interval", mutate)
+    return f"Cadencia de autoevolucion: cada {cleaned}h."
+
+
+def evolution_propose_directive(text: str, reason: str = "") -> str:
+    """
+    Propone una directriz de comportamiento para que el usuario la apruebe.
+
+    No cambia el comportamiento hasta que el usuario la apruebe con
+    evolution_apply_directive.
+
+    Args:
+        text (str): La directriz concreta y accionable.
+        reason (str): Motivo breve.
+
+    Returns:
+        str: Id de la directriz propuesta.
+    """
+    cleaned_text = str(text).strip()[:MAX_EVOLUTION_DIRECTIVE_CHARS]
+    if not cleaned_text:
+        return "La directriz no puede quedar vacia."
+    directive_id = uuid4().hex[:12]
+    entry = {
+        "id": directive_id,
+        "text": cleaned_text,
+        "reason": str(reason).strip()[:MAX_EVOLUTION_DIRECTIVE_REASON_CHARS],
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+    overflow = {"value": False}
+
+    def mutate(state):
+        evolution_state = state.setdefault("evolution", {})
+        pending = evolution_state.setdefault("directives_pending", [])
+        if not isinstance(pending, list):
+            pending = []
+        if len(pending) >= MAX_EVOLUTION_DIRECTIVES:
+            overflow["value"] = True
+            return
+        pending.append(entry)
+        evolution_state["directives_pending"] = pending
+
+    state_transaction("evolution_propose_directive", mutate)
+    if overflow["value"]:
+        return "Ya hay demasiadas directrices propuestas; aprueba o descarta algunas antes."
+    return (
+        "Directriz propuesta (pendiente de aprobacion).\n"
+        f"Id: {directive_id}\n"
+        f"Texto: {cleaned_text}\n"
+        "El usuario la aprueba con evolution_apply_directive o la descarta con evolution_discard_directive."
+    )
+
+
+def _format_directive_list(items: list) -> str:
+    lines = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        directive_id = str(item.get("id", "")).strip()
+        text = str(item.get("text", "")).strip()
+        reason = str(item.get("reason", "")).strip()
+        line = f"- [{directive_id}] {text}"
+        if reason:
+            line += f" (motivo: {reason})"
+        lines.append(line)
+    return "\n".join(lines) if lines else "- (ninguna)"
+
+
+def evolution_list_pending() -> str:
+    """
+    Lista las directrices de comportamiento propuestas por aprobar.
+
+    Returns:
+        str: Directrices pendientes con su id.
+    """
+    evolution = _evolution_state()
+    pending = evolution.get("directives_pending", []) if isinstance(evolution.get("directives_pending"), list) else []
+    return "Directrices propuestas por aprobar:\n" + _format_directive_list(pending)
+
+
+def evolution_list_directives() -> str:
+    """
+    Lista las directrices de comportamiento ya aprobadas y activas.
+
+    Returns:
+        str: Directrices activas con su id.
+    """
+    evolution = _evolution_state()
+    directives = evolution.get("directives", []) if isinstance(evolution.get("directives"), list) else []
+    return "Directrices aprobadas y activas:\n" + _format_directive_list(directives)
+
+
+def evolution_apply_directive(directive_id: str) -> str:
+    """
+    Aprueba una directriz propuesta: pasa a activa e influye en el comportamiento.
+
+    Args:
+        directive_id (str): Id de la directriz pendiente.
+
+    Returns:
+        str: Confirmacion.
+    """
+    cleaned_id = str(directive_id).strip()
+    if not cleaned_id:
+        return "Indica el id de la directriz a aprobar."
+    result = {"applied": None, "overflow": False}
+
+    def mutate(state):
+        evolution_state = state.setdefault("evolution", {})
+        pending = evolution_state.get("directives_pending", [])
+        directives = evolution_state.get("directives", [])
+        if not isinstance(pending, list):
+            pending = []
+        if not isinstance(directives, list):
+            directives = []
+        match = next((d for d in pending if isinstance(d, dict) and str(d.get("id", "")).strip() == cleaned_id), None)
+        if match is None:
+            return
+        if len(directives) >= MAX_EVOLUTION_DIRECTIVES:
+            result["overflow"] = True
+            return
+        pending = [d for d in pending if d is not match]
+        directives.append(match)
+        evolution_state["directives_pending"] = pending
+        evolution_state["directives"] = directives
+        result["applied"] = match
+
+    state_transaction("evolution_apply_directive", mutate)
+    if result["overflow"]:
+        return "Ya hay demasiadas directrices activas; elimina alguna antes de aprobar mas."
+    if result["applied"] is None:
+        return f"No encontre una directriz pendiente con id {cleaned_id}."
+    return f"Directriz aprobada y activa: {str(result['applied'].get('text', '')).strip()}"
+
+
+def evolution_discard_directive(directive_id: str) -> str:
+    """
+    Descarta una directriz (propuesta o activa) por su id.
+
+    Args:
+        directive_id (str): Id de la directriz.
+
+    Returns:
+        str: Confirmacion.
+    """
+    cleaned_id = str(directive_id).strip()
+    if not cleaned_id:
+        return "Indica el id de la directriz a descartar."
+    removed = {"value": False}
+
+    def mutate(state):
+        evolution_state = state.setdefault("evolution", {})
+        for key in ("directives_pending", "directives"):
+            items = evolution_state.get(key, [])
+            if not isinstance(items, list):
+                continue
+            filtered = [d for d in items if not (isinstance(d, dict) and str(d.get("id", "")).strip() == cleaned_id)]
+            if len(filtered) != len(items):
+                removed["value"] = True
+            evolution_state[key] = filtered
+
+    state_transaction("evolution_discard_directive", mutate)
+    return "Directriz descartada." if removed["value"] else f"No encontre una directriz con id {cleaned_id}."

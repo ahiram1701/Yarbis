@@ -117,6 +117,14 @@ from tools import (
     web_search,
     write_text_file,
     read_yarbis_messages,
+    evolution_status,
+    evolution_set_enabled,
+    evolution_set_interval,
+    evolution_propose_directive,
+    evolution_list_pending,
+    evolution_list_directives,
+    evolution_apply_directive,
+    evolution_discard_directive,
 )
 
 
@@ -811,6 +819,14 @@ tool_definitions = [
     prepare_social_publication,
     confirm_social_publication,
     open_assisted_social_post,
+    evolution_status,
+    evolution_set_enabled,
+    evolution_set_interval,
+    evolution_propose_directive,
+    evolution_list_pending,
+    evolution_list_directives,
+    evolution_apply_directive,
+    evolution_discard_directive,
 ]
 
 available_functions = {
@@ -892,6 +908,14 @@ available_functions = {
     "prepare_social_publication": prepare_social_publication,
     "confirm_social_publication": confirm_social_publication,
     "open_assisted_social_post": open_assisted_social_post,
+    "evolution_status": evolution_status,
+    "evolution_set_enabled": evolution_set_enabled,
+    "evolution_set_interval": evolution_set_interval,
+    "evolution_propose_directive": evolution_propose_directive,
+    "evolution_list_pending": evolution_list_pending,
+    "evolution_list_directives": evolution_list_directives,
+    "evolution_apply_directive": evolution_apply_directive,
+    "evolution_discard_directive": evolution_discard_directive,
 }
 
 PROACTIVE_SAFE_TOOL_NAMES = {
@@ -936,6 +960,14 @@ PROACTIVE_SAFE_TOOL_NAMES = {
     "coding_git_status",
     "coding_git_diff",
     "coding_validation_plan",
+    "coding_propose_changes",
+    "coding_propose_edits",
+    "coding_propose_text_file",
+    "coding_detect_validation_command",
+    "evolution_status",
+    "evolution_propose_directive",
+    "evolution_list_pending",
+    "evolution_list_directives",
     "social_accounts_overview",
     "save_social_draft",
     "list_social_drafts",
@@ -1446,6 +1478,30 @@ def _print_output(text: str):
         print(safe_text)
 
 
+def _render_learned_directives(state) -> str:
+    evolution = state.get("evolution", {}) if isinstance(state, dict) else {}
+    if not isinstance(evolution, dict):
+        return ""
+    directives = evolution.get("directives", [])
+    if not isinstance(directives, list):
+        return ""
+    lines = []
+    for item in directives:
+        if not isinstance(item, dict):
+            continue
+        text = str(item.get("text", "")).strip()
+        if text:
+            lines.append(f"- {text}")
+        if len(lines) >= 40:
+            break
+    if not lines:
+        return ""
+    return (
+        "Directrices aprendidas (aprobadas por el usuario; siguelas salvo que el "
+        "usuario indique lo contrario):\n" + "\n".join(lines)
+    )
+
+
 def build_messages(state):
     user_name = str(state.get("profile", {}).get("name", "")).strip()
     user_line = (
@@ -1482,18 +1538,20 @@ def build_messages(state):
             "codigo fuente, sistema operativo y hardware."
         )
     temporal_context = _format_local_temporal_context()
+    learned_directives = _render_learned_directives(state)
+
+    second_system = (
+        f"{memory_contract}\n\n"
+        f"{temporal_context}\n\n"
+        f"Contexto actual del agente:\n{state_summary}\n\n"
+        f"Autoconocimiento de Yarbis:\n{self_summary}"
+    )
+    if learned_directives:
+        second_system += f"\n\n{learned_directives}"
 
     messages = [
         {"role": "system", "content": SYSTEM_PROMPT.strip()},
-        {
-            "role": "system",
-            "content": (
-                f"{memory_contract}\n\n"
-                f"{temporal_context}\n\n"
-                f"Contexto actual del agente:\n{state_summary}\n\n"
-                f"Autoconocimiento de Yarbis:\n{self_summary}"
-            ),
-        },
+        {"role": "system", "content": second_system},
     ]
 
     messages.extend(state["messages"][-20:])
