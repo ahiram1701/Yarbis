@@ -152,6 +152,8 @@ DEFAULT_VOICE_TTS_RATE = 175
 DEFAULT_VOICE_TTS_VOICE_ID = ""
 DEFAULT_VOICE_TTS_PROVIDER = "system"
 DEFAULT_VOICE_KOKORO_VOICE_ID = "ef_dora"
+DEFAULT_VOICE_EDGE_VOICE = "es-MX-DaliaNeural"
+MAX_VOICE_EDGE_VOICE_CHARS = 100
 DEFAULT_VOICE_BROWSER_VOICE_NAME = ""
 DEFAULT_VOICE_BROWSER_TTS_RATE = 1.0
 DEFAULT_VOICE_BROWSER_TTS_PITCH = 1.0
@@ -161,7 +163,7 @@ DEFAULT_VOICE_LIVE_WAKE_STT_MODEL = "tiny"
 DEFAULT_VOICE_LIVE_TURN_STT_MODEL = ""
 DEFAULT_VOICE_LIVE_SILENCE_MS = 900
 DEFAULT_VOICE_LIVE_MAX_TURN_SECONDS = 45
-VALID_VOICE_TTS_PROVIDERS = {"system", "kokoro"}
+VALID_VOICE_TTS_PROVIDERS = {"system", "kokoro", "edge"}
 VALID_VOICE_TELEGRAM_REPLY_MODES = {"off", "auto", "always"}
 VALID_VOICE_STT_COMPUTE_TYPES = {"default", "int8", "int8_float16", "int16", "float16", "float32"}
 MIN_VOICE_MAX_AUDIO_SECONDS = 1
@@ -513,6 +515,7 @@ def default_state():
             "tts_voice_id": DEFAULT_VOICE_TTS_VOICE_ID,
             "tts_provider": DEFAULT_VOICE_TTS_PROVIDER,
             "kokoro_voice_id": DEFAULT_VOICE_KOKORO_VOICE_ID,
+            "edge_voice": DEFAULT_VOICE_EDGE_VOICE,
             "browser_voice_name": DEFAULT_VOICE_BROWSER_VOICE_NAME,
             "browser_tts_rate": DEFAULT_VOICE_BROWSER_TTS_RATE,
             "browser_tts_pitch": DEFAULT_VOICE_BROWSER_TTS_PITCH,
@@ -2273,6 +2276,10 @@ def _normalize_voice_settings(voice):
             voice.get("kokoro_voice_id", defaults["kokoro_voice_id"]),
             MAX_VOICE_KOKORO_VOICE_ID_CHARS,
         ).strip()[:MAX_VOICE_KOKORO_VOICE_ID_CHARS] or defaults["kokoro_voice_id"],
+        "edge_voice": _coerce_text(
+            voice.get("edge_voice", defaults["edge_voice"]),
+            MAX_VOICE_EDGE_VOICE_CHARS,
+        ).strip()[:MAX_VOICE_EDGE_VOICE_CHARS] or defaults["edge_voice"],
         "browser_voice_name": _coerce_text(
             voice.get("browser_voice_name", defaults["browser_voice_name"]),
             MAX_VOICE_BROWSER_VOICE_NAME_CHARS,

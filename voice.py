@@ -11,6 +11,7 @@ from memory import (
     DEFAULT_VOICE_MAX_AUDIO_SECONDS,
     DEFAULT_VOICE_BROWSER_TTS_PITCH,
     DEFAULT_VOICE_BROWSER_TTS_RATE,
+    DEFAULT_VOICE_EDGE_VOICE,
     DEFAULT_VOICE_KOKORO_VOICE_ID,
     DEFAULT_VOICE_TELEGRAM_REPLY_MODE,
     DEFAULT_VOICE_TTS_RATE,
@@ -558,6 +559,63 @@ def _synthesize_system_wav(cleaned_text: str, wav_path: Path, settings: dict) ->
         raise VoiceError(f"No pude sintetizar la voz: {exc}") from exc
 
 
+def _synthesize_edge_wav(cleaned_text: str, wav_path: Path, settings: dict) -> None:
+    """Sintetiza voz con edge-tts (Microsoft, cloud, sin RAM local).
+
+    Genera un MP3 con la voz neural configurada y lo convierte a WAV con el
+    ffmpeg bundled para que el resto del pipeline (WAV->OGG) siga igual.
+    """
+    import asyncio
+    import subprocess
+
+    try:
+        import edge_tts
+    except Exception as exc:
+        raise VoiceError(
+            "Falta edge-tts. Instala dependencias con python -m pip install -r requirements.txt."
+        ) from exc
+
+    voice_name = str(settings.get("edge_voice", DEFAULT_VOICE_EDGE_VOICE)).strip() or DEFAULT_VOICE_EDGE_VOICE
+    mp3_path = wav_path.with_suffix(".edge.mp3")
+
+    async def _run() -> None:
+        communicate = edge_tts.Communicate(cleaned_text, voice_name)
+        await communicate.save(str(mp3_path))
+
+    try:
+        try:
+            asyncio.run(_run())
+        except RuntimeError:
+            # Ya hay un loop en este hilo: usar uno nuevo.
+            loop = asyncio.new_event_loop()
+            try:
+                loop.run_until_complete(_run())
+            finally:
+                loop.close()
+    except Exception as exc:
+        cleanup_voice_file(mp3_path)
+        raise VoiceError(f"edge-tts fallo: {exc}") from exc
+
+    if not mp3_path.exists() or mp3_path.stat().st_size <= 0:
+        cleanup_voice_file(mp3_path)
+        raise VoiceError("edge-tts no genero audio.")
+
+    try:
+        completed = subprocess.run(
+            [_ffmpeg_executable(), "-y", "-i", str(mp3_path), str(wav_path)],
+            cwd=str(WORKSPACE_ROOT),
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+        if completed.returncode != 0:
+            raise VoiceError(f"No pude convertir el audio de edge-tts: {completed.stderr.strip()[:200]}")
+    finally:
+        cleanup_voice_file(mp3_path)
+
+
 def _synthesize_kokoro_wav(cleaned_text: str, wav_path: Path, settings: dict) -> None:
     pipeline = _load_kokoro_pipeline(settings)
     for attempt in range(2):
@@ -581,7 +639,18 @@ def _synthesize_wav_file(cleaned_text: str, settings: dict) -> Path:
     VOICE_RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
     token = f"{time.time_ns()}-{threading.get_ident()}"
     wav_path = VOICE_RUNTIME_DIR / f"tts-{token}.wav"
-    if _settings_tts_provider(settings) == "kokoro":
+    provider = _settings_tts_provider(settings)
+    if provider == "edge":
+        try:
+            _synthesize_edge_wav(cleaned_text, wav_path, settings)
+        except Exception:
+            # Sin internet o edge fallo: caemos a la voz del sistema (Sabina).
+            try:
+                cleanup_voice_file(wav_path)
+            except Exception:
+                pass
+            _synthesize_system_wav(cleaned_text, wav_path, settings)
+    elif provider == "kokoro":
         try:
             _synthesize_kokoro_wav(cleaned_text, wav_path, settings)
         except Exception:

@@ -202,3 +202,35 @@ class VoiceTtsFallbackTestCase(unittest.TestCase):
             self.assertTrue(wav.exists())
         finally:
             voice.cleanup_voice_file(wav)
+
+
+class VoiceEdgeTtsTestCase(unittest.TestCase):
+    def test_edge_provider_valid_and_default_voice(self):
+        import memory
+        v = memory.default_state()["voice"]
+        self.assertEqual(v["edge_voice"], "es-MX-DaliaNeural")
+        self.assertIn("edge", memory.VALID_VOICE_TTS_PROVIDERS)
+
+    def test_edge_failure_falls_back_to_system(self):
+        import voice
+        from pathlib import Path
+        from unittest.mock import patch
+
+        calls = {"system": 0}
+
+        def fake_system(text, wav_path, settings):
+            calls["system"] += 1
+            Path(wav_path).write_bytes(b"RIFF____WAVE")
+
+        def fake_edge(text, wav_path, settings):
+            raise RuntimeError("no internet")
+
+        with patch.object(voice, "_settings_tts_provider", return_value="edge"):
+            with patch.object(voice, "_synthesize_edge_wav", side_effect=fake_edge):
+                with patch.object(voice, "_synthesize_system_wav", side_effect=fake_system):
+                    wav = voice._synthesize_wav_file("hola", {"tts_provider": "edge"})
+        try:
+            self.assertEqual(calls["system"], 1)
+            self.assertTrue(wav.exists())
+        finally:
+            voice.cleanup_voice_file(wav)
