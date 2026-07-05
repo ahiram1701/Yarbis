@@ -67,6 +67,13 @@ from session import (
     coding_update_validation_command_text,
     coding_validation_plan_text,
     coding_workflow_status_text,
+    evolution_status_text,
+    evolution_set_enabled_text,
+    evolution_set_interval_text,
+    evolution_apply_directive_text,
+    evolution_discard_directive_text,
+    evolution_apply_suggestion_text,
+    evolution_discard_suggestion_text,
     create_idea_project_text,
     create_memory_backup_text,
     create_project_visual_board_text,
@@ -1424,11 +1431,29 @@ def _public_visual_state(state: dict) -> dict:
     }
 
 
+def _public_evolution(state: dict) -> dict:
+    evolution = state.get("evolution", {}) if isinstance(state.get("evolution", {}), dict) else {}
+
+    def _list(key):
+        items = evolution.get(key, [])
+        return items if isinstance(items, list) else []
+
+    return {
+        "enabled": bool(evolution.get("enabled", False)),
+        "interval_hours": evolution.get("interval_hours", 6),
+        "max_pending": evolution.get("max_pending", 2),
+        "directives": _list("directives"),
+        "directives_pending": _list("directives_pending"),
+        "suggestions_pending": _list("suggestions_pending"),
+    }
+
+
 def _public_settings_state(state: dict) -> dict:
     service = state.get("service", {}) if isinstance(state.get("service", {}), dict) else {}
     mobile_settings = service.get("mobile_ui", {}) if isinstance(service.get("mobile_ui", {}), dict) else {}
     social = _public_social(state)
     return {
+        "evolution": _public_evolution(state),
         "internet": state.get("internet", {}),
         "memory_protection": state.get("memory_protection", {}),
         "memory_protection_status": _mobile_memory_protection_status(state),
@@ -1742,6 +1767,19 @@ def _execute_action(action: str, payload: dict | None = None) -> dict:
         return {"result": coding_detect_validation_command_text()}
     if action == "coding_validation_plan":
         return {"result": coding_validation_plan_text(_payload_text(payload, "proposal_id"))}
+    if action == "evolution_toggle":
+        enabled = _payload_text(payload, "enabled").lower() in {"1", "true", "on", "si", "sí", "yes"}
+        return {"result": evolution_set_enabled_text(enabled)}
+    if action == "evolution_interval":
+        return {"result": evolution_set_interval_text(_payload_text(payload, "hours"))}
+    if action == "evolution_apply_directive":
+        return {"result": evolution_apply_directive_text(_payload_text(payload, "id"))}
+    if action == "evolution_discard_directive":
+        return {"result": evolution_discard_directive_text(_payload_text(payload, "id"))}
+    if action == "evolution_apply_suggestion":
+        return {"result": evolution_apply_suggestion_text(_payload_text(payload, "id"))}
+    if action == "evolution_discard_suggestion":
+        return {"result": evolution_discard_suggestion_text(_payload_text(payload, "id"))}
     if action == "update_model":
         provider = _payload_text(payload, "provider", MODEL_PROVIDER_OLLAMA).lower()
         if provider == MODEL_PROVIDER_OPENROUTER:
@@ -3936,6 +3974,21 @@ function renderSettings() {
   const browserVoiceOptions = browserVoices.map(item => (
     `<option value="${escapeHtml(item.name || "")}">${escapeHtml((item.name || "Voz") + (item.lang ? " - " + item.lang : ""))}</option>`
   )).join("");
+  const evo = appState.evolution || {};
+  const evoDirectivesHtml = (evo.directives_pending || []).length
+    ? (evo.directives_pending || []).map(d => (
+        `<div class="panel"><div>${escapeHtml(d.text || "")}</div>`
+        + `<button class="compact" data-action="evo-apply-directive" data-id="${escapeHtml(d.id || "")}">Aprobar</button> `
+        + `<button class="compact" data-action="evo-discard-directive" data-id="${escapeHtml(d.id || "")}">Descartar</button></div>`
+      )).join("")
+    : `<div class="muted">Sin directrices propuestas.</div>`;
+  const evoSuggestionsHtml = (evo.suggestions_pending || []).length
+    ? (evo.suggestions_pending || []).map(s => (
+        `<div class="panel"><div><span class="muted">${s.kind === "goal" ? "objetivo" : "memoria"}</span> ${escapeHtml(s.text || "")}</div>`
+        + `<button class="compact" data-action="evo-apply-suggestion" data-id="${escapeHtml(s.id || "")}">Aprobar</button> `
+        + `<button class="compact" data-action="evo-discard-suggestion" data-id="${escapeHtml(s.id || "")}">Descartar</button></div>`
+      )).join("")
+    : `<div class="muted">Sin sugerencias de objetivo/memoria.</div>`;
   $("settings").innerHTML = `
     <section class="hero">
       <h2>Configuración operativa</h2>
@@ -3972,6 +4025,20 @@ function renderSettings() {
         <div class="muted">Cada instancia pide su propio PIN. Al usar la URL HTTPS de Tailscale solo responde la instancia dueña del HTTPS; las demás abren por http://host:puerto.</div>
         ${instancesHtml}
         <button data-action="refresh-instances">Refrescar instancias</button>
+      </div>
+    </section>
+    <section class="section">
+      <h2>Autoevolución</h2>
+      <div class="setting-group">
+        <div class="muted">Yarbis revisa su propio proyecto y propone mejoras (código, comportamiento, objetivos, memoria). Nunca aplica nada sin tu aprobación.</div>
+        <label><input id="evolutionEnabled" type="checkbox" ${evo.enabled ? "checked" : ""}> Activa</label>
+        <div><label>Cadencia (horas)</label><input id="evolutionInterval" type="number" min="1" max="168" value="${escapeHtml(evo.interval_hours || 6)}"></div>
+        <button data-action="save-evolution">Guardar autoevolución</button>
+        <div class="muted">Directrices de comportamiento propuestas:</div>
+        ${evoDirectivesHtml}
+        <div class="muted">Sugerencias de objetivo/memoria propuestas:</div>
+        ${evoSuggestionsHtml}
+        <div class="muted">Las propuestas de código se aprueban en la sección de coding o por chat.</div>
       </div>
     </section>
     <section class="section">
@@ -4177,6 +4244,17 @@ document.addEventListener("click", async (event) => {
       goToInstance(button.dataset.instanceId);
     } else if (name === "refresh-instances") {
       await loadInstances(true);
+    } else if (name === "save-evolution") {
+      await action("evolution_toggle", { enabled: $("evolutionEnabled").checked });
+      await action("evolution_interval", { hours: $("evolutionInterval").value });
+    } else if (name === "evo-apply-directive") {
+      await action("evolution_apply_directive", { id: button.dataset.id });
+    } else if (name === "evo-discard-directive") {
+      await action("evolution_discard_directive", { id: button.dataset.id });
+    } else if (name === "evo-apply-suggestion") {
+      await action("evolution_apply_suggestion", { id: button.dataset.id });
+    } else if (name === "evo-discard-suggestion") {
+      await action("evolution_discard_suggestion", { id: button.dataset.id });
     } else if (name === "run-cycle") {
       await action("run_cycle");
     } else if (name === "run-auto") {

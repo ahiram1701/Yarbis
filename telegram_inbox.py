@@ -56,6 +56,16 @@ from session import (
     coding_validation_plan_text,
     coding_workflow_status_text,
     coding_workspace_overview_text,
+    evolution_status_text,
+    evolution_set_enabled_text,
+    evolution_set_interval_text,
+    evolution_list_pending_text,
+    evolution_list_directives_text,
+    evolution_apply_directive_text,
+    evolution_discard_directive_text,
+    evolution_list_suggestions_text,
+    evolution_apply_suggestion_text,
+    evolution_discard_suggestion_text,
     get_default_model_provider,
     get_ollama_settings,
     get_openrouter_settings,
@@ -408,7 +418,8 @@ def _help_text() -> str:
         "/coding plan_validacion [ID] - recomendar validacion\n"
         "/coding validar [ID] - validar workspace/propuesta\n"
         "/coding aplicar ID - aplicar propuesta aprobada\n"
-        "/coding aplicar_validar ID - aplicar y validar\n\n"
+        "/coding aplicar_validar ID - aplicar y validar\n"
+        "/evolucion - autoevolucion (on/off, cadencia, pendientes, aprobar)\n\n"
         "Modelo y voz\n"
         "/proveedor ollama|openrouter\n"
         "/modelo NOMBRE\n"
@@ -1356,6 +1367,8 @@ def _job_label_for_message(text: str) -> str:
         return "Voz"
     if command == "/coding":
         return "Coding"
+    if command in {"/evolucion", "/evolución", "/autoevolucion", "/autoevolución"}:
+        return "Autoevolucion"
     if command in {"/goal", "/objetivo"}:
         return "Objetivo"
     if command in {"/notas", "/nota", "/crear_nota", "/guardar_nota", "/borrar_nota", "/eliminar_nota", "/ver_nota"}:
@@ -1372,6 +1385,64 @@ def _job_label_for_message(text: str) -> str:
         return "Cancelar apagado/reinicio"
 
     return ""
+
+
+_EVOLUTION_HELP = (
+    "Autoevolucion (propone -> tu apruebas):\n"
+    "/evolucion - estado\n"
+    "/evolucion on | off - activar/desactivar\n"
+    "/evolucion cadencia N - revisar cada N horas\n"
+    "/evolucion pendientes - directrices propuestas\n"
+    "/evolucion sugerencias - propuestas de objetivo/memoria\n"
+    "/evolucion activas - directrices ya aprobadas\n"
+    "/evolucion aprobar ID - aprobar una directriz o sugerencia\n"
+    "/evolucion descartar ID - descartar una directriz o sugerencia\n"
+    "(las propuestas de codigo se aprueban con /coding)"
+)
+
+
+def _dispatch_evolution_command(argument_text: str) -> str:
+    argument = str(argument_text).strip()
+    if not argument:
+        return evolution_status_text()
+
+    parts = argument.split(maxsplit=1)
+    sub = parts[0].strip().lower()
+    rest = parts[1].strip() if len(parts) > 1 else ""
+
+    if sub in {"estado", "status"}:
+        return evolution_status_text()
+    if sub in {"on", "activar", "encender", "activa"}:
+        return evolution_set_enabled_text(True)
+    if sub in {"off", "desactivar", "apagar", "desactiva"}:
+        return evolution_set_enabled_text(False)
+    if sub in {"cadencia", "intervalo", "cada"}:
+        try:
+            hours = int(rest.split()[0])
+        except (ValueError, IndexError):
+            return "Indica las horas. Ej: /evolucion cadencia 12"
+        return evolution_set_interval_text(hours)
+    if sub in {"pendientes", "directrices", "pending"}:
+        return evolution_list_pending_text()
+    if sub in {"sugerencias", "suggestions"}:
+        return evolution_list_suggestions_text()
+    if sub in {"activas", "aprobadas", "vigentes"}:
+        return evolution_list_directives_text()
+    if sub in {"aprobar", "apply", "aplicar"}:
+        if not rest:
+            return "Indica el id. Ej: /evolucion aprobar abc123"
+        result = evolution_apply_directive_text(rest)
+        if "No encontre" in result:
+            return evolution_apply_suggestion_text(rest)
+        return result
+    if sub in {"descartar", "discard", "rechazar"}:
+        if not rest:
+            return "Indica el id. Ej: /evolucion descartar abc123"
+        result = evolution_discard_directive_text(rest)
+        if "No encontre" in result:
+            return evolution_discard_suggestion_text(rest)
+        return result
+    return _EVOLUTION_HELP
 
 
 def _dispatch_coding_command(argument_text: str) -> str:
@@ -1473,6 +1544,9 @@ def _dispatch_command(command_text: str, chat_id: str = "") -> str:
 
     if command == "/coding":
         return _dispatch_coding_command(argument_text)
+
+    if command in {"/evolucion", "/evolución", "/autoevolucion", "/autoevolución"}:
+        return _dispatch_evolution_command(argument_text)
 
     if command == "/ollama":
         return _dispatch_ollama_command(argument_text)

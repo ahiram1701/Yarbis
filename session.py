@@ -105,6 +105,16 @@ from tools import (
     update_project_visual_board,
     update_profile,
     verify_memory_backups,
+    evolution_status,
+    evolution_set_enabled,
+    evolution_set_interval,
+    evolution_list_pending,
+    evolution_list_directives,
+    evolution_apply_directive,
+    evolution_discard_directive,
+    evolution_list_suggestions,
+    evolution_apply_suggestion,
+    evolution_discard_suggestion,
 )
 from service_manager import format_readiness_status, readiness_status
 
@@ -1592,6 +1602,56 @@ def coding_set_workspace_text(path: str) -> str:
 def coding_workspace_overview_text() -> str:
     with SESSION_LOCK:
         return coding_workspace_overview()
+
+
+def evolution_status_text() -> str:
+    with SESSION_LOCK:
+        return evolution_status()
+
+
+def evolution_set_enabled_text(enabled: bool) -> str:
+    with SESSION_LOCK:
+        return evolution_set_enabled(enabled)
+
+
+def evolution_set_interval_text(hours: int) -> str:
+    with SESSION_LOCK:
+        return evolution_set_interval(hours)
+
+
+def evolution_list_pending_text() -> str:
+    with SESSION_LOCK:
+        return evolution_list_pending()
+
+
+def evolution_list_directives_text() -> str:
+    with SESSION_LOCK:
+        return evolution_list_directives()
+
+
+def evolution_apply_directive_text(directive_id: str) -> str:
+    with SESSION_LOCK:
+        return evolution_apply_directive(directive_id)
+
+
+def evolution_discard_directive_text(directive_id: str) -> str:
+    with SESSION_LOCK:
+        return evolution_discard_directive(directive_id)
+
+
+def evolution_list_suggestions_text() -> str:
+    with SESSION_LOCK:
+        return evolution_list_suggestions()
+
+
+def evolution_apply_suggestion_text(suggestion_id: str) -> str:
+    with SESSION_LOCK:
+        return evolution_apply_suggestion(suggestion_id)
+
+
+def evolution_discard_suggestion_text(suggestion_id: str) -> str:
+    with SESSION_LOCK:
+        return evolution_discard_suggestion(suggestion_id)
 
 
 def coding_workflow_status_text(include_diff: bool = False) -> str:
