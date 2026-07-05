@@ -758,6 +758,19 @@ def _count_pending_coding_proposals(state: dict | None = None) -> int:
     return len(pending) if isinstance(pending, list) else 0
 
 
+def _count_pending_evolution_items(state: dict | None = None) -> int:
+    if state is None:
+        state = load_state()
+    total = _count_pending_coding_proposals(state)
+    evolution = state.get("evolution", {}) if isinstance(state, dict) else {}
+    if isinstance(evolution, dict):
+        for key in ("directives_pending", "suggestions_pending"):
+            items = evolution.get(key, [])
+            if isinstance(items, list):
+                total += len(items)
+    return total
+
+
 def _ensure_coding_workspace() -> None:
     # La autoevolucion propone sobre el propio repo de Yarbis: si el workspace de
     # coding no esta configurado, lo apunta al directorio del proyecto.
@@ -808,7 +821,7 @@ def _run_self_evolution_inline(settings: dict) -> str:
                 return "Autoevolucion omitida: esperando respuesta del usuario."
 
             max_pending = int(settings.get("max_pending", 2))
-            pending_before = _count_pending_coding_proposals(state)
+            pending_before = _count_pending_evolution_items(state)
             if pending_before >= max_pending:
                 return (
                     f"Autoevolucion omitida: ya hay {pending_before} propuesta(s) pendientes "
@@ -820,26 +833,26 @@ def _run_self_evolution_inline(settings: dict) -> str:
             output = run_auto_with_output(cycles=settings.get("cycles"), emit_notifications=False)
 
             refreshed_state = load_state()
+            new_count = max(0, _count_pending_evolution_items(refreshed_state) - pending_before)
             if has_pending_user_question(refreshed_state):
                 notify_user_input_required(
                     refreshed_state["awaiting_user_input"].get("question", ""),
                     refreshed_state["awaiting_user_input"].get("reason", ""),
                 )
-            else:
-                new_count = max(0, _count_pending_coding_proposals(refreshed_state) - pending_before)
-                if new_count > 0:
-                    _send_telegram_operation_update(
-                        "Autoevolucion",
-                        f"Genere {new_count} propuesta(s) de mejora para tu aprobacion. "
-                        "Revisalas con /coding o en la UI movil (Ajustes).\n\n"
-                        + str(output),
-                    )
+            elif new_count > 0:
+                _send_telegram_operation_update(
+                    "Autoevolucion",
+                    f"Genere {new_count} propuesta(s) de mejora para tu aprobacion. "
+                    "Revisalas con /coding, evolution_list_pending / evolution_list_suggestions "
+                    "o en la UI movil.\n\n"
+                    + str(output),
+                )
 
             activity.emit_event(
                 "self_evolution_completed",
                 operation_id=current_operation_id(),
                 label="Autoevolucion",
-                new_proposals=max(0, _count_pending_coding_proposals(load_state()) - pending_before),
+                new_proposals=new_count,
             )
             return output
     except SessionOperationBusy:

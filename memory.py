@@ -243,6 +243,9 @@ MAX_EVOLUTION_DIRECTIVES = 40
 MAX_EVOLUTION_DIRECTIVE_CHARS = 500
 MAX_EVOLUTION_DIRECTIVE_REASON_CHARS = 500
 MAX_EVOLUTION_DIRECTIVE_ID_CHARS = 80
+MAX_EVOLUTION_SUGGESTIONS = 40
+MAX_EVOLUTION_SUGGESTION_CHARS = 2_000
+EVOLUTION_SUGGESTION_KINDS = ("goal", "memory")
 DEFAULT_MEMORY_PROTECTION_ENABLED = True
 DEFAULT_MEMORY_PROTECTION_BACKUP_ON_EVERY_CHANGE = True
 DEFAULT_MEMORY_PROTECTION_INCLUDE_SECRETS = False
@@ -350,6 +353,7 @@ def default_state():
             "dimensions": list(EVOLUTION_DIMENSIONS),
             "directives": [],
             "directives_pending": [],
+            "suggestions_pending": [],
         },
         "memory_protection": {
             "enabled": DEFAULT_MEMORY_PROTECTION_ENABLED,
@@ -1192,6 +1196,36 @@ def _normalize_evolution_directives(raw_list) -> list[dict]:
     return normalized
 
 
+def _normalize_evolution_suggestions(raw_list) -> list[dict]:
+    if not isinstance(raw_list, list):
+        return []
+    normalized = []
+    seen_ids = set()
+    for item in raw_list:
+        if not isinstance(item, dict):
+            continue
+        text = _coerce_text(item.get("text", ""), MAX_EVOLUTION_SUGGESTION_CHARS).strip()
+        if not text:
+            continue
+        kind = str(item.get("kind", "")).strip().lower()
+        if kind not in EVOLUTION_SUGGESTION_KINDS:
+            continue
+        suggestion_id = _coerce_text(item.get("id", ""), MAX_EVOLUTION_DIRECTIVE_ID_CHARS).strip()
+        if not suggestion_id or suggestion_id in seen_ids:
+            suggestion_id = uuid4().hex[:12]
+        seen_ids.add(suggestion_id)
+        normalized.append({
+            "id": suggestion_id,
+            "kind": kind,
+            "text": text,
+            "reason": _coerce_text(item.get("reason", ""), MAX_EVOLUTION_DIRECTIVE_REASON_CHARS).strip(),
+            "created_at": _coerce_text(item.get("created_at", ""), MAX_CODING_VALIDATION_TIMESTAMP_CHARS).strip(),
+        })
+        if len(normalized) >= MAX_EVOLUTION_SUGGESTIONS:
+            break
+    return normalized
+
+
 def _normalize_evolution(evolution):
     defaults = default_state()["evolution"]
     if not isinstance(evolution, dict):
@@ -1231,6 +1265,7 @@ def _normalize_evolution(evolution):
         "dimensions": dimensions,
         "directives": _normalize_evolution_directives(evolution.get("directives", [])),
         "directives_pending": _normalize_evolution_directives(evolution.get("directives_pending", [])),
+        "suggestions_pending": _normalize_evolution_suggestions(evolution.get("suggestions_pending", [])),
     }
 
 

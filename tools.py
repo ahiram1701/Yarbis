@@ -26,9 +26,12 @@ import yarbis_bus
 import yarbis_instance
 from memory import (
     EVOLUTION_DIMENSIONS,
+    EVOLUTION_SUGGESTION_KINDS,
     MAX_EVOLUTION_DIRECTIVE_CHARS,
     MAX_EVOLUTION_DIRECTIVE_REASON_CHARS,
     MAX_EVOLUTION_DIRECTIVES,
+    MAX_EVOLUTION_SUGGESTION_CHARS,
+    MAX_EVOLUTION_SUGGESTIONS,
     MAX_VISUAL_BOARD_EDGES,
     MAX_VISUAL_BOARD_NODES,
     MAX_VISUAL_BOARDS_PER_PROJECT,
@@ -5504,6 +5507,7 @@ def evolution_status() -> str:
     evolution = _evolution_state()
     directives = evolution.get("directives", []) if isinstance(evolution.get("directives"), list) else []
     pending = evolution.get("directives_pending", []) if isinstance(evolution.get("directives_pending"), list) else []
+    suggestions = evolution.get("suggestions_pending", []) if isinstance(evolution.get("suggestions_pending"), list) else []
     dims = evolution.get("dimensions", []) if isinstance(evolution.get("dimensions"), list) else []
     return (
         "Autoevolucion de Yarbis:\n"
@@ -5512,7 +5516,8 @@ def evolution_status() -> str:
         f"- Maximo de propuestas pendientes: {evolution.get('max_pending', 2)}\n"
         f"- Dimensiones: {', '.join(dims) or '-'}\n"
         f"- Directrices aprobadas: {len(directives)}\n"
-        f"- Directrices propuestas por aprobar: {len(pending)}"
+        f"- Directrices propuestas por aprobar: {len(pending)}\n"
+        f"- Sugerencias objetivo/memoria por aprobar: {len(suggestions)}"
     )
 
 
@@ -5719,3 +5724,176 @@ def evolution_discard_directive(directive_id: str) -> str:
 
     state_transaction("evolution_discard_directive", mutate)
     return "Directriz descartada." if removed["value"] else f"No encontre una directriz con id {cleaned_id}."
+
+
+def _evolution_propose_suggestion(kind: str, text: str, reason: str) -> str:
+    cleaned_text = str(text).strip()[:MAX_EVOLUTION_SUGGESTION_CHARS]
+    if not cleaned_text:
+        return "La sugerencia no puede quedar vacia."
+    if kind not in EVOLUTION_SUGGESTION_KINDS:
+        return f"Tipo de sugerencia invalido: {kind}."
+    suggestion_id = uuid4().hex[:12]
+    entry = {
+        "id": suggestion_id,
+        "kind": kind,
+        "text": cleaned_text,
+        "reason": str(reason).strip()[:MAX_EVOLUTION_DIRECTIVE_REASON_CHARS],
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    overflow = {"value": False}
+
+    def mutate(state):
+        evolution_state = state.setdefault("evolution", {})
+        pending = evolution_state.setdefault("suggestions_pending", [])
+        if not isinstance(pending, list):
+            pending = []
+        if len(pending) >= MAX_EVOLUTION_SUGGESTIONS:
+            overflow["value"] = True
+            return
+        pending.append(entry)
+        evolution_state["suggestions_pending"] = pending
+
+    state_transaction("evolution_propose_suggestion", mutate)
+    if overflow["value"]:
+        return "Ya hay demasiadas sugerencias propuestas; aprueba o descarta algunas antes."
+    label = "objetivo" if kind == "goal" else "memoria"
+    return (
+        f"Sugerencia de {label} propuesta (pendiente de aprobacion).\n"
+        f"Id: {suggestion_id}\n"
+        f"Texto: {cleaned_text}\n"
+        "El usuario la aprueba con evolution_apply_suggestion o la descarta con evolution_discard_suggestion."
+    )
+
+
+def evolution_propose_goal(text: str, reason: str = "") -> str:
+    """
+    Propone un objetivo principal refinado para que el usuario lo apruebe.
+
+    No cambia el objetivo hasta que el usuario apruebe con evolution_apply_suggestion.
+
+    Args:
+        text (str): El objetivo propuesto.
+        reason (str): Motivo breve del refinamiento.
+
+    Returns:
+        str: Id de la sugerencia propuesta.
+    """
+    return _evolution_propose_suggestion("goal", text, reason)
+
+
+def evolution_propose_memory(text: str, reason: str = "") -> str:
+    """
+    Propone una nota de memoria (aprendizaje a persistir) para aprobacion del usuario.
+
+    No guarda nada hasta que el usuario apruebe con evolution_apply_suggestion.
+
+    Args:
+        text (str): El aprendizaje o nota propuesta.
+        reason (str): Motivo breve.
+
+    Returns:
+        str: Id de la sugerencia propuesta.
+    """
+    return _evolution_propose_suggestion("memory", text, reason)
+
+
+def evolution_list_suggestions() -> str:
+    """
+    Lista las sugerencias de objetivo/memoria propuestas por aprobar.
+
+    Returns:
+        str: Sugerencias pendientes con su id y tipo.
+    """
+    evolution = _evolution_state()
+    pending = evolution.get("suggestions_pending", []) if isinstance(evolution.get("suggestions_pending"), list) else []
+    if not pending:
+        return "Sugerencias de objetivo/memoria por aprobar:\n- (ninguna)"
+    lines = []
+    for item in pending:
+        if not isinstance(item, dict):
+            continue
+        kind = "objetivo" if item.get("kind") == "goal" else "memoria"
+        sid = str(item.get("id", "")).strip()
+        text = str(item.get("text", "")).strip()
+        reason = str(item.get("reason", "")).strip()
+        line = f"- [{sid}] ({kind}) {text}"
+        if reason:
+            line += f" (motivo: {reason})"
+        lines.append(line)
+    return "Sugerencias de objetivo/memoria por aprobar:\n" + "\n".join(lines)
+
+
+def evolution_apply_suggestion(suggestion_id: str) -> str:
+    """
+    Aprueba una sugerencia de objetivo/memoria: la aplica y la quita de pendientes.
+
+    Para 'goal' actualiza el objetivo principal; para 'memory' guarda una nota.
+
+    Args:
+        suggestion_id (str): Id de la sugerencia pendiente.
+
+    Returns:
+        str: Resultado de aplicar la sugerencia.
+    """
+    cleaned_id = str(suggestion_id).strip()
+    if not cleaned_id:
+        return "Indica el id de la sugerencia a aprobar."
+
+    match = None
+    for item in _evolution_state().get("suggestions_pending", []):
+        if isinstance(item, dict) and str(item.get("id", "")).strip() == cleaned_id:
+            match = item
+            break
+    if match is None:
+        return f"No encontre una sugerencia pendiente con id {cleaned_id}."
+
+    kind = str(match.get("kind", "")).strip()
+    text = str(match.get("text", "")).strip()
+    if kind == "goal":
+        applied_result = update_goal(text)
+    elif kind == "memory":
+        title = (text.split("\n", 1)[0])[:80] or "Aprendizaje de autoevolucion"
+        applied_result = save_note(title, text, category="autoevolucion")
+    else:
+        return f"Tipo de sugerencia invalido: {kind}."
+
+    def mutate(state):
+        evolution_state = state.setdefault("evolution", {})
+        pending = evolution_state.get("suggestions_pending", [])
+        if not isinstance(pending, list):
+            pending = []
+        evolution_state["suggestions_pending"] = [
+            d for d in pending if not (isinstance(d, dict) and str(d.get("id", "")).strip() == cleaned_id)
+        ]
+
+    state_transaction("evolution_apply_suggestion", mutate)
+    return f"Sugerencia aprobada y aplicada.\n{applied_result}"
+
+
+def evolution_discard_suggestion(suggestion_id: str) -> str:
+    """
+    Descarta una sugerencia de objetivo/memoria por su id.
+
+    Args:
+        suggestion_id (str): Id de la sugerencia.
+
+    Returns:
+        str: Confirmacion.
+    """
+    cleaned_id = str(suggestion_id).strip()
+    if not cleaned_id:
+        return "Indica el id de la sugerencia a descartar."
+    removed = {"value": False}
+
+    def mutate(state):
+        evolution_state = state.setdefault("evolution", {})
+        pending = evolution_state.get("suggestions_pending", [])
+        if not isinstance(pending, list):
+            pending = []
+        filtered = [d for d in pending if not (isinstance(d, dict) and str(d.get("id", "")).strip() == cleaned_id)]
+        if len(filtered) != len(pending):
+            removed["value"] = True
+        evolution_state["suggestions_pending"] = filtered
+
+    state_transaction("evolution_discard_suggestion", mutate)
+    return "Sugerencia descartada." if removed["value"] else f"No encontre una sugerencia con id {cleaned_id}."

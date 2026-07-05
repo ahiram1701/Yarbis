@@ -125,6 +125,11 @@ from tools import (
     evolution_list_directives,
     evolution_apply_directive,
     evolution_discard_directive,
+    evolution_propose_goal,
+    evolution_propose_memory,
+    evolution_list_suggestions,
+    evolution_apply_suggestion,
+    evolution_discard_suggestion,
 )
 
 
@@ -827,6 +832,11 @@ tool_definitions = [
     evolution_list_directives,
     evolution_apply_directive,
     evolution_discard_directive,
+    evolution_propose_goal,
+    evolution_propose_memory,
+    evolution_list_suggestions,
+    evolution_apply_suggestion,
+    evolution_discard_suggestion,
 ]
 
 available_functions = {
@@ -916,6 +926,11 @@ available_functions = {
     "evolution_list_directives": evolution_list_directives,
     "evolution_apply_directive": evolution_apply_directive,
     "evolution_discard_directive": evolution_discard_directive,
+    "evolution_propose_goal": evolution_propose_goal,
+    "evolution_propose_memory": evolution_propose_memory,
+    "evolution_list_suggestions": evolution_list_suggestions,
+    "evolution_apply_suggestion": evolution_apply_suggestion,
+    "evolution_discard_suggestion": evolution_discard_suggestion,
 }
 
 PROACTIVE_SAFE_TOOL_NAMES = {
@@ -968,6 +983,9 @@ PROACTIVE_SAFE_TOOL_NAMES = {
     "evolution_propose_directive",
     "evolution_list_pending",
     "evolution_list_directives",
+    "evolution_propose_goal",
+    "evolution_propose_memory",
+    "evolution_list_suggestions",
     "social_accounts_overview",
     "save_social_draft",
     "list_social_drafts",

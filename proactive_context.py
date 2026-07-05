@@ -159,20 +159,20 @@ def build_self_evolution_tick_message(state: dict | None = None) -> str:
         max_pending = 2
 
     dim_labels = {
-        "code": "codigo (corrige bugs, optimiza, agrega features utiles)",
-        "skills": "skills/herramientas (propon tools nuevas como diff de codigo)",
-        "behavior": "comportamiento (anota mejoras de reglas/estrategia para revisarlas luego)",
-        "goals": "objetivos/memoria (sugiere refinamientos sin aplicarlos)",
+        "code": "codigo (corrige bugs, optimiza, agrega features utiles) -> `coding_propose_changes`",
+        "skills": "skills/herramientas (propon tools nuevas como diff de codigo) -> `coding_propose_changes`",
+        "behavior": "comportamiento (reglas/estrategia) -> `evolution_propose_directive`",
+        "goals": "objetivo principal -> `evolution_propose_goal`; memoria/aprendizajes -> `evolution_propose_memory`",
     }
     active = [f"- {dim_labels[d]}" for d in ("code", "skills", "behavior", "goals") if d in dimensions and d in dim_labels]
-    dims_text = "\n".join(active) if active else "- codigo"
+    dims_text = "\n".join(active) if active else "- codigo -> `coding_propose_changes`"
 
     return (
         f"{SELF_EVOLUTION_TICK_BASE_MESSAGE}\n\n"
         "El workspace de coding activo ya apunta a tu propio proyecto. Usa "
         "`coding_workspace_overview`, `coding_list_files`, `coding_search_text` y "
         "`coding_read_text_range` para estudiar tu codigo antes de proponer.\n\n"
-        "Dimensiones a revisar:\n"
+        "Dimensiones a revisar (cada una con su herramienta de PROPUESTA):\n"
         f"{dims_text}\n\n"
         "Reglas ESTRICTAS:\n"
         f"- Antes de proponer, revisa cuantas propuestas 'pending' hay. Si ya hay {max_pending} o mas, "
@@ -181,8 +181,10 @@ def build_self_evolution_tick_message(state: dict | None = None) -> str:
         "motivo y `validation_command` = el comando de tests del repo (usa `coding_detect_validation_command` "
         "si no lo sabes). Prefiere cambios pequenos, seguros y de alta confianza (un bugfix, una limpieza, "
         "un test, una mejora acotada).\n"
-        "- NUNCA apliques cambios: no uses `coding_apply_proposal` ni edites archivos directamente. "
-        "El usuario revisa y aprueba cada propuesta.\n"
+        "- Para comportamiento usa `evolution_propose_directive`. Para objetivo usa `evolution_propose_goal` "
+        "y para memoria/aprendizajes usa `evolution_propose_memory`.\n"
+        "- NUNCA apliques cambios: no uses `coding_apply_proposal`, `update_goal`, `save_note`, "
+        "`evolution_apply_*` ni edites archivos directamente. Solo PROPONES; el usuario aprueba.\n"
         "- No toques rutas protegidas (.git, .venv, state.json, runtime, instancias).\n"
         "- Si no encuentras una mejora clara de alto valor, deja una salida breve sin inventar trabajo."
     )

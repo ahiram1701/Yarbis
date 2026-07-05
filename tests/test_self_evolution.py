@@ -157,6 +157,60 @@ class EvolutionToolsTestCase(unittest.TestCase):
             self.assertEqual(state["evolution"]["interval_hours"], 168)
 
 
+class EvolutionSuggestionsTestCase(unittest.TestCase):
+    def _bind(self, state):
+        def fake_tx(label, mutate, **kwargs):
+            return mutate(state)
+
+        return (
+            patch.object(tools, "load_state", return_value=state),
+            patch.object(tools, "state_transaction", side_effect=fake_tx),
+        )
+
+    def test_normalize_suggestions_filters_kind_and_empty(self):
+        n = memory._normalize_evolution_suggestions([
+            {"kind": "goal", "text": "Enfocar en X"},
+            {"kind": "bogus", "text": "no"},
+            {"kind": "memory", "text": "  "},
+            {"kind": "memory", "text": "aprendizaje"},
+        ])
+        self.assertEqual([(s["kind"], s["text"]) for s in n], [("goal", "Enfocar en X"), ("memory", "aprendizaje")])
+
+    def test_propose_goal_apply_updates_goal(self):
+        state = memory.default_state()
+        p1, p2 = self._bind(state)
+        with p1, p2:
+            out = tools.evolution_propose_goal("Ser el mejor asistente de trading", "foco")
+            self.assertIn("Sugerencia de objetivo propuesta", out)
+            sid = state["evolution"]["suggestions_pending"][0]["id"]
+            listed = tools.evolution_list_suggestions()
+            self.assertIn(sid, listed)
+            applied = tools.evolution_apply_suggestion(sid)
+            self.assertIn("aprobada", applied)
+            self.assertEqual(state["goal"], "Ser el mejor asistente de trading")
+            self.assertEqual(state["evolution"]["suggestions_pending"], [])
+
+    def test_propose_memory_apply_saves_note(self):
+        state = memory.default_state()
+        p1, p2 = self._bind(state)
+        with p1, p2:
+            tools.evolution_propose_memory("El usuario prefiere respuestas cortas", "estilo")
+            sid = state["evolution"]["suggestions_pending"][0]["id"]
+            tools.evolution_apply_suggestion(sid)
+            self.assertTrue(len(state.get("notes", [])) >= 1)
+            self.assertEqual(state["evolution"]["suggestions_pending"], [])
+
+    def test_discard_suggestion(self):
+        state = memory.default_state()
+        p1, p2 = self._bind(state)
+        with p1, p2:
+            tools.evolution_propose_goal("algo", "")
+            sid = state["evolution"]["suggestions_pending"][0]["id"]
+            self.assertIn("descartada", tools.evolution_discard_suggestion(sid))
+            self.assertEqual(state["evolution"]["suggestions_pending"], [])
+            self.assertIn("No encontre", tools.evolution_apply_suggestion(sid))
+
+
 class DirectiveInjectionTestCase(unittest.TestCase):
     def test_approved_directives_injected_pending_not(self):
         import agent
