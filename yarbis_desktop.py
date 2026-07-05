@@ -63,6 +63,15 @@ from session import (
     coding_set_workspace_text,
     coding_validation_plan_text,
     coding_workflow_status_text,
+    evolution_status_text,
+    evolution_set_enabled_text,
+    evolution_set_interval_text,
+    evolution_list_pending_text,
+    evolution_list_suggestions_text,
+    evolution_apply_directive_text,
+    evolution_discard_directive_text,
+    evolution_apply_suggestion_text,
+    evolution_discard_suggestion_text,
     create_memory_backup_text,
     get_local_context_settings,
     get_model_provider_settings,
@@ -1449,6 +1458,19 @@ class YarbisDesktop(tk.Tk):
                 {"text": "Probar notificación", "command": self._send_test_notification},
             ),
         )
+        self._build_action_group(
+            left,
+            "Autoevolución y aprendizaje",
+            (
+                {"text": "Estado", "command": self._show_evolution_status},
+                {"text": "Activar", "command": lambda: self._set_evolution_enabled(True), "style": "Accent.TButton"},
+                {"text": "Desactivar", "command": lambda: self._set_evolution_enabled(False)},
+                {"text": "Cadencia…", "command": self._set_evolution_interval},
+                {"text": "Propuestas pendientes", "command": self._show_evolution_pending},
+                {"text": "Aprobar propuesta…", "command": self._approve_evolution_item},
+                {"text": "Descartar propuesta…", "command": self._discard_evolution_item},
+            ),
+        )
         self._build_service_group(right)
         self._build_action_group(
             right,
@@ -1459,6 +1481,64 @@ class YarbisDesktop(tk.Tk):
                 {"text": "Actualizar Yarbis", "command": self._update_yarbis, "style": "Secondary.TButton"},
             ),
         )
+
+    def _show_evolution_status(self):
+        try:
+            text = evolution_status_text()
+        except Exception as exc:
+            messagebox.showwarning("Autoevolución", f"No pude leer el estado: {exc}", parent=self)
+            return
+        messagebox.showinfo("Autoevolución", text, parent=self)
+
+    def _set_evolution_enabled(self, enabled: bool):
+        try:
+            message = evolution_set_enabled_text(bool(enabled))
+        except Exception as exc:
+            messagebox.showwarning("Autoevolución", f"No pude cambiar el estado: {exc}", parent=self)
+            return
+        messagebox.showinfo("Autoevolución", message, parent=self)
+        self.refresh_state_view()
+
+    def _set_evolution_interval(self):
+        raw = simpledialog.askstring("Autoevolución", "Cadencia en horas (1-168):", parent=self)
+        if raw is None or not str(raw).strip():
+            return
+        messagebox.showinfo("Autoevolución", evolution_set_interval_text(str(raw).strip()), parent=self)
+
+    def _show_evolution_pending(self):
+        try:
+            text = (
+                evolution_list_pending_text()
+                + "\n\n"
+                + evolution_list_suggestions_text()
+                + "\n\nLas propuestas de código se ven en el panel de Coding."
+            )
+        except Exception as exc:
+            messagebox.showwarning("Autoevolución", f"No pude leer las propuestas: {exc}", parent=self)
+            return
+        messagebox.showinfo("Propuestas pendientes", text, parent=self)
+
+    def _approve_evolution_item(self):
+        raw = simpledialog.askstring("Aprobar propuesta", "Id de la directriz o sugerencia:", parent=self)
+        if raw is None or not str(raw).strip():
+            return
+        item_id = str(raw).strip()
+        result = evolution_apply_directive_text(item_id)
+        if "No encontre" in result:
+            result = evolution_apply_suggestion_text(item_id)
+        messagebox.showinfo("Aprobar propuesta", result, parent=self)
+        self.refresh_state_view()
+
+    def _discard_evolution_item(self):
+        raw = simpledialog.askstring("Descartar propuesta", "Id de la directriz o sugerencia:", parent=self)
+        if raw is None or not str(raw).strip():
+            return
+        item_id = str(raw).strip()
+        result = evolution_discard_directive_text(item_id)
+        if "No encontre" in result:
+            result = evolution_discard_suggestion_text(item_id)
+        messagebox.showinfo("Descartar propuesta", result, parent=self)
+        self.refresh_state_view()
 
     def _build_activity_view(self, parent):
         parent.columnconfigure(0, weight=1)
