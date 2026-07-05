@@ -83,19 +83,28 @@ def _encode_image(source, max_dim: int) -> str:
     return base64.b64encode(buffer.getvalue()).decode("ascii")
 
 
-def analyze_image(source, prompt: str = "", settings=None) -> str:
-    """Analiza una imagen (ruta o bytes) con el modelo de vision configurado.
+def analyze_images(sources, prompt: str = "", settings=None) -> str:
+    """Analiza una o varias imagenes JUNTAS en una sola llamada de vision.
 
-    Devuelve el texto del modelo o lanza VisionError.
+    `sources` es una lista de rutas o bytes. Devuelve el texto del modelo o
+    lanza VisionError.
     """
+    if not isinstance(sources, (list, tuple)):
+        sources = [sources]
+    sources = [s for s in sources if s is not None]
+    if not sources:
+        raise VisionError("No recibi ninguna imagen para analizar.")
+
     model, max_dim, timeout, state = _vision_settings(settings)
 
-    try:
-        encoded = _encode_image(source, max_dim)
-    except FileNotFoundError:
-        raise VisionError(f"No encontre la imagen: {source}")
-    except Exception as exc:
-        raise VisionError(f"No pude leer la imagen: {exc}") from exc
+    encoded_images = []
+    for source in sources:
+        try:
+            encoded_images.append(_encode_image(source, max_dim))
+        except FileNotFoundError:
+            raise VisionError(f"No encontre la imagen: {source}")
+        except Exception as exc:
+            raise VisionError(f"No pude leer una de las imagenes: {exc}") from exc
 
     host, api_key = _ollama_host_and_key(state)
     try:
@@ -111,10 +120,12 @@ def analyze_image(source, prompt: str = "", settings=None) -> str:
     client = Client(**kwargs)
 
     question = str(prompt or "").strip() or _DEFAULT_PROMPT
+    if len(encoded_images) > 1:
+        question = f"{question}\n(Se adjuntan {len(encoded_images)} imagenes; considera todas en tu respuesta.)"
     try:
         response = client.chat(
             model=model,
-            messages=[{"role": "user", "content": question, "images": [encoded]}],
+            messages=[{"role": "user", "content": question, "images": encoded_images}],
         )
     except Exception as exc:
         raise VisionError(
@@ -124,3 +135,8 @@ def analyze_image(source, prompt: str = "", settings=None) -> str:
 
     content = (getattr(getattr(response, "message", None), "content", "") or "").strip()
     return content or "El modelo de vision no devolvio texto."
+
+
+def analyze_image(source, prompt: str = "", settings=None) -> str:
+    """Analiza una sola imagen (ruta o bytes). Envuelve a analyze_images."""
+    return analyze_images([source], prompt, settings)

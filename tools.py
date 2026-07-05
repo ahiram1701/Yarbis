@@ -5940,6 +5940,34 @@ def analyze_image(path: str, question: str = "") -> str:
         return f"Error inesperado analizando la imagen: {exc}"
 
 
+def analyze_images(paths, question: str = "") -> str:
+    """Analiza VARIAS imagenes del disco juntas en una sola respuesta.
+
+    `paths` es una lista de rutas (o una sola ruta). Uso de canales
+    escritorio/movil; el agente usa analyze_image por imagen.
+    """
+    if isinstance(paths, str):
+        paths = [paths]
+    resolved = []
+    for path in paths or []:
+        cleaned = str(path).strip()
+        if not cleaned:
+            continue
+        candidate = Path(cleaned)
+        target = (candidate if candidate.is_absolute() else (WORKSPACE_ROOT / candidate)).resolve()
+        if not target.exists() or not target.is_file():
+            return f"No encontre la imagen: {target}"
+        resolved.append(target)
+    if not resolved:
+        return "Indica al menos una imagen."
+    try:
+        return vision.analyze_images(resolved, question)
+    except vision.VisionError as exc:
+        return f"No pude analizar las imagenes: {exc}"
+    except Exception as exc:
+        return f"Error inesperado analizando las imagenes: {exc}"
+
+
 def vision_status() -> str:
     """
     Muestra la configuracion de vision (modelo, tamano max de imagen, timeout).

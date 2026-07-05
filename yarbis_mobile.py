@@ -120,7 +120,8 @@ MOBILE_COOKIE_NAME = "yarbis_mobile"
 PIN_HASH_ITERATIONS = 200_000
 MAX_REQUEST_BYTES = 512 * 1024
 MAX_VOICE_REQUEST_BYTES = int(yarbis_voice.MAX_VOICE_AUDIO_BYTES * 1.4) + 4096
-MAX_IMAGE_REQUEST_BYTES = int(20 * 1024 * 1024 * 1.4) + 4096
+MAX_IMAGE_REQUEST_BYTES = int(40 * 1024 * 1024 * 1.4) + 4096
+_MAX_MOBILE_IMAGES = 8
 MAX_JOBS = 50
 MOBILE_CACHE_TTL_SECONDS = 10.0
 _MOBILE_STATE_CACHE_TTL_SECONDS = 2.0
@@ -1546,19 +1547,30 @@ def _decode_mobile_audio_payload(payload: dict) -> tuple[bytes, str]:
 
 
 def _analyze_mobile_image(payload: dict) -> str:
-    raw_b64 = _payload_text(payload, "image_b64")
-    if not raw_b64:
-        raise MobileUiError("No recibi la imagen.")
-    if raw_b64.strip().lower().startswith("data:") and "," in raw_b64:
-        raw_b64 = raw_b64.split(",", 1)[1]
+    images_b64 = payload.get("images_b64") if isinstance(payload, dict) else None
+    if not isinstance(images_b64, list) or not images_b64:
+        single = _payload_text(payload, "image_b64")
+        images_b64 = [single] if single else []
+    if not images_b64:
+        raise MobileUiError("No recibi ninguna imagen.")
+
+    raw_images = []
+    for item in images_b64[:_MAX_MOBILE_IMAGES]:
+        b64 = str(item or "").strip()
+        if not b64:
+            continue
+        if b64.lower().startswith("data:") and "," in b64:
+            b64 = b64.split(",", 1)[1]
+        try:
+            raw = base64.b64decode(b64)
+        except Exception as exc:
+            raise MobileUiError(f"Imagen invalida: {exc}")
+        if raw:
+            raw_images.append(raw)
+    if not raw_images:
+        raise MobileUiError("Las imagenes llegaron vacias.")
     try:
-        raw_image = base64.b64decode(raw_b64)
-    except Exception as exc:
-        raise MobileUiError(f"Imagen invalida: {exc}")
-    if not raw_image:
-        raise MobileUiError("La imagen llego vacia.")
-    try:
-        return vision.analyze_image(raw_image, _payload_text(payload, "question"))
+        return vision.analyze_images(raw_images, _payload_text(payload, "question"))
     except vision.VisionError as exc:
         raise MobileUiError(str(exc))
 
@@ -3168,21 +3180,28 @@ function goToInstance(instanceId) {
   window.location.href = target;
 }
 
+function readFileAsDataUrl(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = () => reject(new Error("No pude leer el archivo."));
+    reader.readAsDataURL(file);
+  });
+}
+
 async function analyzeImageUpload() {
   const input = $("imageFileInput");
-  const file = input && input.files && input.files[0];
-  if (!file) { toast("Elige una imagen primero."); return; }
+  const files = input && input.files ? Array.from(input.files) : [];
+  if (!files.length) { toast("Elige una o más imágenes primero."); return; }
   const resultEl = $("imageResult");
-  if (resultEl) resultEl.textContent = "Analizando imagen…";
+  if (resultEl) resultEl.textContent = files.length > 1 ? `Analizando ${files.length} imágenes…` : "Analizando imagen…";
   try {
-    const dataUrl = await new Promise((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onload = () => resolve(reader.result);
-      reader.onerror = () => reject(new Error("No pude leer el archivo."));
-      reader.readAsDataURL(file);
-    });
+    const images = [];
+    for (const file of files.slice(0, 8)) {
+      images.push(await readFileAsDataUrl(file));
+    }
     const question = ($("imageQuestion") ? $("imageQuestion").value : "").trim();
-    const data = await api("/api/image/analyze", { image_b64: dataUrl, question });
+    const data = await api("/api/image/analyze", { images_b64: images, question });
     csrfToken = data.csrf || csrfToken;
     if (resultEl) resultEl.textContent = data.result || "(sin resultado)";
   } catch (error) {
@@ -3488,10 +3507,10 @@ function renderRun() {
     <section class="section">
       <h2>Analizar imagen</h2>
       <div class="form-grid">
-        <input id="imageFileInput" type="file" accept="image/*">
-        <input id="imageQuestion" placeholder="Pregunta opcional sobre la imagen">
+        <input id="imageFileInput" type="file" accept="image/*" multiple>
+        <input id="imageQuestion" placeholder="Pregunta opcional sobre la(s) imagen(es)">
         <div class="actions tight">
-          <button class="primary" data-action="analyze-image">Analizar imagen</button>
+          <button class="primary" data-action="analyze-image">Analizar imagen(es)</button>
         </div>
         <pre id="imageResult" class="muted"></pre>
       </div>

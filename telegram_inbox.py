@@ -560,6 +560,80 @@ def _analyze_telegram_photo(attachment: dict) -> str:
     return f"Te envie una imagen. Analisis de vision: {analysis}. Responde de forma util."
 
 
+# --- Album de fotos (varias imagenes en un mismo envio) ---------------------
+# Telegram manda cada foto de un album como update separado con el mismo
+# media_group_id. Las bufferizamos y, tras un debounce, las analizamos JUNTAS.
+_ALBUM_DEBOUNCE_SECONDS = 2.5
+_MAX_ALBUM_PHOTOS = 10
+_ALBUM_POLL_TIMEOUT_SECONDS = 1
+_PENDING_PHOTO_GROUPS: dict = {}
+_PHOTO_GROUP_LOCK = threading.Lock()
+
+
+def _has_pending_photo_groups() -> bool:
+    with _PHOTO_GROUP_LOCK:
+        return bool(_PENDING_PHOTO_GROUPS)
+
+
+def _buffer_album_photo(group_id: str, attachment: dict, chat_id: str) -> None:
+    with _PHOTO_GROUP_LOCK:
+        group = _PENDING_PHOTO_GROUPS.get(group_id)
+        if group is None:
+            group = {"file_ids": [], "caption": "", "chat_id": chat_id, "updated_at": 0.0}
+            _PENDING_PHOTO_GROUPS[group_id] = group
+        file_id = str(attachment.get("file_id", "")).strip()
+        if file_id and len(group["file_ids"]) < _MAX_ALBUM_PHOTOS:
+            group["file_ids"].append(file_id)
+        caption = str(attachment.get("caption", "")).strip()
+        if caption and not group["caption"]:
+            group["caption"] = caption
+        group["chat_id"] = chat_id
+        group["updated_at"] = time.monotonic()
+
+
+def _process_photo_group(group: dict) -> None:
+    chat_id = str(group.get("chat_id", "")).strip()
+    caption = str(group.get("caption", "")).strip()
+    file_ids = list(group.get("file_ids", []))[:_MAX_ALBUM_PHOTOS]
+    if not file_ids:
+        return
+    _send_telegram_thinking_action(chat_id)
+    images = [
+        download_telegram_file(file_id, max_bytes=MAX_TELEGRAM_IMAGE_BYTES)
+        for file_id in file_ids
+    ]
+    analysis = vision.analyze_images(images, caption)
+    count = len(images)
+    if caption:
+        text = f"{caption}\n\n(Adjunte {count} imagenes. Analisis de vision combinado: {analysis})"
+    else:
+        text = f"Te envie {count} imagenes. Analisis de vision combinado: {analysis}. Responde de forma util."
+    reply = _submit_user_reply_from_telegram(text, chat_id)
+    send_telegram_message(_telegram_reply_for_delivery("", reply), chat_id=chat_id)
+
+
+def _flush_ready_photo_groups() -> None:
+    now = time.monotonic()
+    ready = []
+    with _PHOTO_GROUP_LOCK:
+        for group_id in list(_PENDING_PHOTO_GROUPS.keys()):
+            group = _PENDING_PHOTO_GROUPS[group_id]
+            if now - float(group.get("updated_at", 0.0)) >= _ALBUM_DEBOUNCE_SECONDS:
+                ready.append(group)
+                del _PENDING_PHOTO_GROUPS[group_id]
+    for group in ready:
+        try:
+            _process_photo_group(group)
+        except Exception as exc:
+            try:
+                send_telegram_message(
+                    f"No pude analizar las imagenes: {redact_secrets(exc)}",
+                    chat_id=str(group.get("chat_id", "")),
+                )
+            except Exception:
+                pass
+
+
 def _voice_power_confirmation_blocked(text: str) -> bool:
     cleaned = str(text or "").strip()
     if not cleaned.startswith("/"):
@@ -1669,6 +1743,11 @@ def process_telegram_update(update: dict) -> str:
         else:
             photo_attachment = _photo_attachment_from_message(message)
             if photo_attachment is not None:
+                group_id = str(message.get("media_group_id", "")).strip()
+                if group_id:
+                    # Parte de un album: bufferizar y analizar todas juntas tras el debounce.
+                    _buffer_album_photo(group_id, photo_attachment, chat_id)
+                    return "Telegram: foto de album recibida (agrupando)."
                 try:
                     _send_telegram_thinking_action(chat_id)
                     text = _analyze_telegram_photo(photo_attachment)
@@ -1765,15 +1844,18 @@ def _poll_updates_once():
 
     telegram_state = _telegram_state_from_memory()
     offset = int(telegram_state.get("last_update_id", 0)) + 1
+    # Mientras hay un album a medio llegar, no hacemos long-poll para poder
+    # completar el grupo y dispararlo en cuanto pase el debounce.
+    poll_timeout = _ALBUM_POLL_TIMEOUT_SECONDS if _has_pending_photo_groups() else config["poll_timeout_seconds"]
     response = telegram_api_request(
         "getUpdates",
         {
             "offset": offset,
-            "timeout": config["poll_timeout_seconds"],
+            "timeout": poll_timeout,
             "allowed_updates": ["message"],
         },
         settings=settings,
-        timeout=config["poll_timeout_seconds"] + config["timeout_seconds"],
+        timeout=poll_timeout + config["timeout_seconds"],
     )
     updates = response.get("result", [])
     if not isinstance(updates, list) or not updates:
@@ -1802,13 +1884,17 @@ def _poll_updates_once():
 def _poll_forever():
     while not _poller_stop_event.is_set():
         try:
+            _flush_ready_photo_groups()
             did_work = _poll_updates_once()
             if process_deferred_telegram_replies(limit=1):
                 did_work = True
         except Exception:
             did_work = False
 
-        if not did_work:
+        if _has_pending_photo_groups():
+            # Hay un album a medio llegar: revisamos pronto para completarlo/flushearlo.
+            _poller_stop_event.wait(_ALBUM_POLL_TIMEOUT_SECONDS)
+        elif not did_work:
             _poller_stop_event.wait(_POLL_IDLE_SECONDS)
 
 

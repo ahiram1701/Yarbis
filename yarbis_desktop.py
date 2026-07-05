@@ -73,6 +73,7 @@ from session import (
     evolution_apply_suggestion_text,
     evolution_discard_suggestion_text,
     analyze_image_text,
+    analyze_images_text,
     vision_status_text,
     create_memory_backup_text,
     get_local_context_settings,
@@ -1551,19 +1552,24 @@ class YarbisDesktop(tk.Tk):
         self.refresh_state_view()
 
     def _analyze_image_file(self):
-        path = filedialog.askopenfilename(
+        paths = filedialog.askopenfilenames(
             parent=self,
-            title="Elegir imagen",
+            title="Elegir imagen(es)",
             filetypes=[
                 ("Imágenes", "*.png *.jpg *.jpeg *.gif *.bmp *.webp"),
                 ("Todos los archivos", "*.*"),
             ],
         )
-        if not path:
+        paths = list(paths or [])
+        if not paths:
             return
-        question = simpledialog.askstring("Analizar imagen", "Pregunta opcional sobre la imagen:", parent=self)
+        prompt = "Pregunta opcional sobre la imagen:" if len(paths) == 1 else f"Pregunta sobre las {len(paths)} imágenes:"
+        question = simpledialog.askstring("Analizar imagen", prompt, parent=self)
         try:
-            result = analyze_image_text(path, str(question or "").strip())
+            if len(paths) == 1:
+                result = analyze_image_text(paths[0], str(question or "").strip())
+            else:
+                result = analyze_images_text(paths, str(question or "").strip())
         except Exception as exc:
             messagebox.showwarning("Imagen", f"No pude analizar la imagen: {exc}", parent=self)
             return

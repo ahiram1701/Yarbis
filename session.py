@@ -116,6 +116,7 @@ from tools import (
     evolution_apply_suggestion,
     evolution_discard_suggestion,
     analyze_image,
+    analyze_images,
     vision_status,
     vision_set_model,
 )
@@ -1660,6 +1661,11 @@ def evolution_discard_suggestion_text(suggestion_id: str) -> str:
 def analyze_image_text(path: str, question: str = "") -> str:
     with SESSION_LOCK:
         return analyze_image(path, question)
+
+
+def analyze_images_text(paths, question: str = "") -> str:
+    with SESSION_LOCK:
+        return analyze_images(paths, question)
 
 
 def vision_status_text() -> str:
