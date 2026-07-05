@@ -1901,6 +1901,9 @@ def _execute_action(action: str, payload: dict | None = None) -> dict:
             tts_voice_id=_payload_text(payload, "tts_voice_id"),
             tts_rate=payload.get("tts_rate"),
             edge_voice=_payload_text(payload, "edge_voice"),
+            edge_rate=payload.get("edge_rate"),
+            edge_pitch=payload.get("edge_pitch"),
+            edge_volume=payload.get("edge_volume"),
             browser_voice_name=_payload_text(payload, "browser_voice_name"),
             browser_tts_rate=payload.get("browser_tts_rate"),
             browser_tts_pitch=payload.get("browser_tts_pitch"),
@@ -2315,6 +2318,40 @@ pre {
   padding-top: 18px;
   border-top: 1px solid var(--line);
 }
+.subhead {
+  margin: 0;
+  font-size: .82rem;
+  font-weight: 600;
+  letter-spacing: .02em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.hidden { display: none !important; }
+.range-row {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: center;
+  gap: 8px;
+}
+.range-row input[type="range"] { width: 100%; }
+.range-row .range-val {
+  min-width: 52px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+  font-size: .86rem;
+}
+details.advanced > summary {
+  cursor: pointer;
+  font-size: .82rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: .02em;
+  color: var(--muted);
+  padding: 4px 0;
+}
+details.advanced[open] > summary { margin-bottom: 10px; }
+details.advanced .form-grid { margin-top: 4px; }
 .empty {
   color: var(--muted);
   border: 1px dashed var(--line);
@@ -3223,6 +3260,14 @@ function selectedEdgeVoiceId() {
   return first.id || "";
 }
 
+function applyVoiceProviderVisibility() {
+  const provider = $("voiceProvider") ? $("voiceProvider").value : "edge";
+  const edgeGroup = $("voiceGroupEdge");
+  const systemGroup = $("voiceGroupSystem");
+  if (edgeGroup) edgeGroup.classList.toggle("hidden", provider !== "edge");
+  if (systemGroup) systemGroup.classList.toggle("hidden", provider !== "system");
+}
+
 async function saveVoiceSettings(providerOverride = null, edgeVoiceOverride = null) {
   const provider = providerOverride || $("voiceProvider").value;
   const edgeVoiceId = edgeVoiceOverride || $("edgeVoiceId").value;
@@ -3235,6 +3280,9 @@ async function saveVoiceSettings(providerOverride = null, edgeVoiceOverride = nu
     tts_voice_id: $("ttsVoiceId").value,
     tts_rate: $("ttsRate").value,
     edge_voice: edgeVoiceId,
+    edge_rate: $("edgeRate") ? $("edgeRate").value : 0,
+    edge_pitch: $("edgePitch") ? $("edgePitch").value : 0,
+    edge_volume: $("edgeVolume") ? $("edgeVolume").value : 0,
     browser_voice_name: $("browserVoiceName").value,
     browser_tts_rate: $("browserTtsRate").value,
     browser_tts_pitch: $("browserTtsPitch").value,
@@ -4047,6 +4095,10 @@ function renderSettings() {
   const browserVoiceOptions = browserVoices.map(item => (
     `<option value="${escapeHtml(item.name || "")}">${escapeHtml((item.name || "Voz") + (item.lang ? " - " + item.lang : ""))}</option>`
   )).join("");
+  const edgeRate = Number.isFinite(Number(voice.edge_rate)) ? Number(voice.edge_rate) : 0;
+  const edgePitch = Number.isFinite(Number(voice.edge_pitch)) ? Number(voice.edge_pitch) : 0;
+  const edgeVolume = Number.isFinite(Number(voice.edge_volume)) ? Number(voice.edge_volume) : 0;
+  const signed = (n) => (n > 0 ? "+" : "") + n;
   const evo = appState.evolution || {};
   const evoDirectivesHtml = (evo.directives_pending || []).length
     ? (evo.directives_pending || []).map(d => (
@@ -4125,25 +4177,51 @@ function renderSettings() {
     </section>
     <section class="section">
       <h2>Voz</h2>
-      <div class="setting-group form-grid wide">
+      <div class="setting-group form-grid">
         <label><input id="voiceEnabled" type="checkbox" ${voice.enabled === false ? "" : "checked"}> Activa</label>
         <div><label>Motor TTS</label><select id="voiceProvider"><option value="edge">Voz neural (edge-tts)</option><option value="system">Voz del sistema</option></select></div>
-        <div><label>Voz sistema/Telegram</label><select id="ttsVoiceId"><option value="">predeterminada</option>${systemVoiceOptions}</select></div>
-        <div><label>Buscar voz neural</label><input id="edgeVoiceFilter" value="${escapeHtml(edgeVoiceFilter)}" placeholder="mexico, jorge, dalia, espana"></div>
+      </div>
+      <div class="setting-group form-grid" id="voiceGroupEdge">
+        <h3 class="subhead">Voz neural (edge-tts)</h3>
+        <div><label>Buscar voz</label><input id="edgeVoiceFilter" value="${escapeHtml(edgeVoiceFilter)}" placeholder="mexico, jorge, dalia, espana"></div>
         <div><label>Voz neural</label><select id="edgeVoiceId"><option value="">elige voz neural</option>${edgeVoiceOptions}</select></div>
-        <div><label>Velocidad sistema</label><input id="ttsRate" type="number" min="80" max="320" value="${escapeHtml(voice.tts_rate || 175)}"></div>
+        <div><label>Velocidad <span class="range-val" id="edgeRateVal">${signed(edgeRate)}%</span></label>
+          <div class="range-row"><input id="edgeRate" type="range" min="-50" max="100" step="5" value="${edgeRate}" oninput="document.getElementById('edgeRateVal').textContent=(this.value>0?'+':'')+this.value+'%'"></div></div>
+        <div><label>Tono <span class="range-val" id="edgePitchVal">${signed(edgePitch)}Hz</span></label>
+          <div class="range-row"><input id="edgePitch" type="range" min="-50" max="50" step="5" value="${edgePitch}" oninput="document.getElementById('edgePitchVal').textContent=(this.value>0?'+':'')+this.value+'Hz'"></div></div>
+        <div><label>Volumen <span class="range-val" id="edgeVolumeVal">${signed(edgeVolume)}%</span></label>
+          <div class="range-row"><input id="edgeVolume" type="range" min="-50" max="100" step="5" value="${edgeVolume}" oninput="document.getElementById('edgeVolumeVal').textContent=(this.value>0?'+':'')+this.value+'%'"></div></div>
+        <div class="form-grid"><button data-action="refresh-voice-catalog">Refrescar voces</button><button data-action="use-free-voice">Usar seleccionada</button></div>
+      </div>
+      <div class="setting-group form-grid" id="voiceGroupSystem">
+        <h3 class="subhead">Voz del sistema</h3>
+        <div><label>Voz sistema/Telegram</label><select id="ttsVoiceId"><option value="">predeterminada</option>${systemVoiceOptions}</select></div>
+        <div><label>Velocidad (palabras/min)</label><input id="ttsRate" type="number" min="80" max="320" value="${escapeHtml(voice.tts_rate || 175)}"></div>
+      </div>
+      <div class="setting-group form-grid">
+        <h3 class="subhead">Voz del navegador</h3>
         <div><label>Voz navegador</label><select id="browserVoiceName"><option value="">predeterminada</option>${browserVoiceOptions}</select></div>
         <div><label>Velocidad navegador</label><input id="browserTtsRate" type="number" min="0.5" max="2" step="0.1" value="${escapeHtml(voice.browser_tts_rate || 1)}"></div>
         <div><label>Tono navegador</label><input id="browserTtsPitch" type="number" min="0" max="2" step="0.1" value="${escapeHtml(voice.browser_tts_pitch || 1)}"></div>
-        <div><label>Telegram voz</label><select id="telegramVoiceMode"><option value="off">off</option><option value="auto">auto</option><option value="always">always</option></select></div>
-        <label><input id="liveVoiceEnabled" type="checkbox" ${live.enabled === false ? "" : "checked"}> Voz en vivo disponible</label>
-        <div><label>Frase de activacion</label><input id="liveWakePhrase" value="${escapeHtml(live.wake_phrase || "Yarbis")}"></div>
-        <div><label>Silencio ms</label><input id="liveSilenceMs" type="number" min="250" max="5000" value="${escapeHtml(live.silence_ms || 900)}"></div>
-        <div><label>Turno max segundos</label><input id="liveMaxTurnSeconds" type="number" min="3" max="300" value="${escapeHtml(live.max_turn_seconds || 45)}"></div>
-        <label><input id="liveAutoSpeak" type="checkbox" ${live.auto_speak === false ? "" : "checked"}> Responder con voz automaticamente</label>
-        <label><input id="liveBargeIn" type="checkbox" ${live.barge_in === false ? "" : "checked"}> Permitir interrupcion</label>
-        <button data-action="refresh-voice-catalog">Refrescar voces</button>
-        <button data-action="use-free-voice">Usar seleccionada</button>
+      </div>
+      <div class="setting-group form-grid">
+        <h3 class="subhead">Telegram</h3>
+        <div><label>Respuesta hablada</label><select id="telegramVoiceMode"><option value="off">off</option><option value="auto">auto</option><option value="always">always</option></select></div>
+      </div>
+      <div class="setting-group">
+        <details class="advanced">
+          <summary>Voz en vivo (avanzado)</summary>
+          <div class="form-grid">
+            <label><input id="liveVoiceEnabled" type="checkbox" ${live.enabled === false ? "" : "checked"}> Voz en vivo disponible</label>
+            <div><label>Frase de activacion</label><input id="liveWakePhrase" value="${escapeHtml(live.wake_phrase || "Yarbis")}"></div>
+            <div><label>Silencio ms</label><input id="liveSilenceMs" type="number" min="250" max="5000" value="${escapeHtml(live.silence_ms || 900)}"></div>
+            <div><label>Turno max segundos</label><input id="liveMaxTurnSeconds" type="number" min="3" max="300" value="${escapeHtml(live.max_turn_seconds || 45)}"></div>
+            <label><input id="liveAutoSpeak" type="checkbox" ${live.auto_speak === false ? "" : "checked"}> Responder con voz automaticamente</label>
+            <label><input id="liveBargeIn" type="checkbox" ${live.barge_in === false ? "" : "checked"}> Permitir interrupcion</label>
+          </div>
+        </details>
+      </div>
+      <div class="setting-group form-grid">
         <button data-action="test-voice">Probar voz</button>
         <button data-action="save-voice">Guardar voz</button>
         <button data-action="stop-speaking">Detener habla</button>
@@ -4246,6 +4324,7 @@ function renderSettings() {
   if (voiceProvider) voiceProvider.value = voice.tts_provider || "edge";
   const edgeVoiceId = $("edgeVoiceId");
   if (edgeVoiceId) edgeVoiceId.value = voice.edge_voice || "";
+  applyVoiceProviderVisibility();
   const browserVoiceName = $("browserVoiceName");
   if (browserVoiceName) browserVoiceName.value = voice.browser_voice_name || window.localStorage.getItem("yarbis_browser_voice_name") || "";
   const telegramVoiceMode = $("telegramVoiceMode");
@@ -4641,6 +4720,10 @@ document.addEventListener("change", async (event) => {
   if (input && input.id === "edgeVoiceFilter") {
     edgeVoiceFilter = input.value || "";
     renderCurrent();
+    return;
+  }
+  if (input && input.id === "voiceProvider") {
+    applyVoiceProviderVisibility();
     return;
   }
   if (input && input.id === "visualProjectSelect") {

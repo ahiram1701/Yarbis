@@ -12,6 +12,15 @@ from memory import (
     DEFAULT_VOICE_BROWSER_TTS_PITCH,
     DEFAULT_VOICE_BROWSER_TTS_RATE,
     DEFAULT_VOICE_EDGE_VOICE,
+    DEFAULT_VOICE_EDGE_RATE,
+    DEFAULT_VOICE_EDGE_PITCH,
+    DEFAULT_VOICE_EDGE_VOLUME,
+    MIN_VOICE_EDGE_RATE,
+    MAX_VOICE_EDGE_RATE,
+    MIN_VOICE_EDGE_PITCH,
+    MAX_VOICE_EDGE_PITCH,
+    MIN_VOICE_EDGE_VOLUME,
+    MAX_VOICE_EDGE_VOLUME,
     DEFAULT_VOICE_TELEGRAM_REPLY_MODE,
     DEFAULT_VOICE_TTS_RATE,
     DEFAULT_VOICE_TTS_PROVIDER,
@@ -453,6 +462,15 @@ def _synthesize_system_wav(cleaned_text: str, wav_path: Path, settings: dict) ->
         raise VoiceError(f"No pude sintetizar la voz: {exc}") from exc
 
 
+def _edge_prosody(settings: dict) -> tuple[str, str, str]:
+    """Convierte los ajustes de prosodia de edge a los strings que espera
+    edge_tts.Communicate (siempre con signo): rate/volume en % y pitch en Hz."""
+    rate = max(MIN_VOICE_EDGE_RATE, min(MAX_VOICE_EDGE_RATE, _optional_int(settings.get("edge_rate"), DEFAULT_VOICE_EDGE_RATE)))
+    pitch = max(MIN_VOICE_EDGE_PITCH, min(MAX_VOICE_EDGE_PITCH, _optional_int(settings.get("edge_pitch"), DEFAULT_VOICE_EDGE_PITCH)))
+    volume = max(MIN_VOICE_EDGE_VOLUME, min(MAX_VOICE_EDGE_VOLUME, _optional_int(settings.get("edge_volume"), DEFAULT_VOICE_EDGE_VOLUME)))
+    return f"{rate:+d}%", f"{pitch:+d}Hz", f"{volume:+d}%"
+
+
 def _synthesize_edge_wav(cleaned_text: str, wav_path: Path, settings: dict) -> None:
     """Sintetiza voz con edge-tts (Microsoft, cloud, sin RAM local).
 
@@ -470,10 +488,13 @@ def _synthesize_edge_wav(cleaned_text: str, wav_path: Path, settings: dict) -> N
         ) from exc
 
     voice_name = str(settings.get("edge_voice", DEFAULT_VOICE_EDGE_VOICE)).strip() or DEFAULT_VOICE_EDGE_VOICE
+    rate_str, pitch_str, volume_str = _edge_prosody(settings)
     mp3_path = wav_path.with_suffix(".edge.mp3")
 
     async def _run() -> None:
-        communicate = edge_tts.Communicate(cleaned_text, voice_name)
+        communicate = edge_tts.Communicate(
+            cleaned_text, voice_name, rate=rate_str, pitch=pitch_str, volume=volume_str
+        )
         await communicate.save(str(mp3_path))
 
     try:
@@ -616,6 +637,9 @@ def update_voice_settings_text(
     tts_voice_id: str | None = None,
     tts_rate=None,
     edge_voice: str | None = None,
+    edge_rate=None,
+    edge_pitch=None,
+    edge_volume=None,
     browser_voice_name: str | None = None,
     browser_tts_rate=None,
     browser_tts_pitch=None,
@@ -644,6 +668,18 @@ def update_voice_settings_text(
         edge_voice if edge_voice is not None else current.get("edge_voice", DEFAULT_VOICE_EDGE_VOICE)
     ).strip()
     next_edge_voice = _safe_edge_voice(next_edge_voice)
+    next_edge_rate = max(
+        MIN_VOICE_EDGE_RATE,
+        min(MAX_VOICE_EDGE_RATE, _optional_int(edge_rate, int(current.get("edge_rate", DEFAULT_VOICE_EDGE_RATE)))),
+    )
+    next_edge_pitch = max(
+        MIN_VOICE_EDGE_PITCH,
+        min(MAX_VOICE_EDGE_PITCH, _optional_int(edge_pitch, int(current.get("edge_pitch", DEFAULT_VOICE_EDGE_PITCH)))),
+    )
+    next_edge_volume = max(
+        MIN_VOICE_EDGE_VOLUME,
+        min(MAX_VOICE_EDGE_VOLUME, _optional_int(edge_volume, int(current.get("edge_volume", DEFAULT_VOICE_EDGE_VOLUME)))),
+    )
     next_browser_rate = max(
         MIN_VOICE_BROWSER_TTS_RATE,
         min(
@@ -694,6 +730,9 @@ def update_voice_settings_text(
         if tts_voice_id is not None:
             voice["tts_voice_id"] = str(tts_voice_id).strip()
         voice["edge_voice"] = next_edge_voice
+        voice["edge_rate"] = next_edge_rate
+        voice["edge_pitch"] = next_edge_pitch
+        voice["edge_volume"] = next_edge_volume
         voice["tts_rate"] = next_tts_rate
         if browser_voice_name is not None:
             voice["browser_voice_name"] = str(browser_voice_name).strip()
@@ -717,7 +756,7 @@ def update_voice_settings_text(
         f"{'activa' if (bool(enabled) if enabled is not None else current.get('enabled', True)) else 'desactivada'}, "
         f"proveedor={next_provider}, "
         f"sistema={'predeterminada' if not str(tts_voice_id if tts_voice_id is not None else current.get('tts_voice_id', '')).strip() else 'personalizada'}, "
-        f"edge={next_edge_voice}, "
+        f"edge={next_edge_voice} ({next_edge_rate:+d}%/{next_edge_pitch:+d}Hz/{next_edge_volume:+d}%), "
         f"velocidad={next_tts_rate}, navegador={next_browser_rate:g}/{next_browser_pitch:g}, "
         f"Telegram={next_reply_mode}, voz en vivo='{next_live_wake_phrase}'."
     )

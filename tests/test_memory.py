@@ -962,6 +962,9 @@ class MemoryTestCase(unittest.TestCase):
                 "tts_voice_id": "voice-1",
                 "tts_provider": "piper",
                 "edge_voice": "es-ES-AlvaroNeural",
+                "edge_rate": 999,
+                "edge_pitch": -999,
+                "edge_volume": "abc",
                 "browser_voice_name": "Samantha" * 50,
                 "browser_tts_rate": 9,
                 "browser_tts_pitch": -4,
@@ -992,6 +995,9 @@ class MemoryTestCase(unittest.TestCase):
         self.assertEqual(settings["tts_voice_id"], "voice-1")
         self.assertEqual(settings["tts_provider"], "edge")
         self.assertEqual(settings["edge_voice"], "es-ES-AlvaroNeural")
+        self.assertEqual(settings["edge_rate"], memory.MAX_VOICE_EDGE_RATE)
+        self.assertEqual(settings["edge_pitch"], memory.MIN_VOICE_EDGE_PITCH)
+        self.assertEqual(settings["edge_volume"], memory.DEFAULT_VOICE_EDGE_VOLUME)
         self.assertNotIn("kokoro_voice_id", settings)
         self.assertEqual(len(settings["browser_voice_name"]), memory.MAX_VOICE_BROWSER_VOICE_NAME_CHARS)
         self.assertEqual(settings["browser_tts_rate"], memory.MAX_VOICE_BROWSER_TTS_RATE)

@@ -16,6 +16,15 @@ from memory import (
     DEFAULT_OPENROUTER_TIMEOUT_SECONDS,
     DEFAULT_VOICE_TTS_RATE,
     MAX_VOICE_TTS_RATE,
+    DEFAULT_VOICE_EDGE_RATE,
+    DEFAULT_VOICE_EDGE_PITCH,
+    DEFAULT_VOICE_EDGE_VOLUME,
+    MIN_VOICE_EDGE_RATE,
+    MAX_VOICE_EDGE_RATE,
+    MIN_VOICE_EDGE_PITCH,
+    MAX_VOICE_EDGE_PITCH,
+    MIN_VOICE_EDGE_VOLUME,
+    MAX_VOICE_EDGE_VOLUME,
     DEFAULT_SERVICE_PROACTIVE_MODEL,
     MAX_MOBILE_UI_JOB_TIMEOUT_SECONDS,
     MAX_OLLAMA_TIMEOUT_SECONDS,
@@ -1079,6 +1088,9 @@ class VoiceSettingsDialog(ThemedDialog):
         provider_value = "edge" if self.prefer_edge else str(self.initial_settings.get("tts_provider", "edge") or "edge")
         self.provider_var = tk.StringVar(value=provider_value)
         self.rate_var = tk.StringVar(value=str(self.initial_settings.get("tts_rate", DEFAULT_VOICE_TTS_RATE)))
+        self.edge_rate_var = tk.StringVar(value=str(self.initial_settings.get("edge_rate", DEFAULT_VOICE_EDGE_RATE)))
+        self.edge_pitch_var = tk.StringVar(value=str(self.initial_settings.get("edge_pitch", DEFAULT_VOICE_EDGE_PITCH)))
+        self.edge_volume_var = tk.StringVar(value=str(self.initial_settings.get("edge_volume", DEFAULT_VOICE_EDGE_VOLUME)))
         self.telegram_mode_var = tk.StringVar(
             value=str(self.initial_settings.get("telegram_reply_mode", "auto") or "auto")
         )
@@ -1142,24 +1154,34 @@ class VoiceSettingsDialog(ThemedDialog):
         self.edge_combo.grid(row=4, column=0, columnspan=2, sticky="ew", padx=6)
         self.edge_combo.set(selected_edge_label)
 
-        ttk.Label(master, text="Velocidad").grid(row=5, column=0, sticky="w", padx=6, pady=(10, 2))
-        self.rate_spin = ttk.Spinbox(
-            master,
-            from_=MIN_VOICE_TTS_RATE,
-            to=MAX_VOICE_TTS_RATE,
-            increment=5,
-            width=10,
-            textvariable=self.rate_var,
-            style="Yarbis.TSpinbox",
+        ttk.Label(master, text="Velocidad edge (%)").grid(row=5, column=0, sticky="w", padx=6, pady=(10, 2))
+        ttk.Label(master, text="Tono edge (Hz)").grid(row=5, column=1, sticky="w", padx=6, pady=(10, 2))
+        self.edge_rate_spin = ttk.Spinbox(
+            master, from_=MIN_VOICE_EDGE_RATE, to=MAX_VOICE_EDGE_RATE, increment=5,
+            width=10, textvariable=self.edge_rate_var, style="Yarbis.TSpinbox",
         )
-        self.rate_spin.grid(row=6, column=0, sticky="w", padx=6)
+        self.edge_rate_spin.grid(row=6, column=0, sticky="w", padx=6)
+        self.edge_pitch_spin = ttk.Spinbox(
+            master, from_=MIN_VOICE_EDGE_PITCH, to=MAX_VOICE_EDGE_PITCH, increment=5,
+            width=10, textvariable=self.edge_pitch_var, style="Yarbis.TSpinbox",
+        )
+        self.edge_pitch_spin.grid(row=6, column=1, sticky="w", padx=6)
+
+        ttk.Label(master, text="Volumen edge (%)").grid(row=7, column=0, sticky="w", padx=6, pady=(10, 2))
+        ttk.Label(master, text="Velocidad sistema (ppm)").grid(row=7, column=1, sticky="w", padx=6, pady=(10, 2))
+        self.edge_volume_spin = ttk.Spinbox(
+            master, from_=MIN_VOICE_EDGE_VOLUME, to=MAX_VOICE_EDGE_VOLUME, increment=5,
+            width=10, textvariable=self.edge_volume_var, style="Yarbis.TSpinbox",
+        )
+        self.edge_volume_spin.grid(row=8, column=0, sticky="w", padx=6)
+        self.rate_spin = ttk.Spinbox(
+            master, from_=MIN_VOICE_TTS_RATE, to=MAX_VOICE_TTS_RATE, increment=5,
+            width=10, textvariable=self.rate_var, style="Yarbis.TSpinbox",
+        )
+        self.rate_spin.grid(row=8, column=1, sticky="w", padx=6)
 
         ttk.Label(master, text="Respuesta hablada en Telegram").grid(
-            row=7,
-            column=1,
-            sticky="w",
-            padx=6,
-            pady=(10, 2),
+            row=9, column=0, columnspan=2, sticky="w", padx=6, pady=(10, 2),
         )
         self.telegram_mode_combo = ttk.Combobox(
             master,
@@ -1168,15 +1190,27 @@ class VoiceSettingsDialog(ThemedDialog):
             state="readonly",
             width=16,
         )
-        self.telegram_mode_combo.grid(row=8, column=1, sticky="w", padx=6)
+        self.telegram_mode_combo.grid(row=10, column=0, sticky="w", padx=6)
 
         ttk.Label(
             master,
-            text="off=no manda audio, auto=solo respuestas cortas, always=audio siempre que pueda.",
+            text="edge: velocidad/tono/volumen aplican a la voz neural. off=no manda audio, auto=solo respuestas cortas, always=audio siempre que pueda.",
             foreground=self.theme_palette["muted"],
-            wraplength=420,
-        ).grid(row=9, column=0, columnspan=2, sticky="ew", padx=6, pady=(8, 6))
+            wraplength=440,
+        ).grid(row=11, column=0, columnspan=2, sticky="ew", padx=6, pady=(8, 6))
+
+        self.provider_combo.bind("<<ComboboxSelected>>", lambda _event: self._sync_provider_state())
+        self._sync_provider_state()
         return self.edge_combo if self.prefer_edge else self.voice_combo
+
+    def _sync_provider_state(self):
+        is_edge = self.provider_var.get().strip() == "edge"
+        edge_widgets = (self.edge_combo, self.edge_rate_spin, self.edge_pitch_spin, self.edge_volume_spin)
+        system_widgets = (self.voice_combo, self.rate_spin)
+        for widget in edge_widgets:
+            widget.configure(state=("readonly" if widget is self.edge_combo else "normal") if is_edge else "disabled")
+        for widget in system_widgets:
+            widget.configure(state=("readonly" if widget is self.voice_combo else "normal") if not is_edge else "disabled")
 
     def validate(self):
         try:
@@ -1191,6 +1225,19 @@ class VoiceSettingsDialog(ThemedDialog):
                 parent=self,
             )
             return False
+        for var, lo, hi, name in (
+            (self.edge_rate_var, MIN_VOICE_EDGE_RATE, MAX_VOICE_EDGE_RATE, "velocidad edge"),
+            (self.edge_pitch_var, MIN_VOICE_EDGE_PITCH, MAX_VOICE_EDGE_PITCH, "tono edge"),
+            (self.edge_volume_var, MIN_VOICE_EDGE_VOLUME, MAX_VOICE_EDGE_VOLUME, "volumen edge"),
+        ):
+            try:
+                value = int(float(var.get()))
+            except (TypeError, ValueError):
+                messagebox.showwarning("Yarbis", f"La {name} debe ser numerica.", parent=self)
+                return False
+            if not lo <= value <= hi:
+                messagebox.showwarning("Yarbis", f"La {name} debe estar entre {lo} y {hi}.", parent=self)
+                return False
         edge_label = self.edge_combo.get().strip() or "sin elegir"
         if self.provider_var.get().strip() == "edge" and not self._edge_label_to_id.get(edge_label, ""):
             messagebox.showwarning("Yarbis", "Elige una voz neural.", parent=self)
@@ -1205,6 +1252,9 @@ class VoiceSettingsDialog(ThemedDialog):
             "tts_provider": self.provider_var.get().strip() or "edge",
             "tts_voice_id": self._system_label_to_id.get(system_label, ""),
             "edge_voice": self._edge_label_to_id.get(edge_label, ""),
+            "edge_rate": self.edge_rate_var.get().strip(),
+            "edge_pitch": self.edge_pitch_var.get().strip(),
+            "edge_volume": self.edge_volume_var.get().strip(),
             "tts_rate": self.rate_var.get().strip(),
             "telegram_reply_mode": self.telegram_mode_var.get().strip() or "auto",
         }

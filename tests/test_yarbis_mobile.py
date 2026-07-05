@@ -663,6 +663,9 @@ class YarbisMobileTestCase(unittest.TestCase):
                 "enabled": True,
                 "tts_provider": "edge",
                 "edge_voice": "es-ES-AlvaroNeural",
+                "edge_rate": 40,
+                "edge_pitch": -10,
+                "edge_volume": 25,
                 "tts_rate": 200,
                 "telegram_reply_mode": "auto",
             })
@@ -671,6 +674,9 @@ class YarbisMobileTestCase(unittest.TestCase):
         self.assertIn("Voz actualizada", result["result"])
         self.assertEqual(state["voice"]["tts_provider"], "edge")
         self.assertEqual(state["voice"]["edge_voice"], "es-ES-AlvaroNeural")
+        self.assertEqual(state["voice"]["edge_rate"], 40)
+        self.assertEqual(state["voice"]["edge_pitch"], -10)
+        self.assertEqual(state["voice"]["edge_volume"], 25)
 
     def test_public_state_default_is_lightweight_and_loads_state_once(self):
         seeded_state = memory.default_state()
@@ -812,6 +818,10 @@ class YarbisMobileTestCase(unittest.TestCase):
         self.assertIn("Usar seleccionada", html)
         self.assertIn("Probar voz", html)
         self.assertIn("edgeVoiceFilter", html)
+        self.assertIn("voiceGroupEdge", html)
+        self.assertIn("voiceGroupSystem", html)
+        self.assertIn("edgeRate", html)
+        self.assertIn("applyVoiceProviderVisibility", html)
         self.assertIn("Guardar validación", html)
         self.assertIn("coding_validate", html)
         self.assertIn("coding_check", html)
@@ -1295,6 +1305,9 @@ class YarbisMobileTestCase(unittest.TestCase):
         dialog.voice_combo = SimpleNamespace(get=lambda: "Sistema Uno")
         dialog.edge_combo = SimpleNamespace(get=lambda: "Neural Uno")
         dialog.rate_var = SimpleNamespace(get=lambda: "195")
+        dialog.edge_rate_var = SimpleNamespace(get=lambda: "40")
+        dialog.edge_pitch_var = SimpleNamespace(get=lambda: "-10")
+        dialog.edge_volume_var = SimpleNamespace(get=lambda: "25")
         dialog.telegram_mode_var = SimpleNamespace(get=lambda: "always")
         dialog._system_label_to_id = {"Sistema Uno": "system-voice"}
         dialog._edge_label_to_id = {"Neural Uno": "es-ES-AlvaroNeural"}
@@ -1304,12 +1317,18 @@ class YarbisMobileTestCase(unittest.TestCase):
         self.assertEqual(dialog.result["tts_provider"], "edge")
         self.assertEqual(dialog.result["tts_voice_id"], "system-voice")
         self.assertEqual(dialog.result["edge_voice"], "es-ES-AlvaroNeural")
+        self.assertEqual(dialog.result["edge_rate"], "40")
+        self.assertEqual(dialog.result["edge_pitch"], "-10")
+        self.assertEqual(dialog.result["edge_volume"], "25")
 
     def test_voice_settings_dialog_requires_edge_voice_for_edge_provider(self):
         dialog = object.__new__(VoiceSettingsDialog)
         dialog.provider_var = SimpleNamespace(get=lambda: "edge")
         dialog.edge_combo = SimpleNamespace(get=lambda: "sin elegir")
         dialog.rate_var = SimpleNamespace(get=lambda: "175")
+        dialog.edge_rate_var = SimpleNamespace(get=lambda: "0")
+        dialog.edge_pitch_var = SimpleNamespace(get=lambda: "0")
+        dialog.edge_volume_var = SimpleNamespace(get=lambda: "0")
         dialog._edge_label_to_id = {"sin elegir": ""}
 
         with patch("ui_settings_dialogs.messagebox.showwarning") as warning_mock:

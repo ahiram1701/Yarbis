@@ -174,3 +174,72 @@ class VoiceEdgeTtsTestCase(unittest.TestCase):
             self.assertTrue(wav.exists())
         finally:
             voice.cleanup_voice_file(wav)
+
+    def test_edge_prosody_formats_with_sign(self):
+        import voice
+
+        self.assertEqual(voice._edge_prosody({}), ("+0%", "+0Hz", "+0%"))
+        self.assertEqual(
+            voice._edge_prosody({"edge_rate": 50, "edge_pitch": -10, "edge_volume": 20}),
+            ("+50%", "-10Hz", "+20%"),
+        )
+        # Fuera de rango -> se recorta a los limites.
+        self.assertEqual(
+            voice._edge_prosody({"edge_rate": 999, "edge_pitch": -999, "edge_volume": "x"}),
+            ("+100%", "-50Hz", "+0%"),
+        )
+
+    def test_synthesize_edge_wav_passes_prosody_to_communicate(self):
+        import tempfile
+        import edge_tts
+        import voice
+        from pathlib import Path
+        from types import SimpleNamespace
+        from unittest.mock import patch
+
+        captured = {}
+
+        class FakeCommunicate:
+            def __init__(self, text, voice_name, *, rate="+0%", pitch="+0Hz", volume="+0%", **_kw):
+                captured.update(rate=rate, pitch=pitch, volume=volume, voice=voice_name)
+
+            async def save(self, path):
+                Path(path).write_bytes(b"ID3fakemp3")
+
+        def fake_run(args, **_kwargs):
+            Path(args[-1]).write_bytes(b"RIFF0000WAVE")
+            return SimpleNamespace(returncode=0)
+
+        tmpdir = Path(tempfile.mkdtemp())
+        wav_path = tmpdir / "out.wav"
+        try:
+            with patch.object(edge_tts, "Communicate", FakeCommunicate):
+                with patch.object(voice, "_ffmpeg_executable", return_value="ffmpeg"):
+                    with patch("subprocess.run", side_effect=fake_run):
+                        voice._synthesize_edge_wav(
+                            "hola",
+                            wav_path,
+                            {"edge_voice": "es-MX-JorgeNeural", "edge_rate": 50, "edge_pitch": -10, "edge_volume": 20},
+                        )
+            self.assertEqual(captured["rate"], "+50%")
+            self.assertEqual(captured["pitch"], "-10Hz")
+            self.assertEqual(captured["volume"], "+20%")
+            self.assertEqual(captured["voice"], "es-MX-JorgeNeural")
+        finally:
+            voice.cleanup_voice_file(wav_path)
+
+    def test_update_voice_settings_persists_edge_prosody(self):
+        import tempfile
+        import memory
+        import voice
+        from pathlib import Path
+        from unittest.mock import patch
+
+        state_path = Path(tempfile.mkdtemp()) / "voice_prosody_state.json"
+        with patch.object(memory, "STATE_FILE", state_path):
+            memory.save_state(memory.default_state())
+            voice.update_voice_settings_text(tts_provider="edge", edge_rate="+40", edge_pitch=-15, edge_volume=30)
+            v = memory.load_state()["voice"]
+        self.assertEqual(v["edge_rate"], 40)
+        self.assertEqual(v["edge_pitch"], -15)
+        self.assertEqual(v["edge_volume"], 30)

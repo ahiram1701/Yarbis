@@ -658,6 +658,7 @@ def _voice_status_text() -> str:
         f"- proveedor TTS: {settings.get('tts_provider', 'system')}\n"
         f"- voz sistema: {settings.get('tts_voice_id') or 'predeterminada'}\n"
         f"- voz neural (edge): {settings.get('edge_voice') or 'es-MX-JorgeNeural'}\n"
+        f"- edge velocidad/tono/volumen: {settings.get('edge_rate', 0):+d}% / {settings.get('edge_pitch', 0):+d}Hz / {settings.get('edge_volume', 0):+d}%\n"
         f"- velocidad sistema: {settings.get('tts_rate', 175)}\n"
         f"- Telegram voz: {settings.get('telegram_reply_mode', 'auto')}"
     )
@@ -735,6 +736,10 @@ def _dispatch_voice_command(argument_text: str) -> str:
 
     if argument.startswith("velocidad "):
         rate = argument_text.strip()[len("velocidad "):].strip()
+        provider = str(load_state().get("voice", {}).get("tts_provider", "edge")).strip().lower()
+        if provider == "edge":
+            # Para la voz neural la velocidad es un % (-50..+100); acepta +/-.
+            return yarbis_voice.update_voice_settings_text(edge_rate=rate)
         return yarbis_voice.update_voice_settings_text(tts_rate=rate)
 
     return "Uso: /voz auto, /voz on, /voz off, /voz status, /voz voces, /voz catalogo, /voz proveedor edge|sistema, /voz usar NUMERO, /voz velocidad NUMERO o /voz callar"

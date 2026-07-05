@@ -153,6 +153,9 @@ DEFAULT_VOICE_TTS_VOICE_ID = ""
 DEFAULT_VOICE_TTS_PROVIDER = "edge"
 DEFAULT_VOICE_EDGE_VOICE = "es-MX-JorgeNeural"
 MAX_VOICE_EDGE_VOICE_CHARS = 100
+DEFAULT_VOICE_EDGE_RATE = 0
+DEFAULT_VOICE_EDGE_PITCH = 0
+DEFAULT_VOICE_EDGE_VOLUME = 0
 DEFAULT_VOICE_BROWSER_VOICE_NAME = ""
 DEFAULT_VOICE_BROWSER_TTS_RATE = 1.0
 DEFAULT_VOICE_BROWSER_TTS_PITCH = 1.0
@@ -173,6 +176,12 @@ MIN_VOICE_BROWSER_TTS_RATE = 0.5
 MAX_VOICE_BROWSER_TTS_RATE = 2.0
 MIN_VOICE_BROWSER_TTS_PITCH = 0.0
 MAX_VOICE_BROWSER_TTS_PITCH = 2.0
+MIN_VOICE_EDGE_RATE = -50
+MAX_VOICE_EDGE_RATE = 100
+MIN_VOICE_EDGE_PITCH = -50
+MAX_VOICE_EDGE_PITCH = 50
+MIN_VOICE_EDGE_VOLUME = -50
+MAX_VOICE_EDGE_VOLUME = 100
 MAX_VOICE_LANGUAGE_CHARS = 16
 MAX_VOICE_STT_MODEL_CHARS = 80
 MAX_VOICE_STT_COMPUTE_TYPE_CHARS = 24
@@ -513,6 +522,9 @@ def default_state():
             "tts_voice_id": DEFAULT_VOICE_TTS_VOICE_ID,
             "tts_provider": DEFAULT_VOICE_TTS_PROVIDER,
             "edge_voice": DEFAULT_VOICE_EDGE_VOICE,
+            "edge_rate": DEFAULT_VOICE_EDGE_RATE,
+            "edge_pitch": DEFAULT_VOICE_EDGE_PITCH,
+            "edge_volume": DEFAULT_VOICE_EDGE_VOLUME,
             "browser_voice_name": DEFAULT_VOICE_BROWSER_VOICE_NAME,
             "browser_tts_rate": DEFAULT_VOICE_BROWSER_TTS_RATE,
             "browser_tts_pitch": DEFAULT_VOICE_BROWSER_TTS_PITCH,
@@ -2203,6 +2215,24 @@ def _normalize_voice_settings(voice):
         browser_tts_pitch = defaults["browser_tts_pitch"]
     browser_tts_pitch = max(MIN_VOICE_BROWSER_TTS_PITCH, min(MAX_VOICE_BROWSER_TTS_PITCH, browser_tts_pitch))
 
+    try:
+        edge_rate = int(voice.get("edge_rate", defaults["edge_rate"]))
+    except (TypeError, ValueError):
+        edge_rate = defaults["edge_rate"]
+    edge_rate = max(MIN_VOICE_EDGE_RATE, min(MAX_VOICE_EDGE_RATE, edge_rate))
+
+    try:
+        edge_pitch = int(voice.get("edge_pitch", defaults["edge_pitch"]))
+    except (TypeError, ValueError):
+        edge_pitch = defaults["edge_pitch"]
+    edge_pitch = max(MIN_VOICE_EDGE_PITCH, min(MAX_VOICE_EDGE_PITCH, edge_pitch))
+
+    try:
+        edge_volume = int(voice.get("edge_volume", defaults["edge_volume"]))
+    except (TypeError, ValueError):
+        edge_volume = defaults["edge_volume"]
+    edge_volume = max(MIN_VOICE_EDGE_VOLUME, min(MAX_VOICE_EDGE_VOLUME, edge_volume))
+
     live_defaults = defaults["live_conversation"]
     live = voice.get("live_conversation", {})
     if not isinstance(live, dict):
@@ -2274,6 +2304,9 @@ def _normalize_voice_settings(voice):
             voice.get("edge_voice", defaults["edge_voice"]),
             MAX_VOICE_EDGE_VOICE_CHARS,
         ).strip()[:MAX_VOICE_EDGE_VOICE_CHARS] or defaults["edge_voice"],
+        "edge_rate": edge_rate,
+        "edge_pitch": edge_pitch,
+        "edge_volume": edge_volume,
         "browser_voice_name": _coerce_text(
             voice.get("browser_voice_name", defaults["browser_voice_name"]),
             MAX_VOICE_BROWSER_VOICE_NAME_CHARS,
