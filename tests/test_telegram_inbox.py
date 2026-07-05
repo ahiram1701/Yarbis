@@ -186,10 +186,9 @@ class TelegramInboxTestCase(unittest.TestCase):
         )
         send_mock.assert_called_once()
         sent_text = send_mock.call_args.args[0]
-        self.assertIn("Yarbis | Respuesta", sent_text)
-        self.assertIn("Estado: Continuidad:", sent_text)
-        self.assertIn("Resultado:", sent_text)
         self.assertIn("Respuesta procesada.", sent_text)
+        self.assertNotIn("Estado: Continuidad:", sent_text)
+        self.assertNotIn("Resultado:", sent_text)
         self.assertEqual(send_mock.call_args.kwargs["chat_id"], "123")
 
     def test_process_telegram_update_transcribes_voice_and_routes_as_text(self):
@@ -769,9 +768,8 @@ class TelegramInboxTestCase(unittest.TestCase):
         )
         send_mock.assert_called_once()
         sent_text = send_mock.call_args.args[0]
-        self.assertIn("Yarbis | Respuesta diferida", sent_text)
-        self.assertIn("Estado: Continuidad:", sent_text)
         self.assertIn("Respuesta guardada.", sent_text)
+        self.assertNotIn("Estado: Continuidad:", sent_text)
         self.assertEqual(send_mock.call_args.kwargs["chat_id"], "123")
         self.assertEqual(telegram_inbox._load_deferred_telegram_replies(), [])
 
@@ -804,12 +802,16 @@ class TelegramInboxTestCase(unittest.TestCase):
             state=state,
         )
 
-        self.assertIn("Yarbis | Ciclo", rendered)
-        self.assertIn("Estado: Continuidad: 7 ciclo(s) | 1 tarea(s) abierta(s)", rendered)
-        self.assertIn("Resultado:", rendered)
+        # Concise: extrae el resultado final del ciclo y limpia el ruido, sin andamiaje.
         self.assertIn("Avance listo para Telegram.", rendered)
         self.assertNotIn("truncado", rendered.lower())
-        self.assertIn("/run o /auto", rendered)
+        self.assertNotIn("Decidi usar herramientas", rendered)
+        self.assertNotIn("Ejecutando tool", rendered)
+        self.assertNotIn("Estado: Continuidad", rendered)
+        self.assertNotIn("Resultado:", rendered)
+        self.assertNotIn("/run o /auto", rendered)
+        # Estado minimo: la tarea abierta aparece como linea corta.
+        self.assertIn("1 tarea pendiente", rendered)
 
     def test_pending_question_takes_precedence_over_natural_note_reply(self):
         state_path = TEST_RUNTIME_DIR / "telegram_pending_beats_note_state.json"

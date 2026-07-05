@@ -176,3 +176,29 @@ class VoiceTestCase(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class VoiceTtsFallbackTestCase(unittest.TestCase):
+    def test_kokoro_failure_falls_back_to_system(self):
+        import voice
+        from pathlib import Path
+        from unittest.mock import patch
+
+        calls = {"system": 0}
+
+        def fake_system(text, wav_path, settings):
+            calls["system"] += 1
+            Path(wav_path).write_bytes(b"RIFF____WAVE")
+
+        def fake_kokoro(text, wav_path, settings):
+            raise RuntimeError("bad allocation")
+
+        with patch.object(voice, "_settings_tts_provider", return_value="kokoro"):
+            with patch.object(voice, "_synthesize_kokoro_wav", side_effect=fake_kokoro):
+                with patch.object(voice, "_synthesize_system_wav", side_effect=fake_system):
+                    wav = voice._synthesize_wav_file("hola", {"tts_provider": "kokoro"})
+        try:
+            self.assertEqual(calls["system"], 1)
+            self.assertTrue(wav.exists())
+        finally:
+            voice.cleanup_voice_file(wav)

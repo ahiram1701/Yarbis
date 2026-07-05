@@ -77,7 +77,7 @@ class ConversationUxTestCase(unittest.TestCase):
 
         self.assertEqual(conversation_ux.spoken_reply_text(text), "La respuesta final.")
 
-    def test_format_channel_reply_keeps_telegram_continuity_and_cleans_noise(self):
+    def test_format_channel_reply_telegram_is_concise_and_cleans_noise(self):
         state = memory.normalize_state({
             "cycle_count": 2,
             "tasks": [{"id": "task-1", "title": "Seguir", "status": "pending"}],
@@ -90,10 +90,25 @@ class ConversationUxTestCase(unittest.TestCase):
             state=state,
         )
 
-        self.assertIn("Estado: Continuidad: 2 ciclo(s) | 1 tarea(s) abierta(s)", reply["text"])
-        self.assertIn("Resultado:", reply["text"])
-        self.assertNotIn("truncado", reply["text"].lower())
-        self.assertIn("/run o /auto", reply["text"])
+        text = reply["text"]
+        # Respuesta + estado minimo: sin andamiaje operativo.
+        self.assertNotIn("Estado: Continuidad", text)
+        self.assertNotIn("Resultado:", text)
+        self.assertNotIn("Siguiente:", text)
+        self.assertNotIn("/run o /auto", text)
+        # Limpia ruido y muestra la respuesta.
+        self.assertNotIn("truncado", text.lower())
+        self.assertIn("Listo.", text)
+        # Estado minimo: solo una linea corta por la tarea abierta.
+        self.assertIn("1 tarea pendiente", text)
+
+    def test_format_channel_reply_telegram_pending_question_shown(self):
+        state = memory.normalize_state({
+            "awaiting_user_input": {"pending": True, "question": "¿Procedo con el plan?"},
+        })
+        reply = conversation_ux.format_channel_reply("telegram", "Respuesta", "Ok.", state=state)
+        self.assertIn("¿Procedo con el plan?", reply["text"])
+        self.assertNotIn("Estado: Continuidad", reply["text"])
 
 
 if __name__ == "__main__":

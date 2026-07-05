@@ -391,15 +391,13 @@ def format_channel_reply(channel: str, label: str, content: str, state: dict | N
         telegram_next_step = "manda contexto nuevo, /status o /auto cuando quieras seguir."
 
     if channel == "telegram":
-        text = "\n".join([
-            title,
-            f"Estado: {continuity}",
-            "",
-            "Resultado:",
-            body,
-            "",
-            f"Siguiente: {telegram_next_step}",
-        ]).strip()
+        # Respuesta + estado minimo: solo el cuerpo (que ya incluye la pregunta
+        # pendiente si aplica) y, unicamente si hay tareas abiertas y nada
+        # pendiente, una linea corta. Sin andamiaje operativo.
+        text = body
+        if not pending.get("active") and open_tasks:
+            plural = "s" if open_tasks != 1 else ""
+            text = f"{body}\n\n({open_tasks} tarea{plural} pendiente{plural})"
     elif channel == "notification":
         text = f"{body}\n{next_step}".strip()
     else:

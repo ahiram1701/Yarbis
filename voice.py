@@ -582,7 +582,17 @@ def _synthesize_wav_file(cleaned_text: str, settings: dict) -> Path:
     token = f"{time.time_ns()}-{threading.get_ident()}"
     wav_path = VOICE_RUNTIME_DIR / f"tts-{token}.wav"
     if _settings_tts_provider(settings) == "kokoro":
-        _synthesize_kokoro_wav(cleaned_text, wav_path, settings)
+        try:
+            _synthesize_kokoro_wav(cleaned_text, wav_path, settings)
+        except Exception:
+            # Kokoro puede fallar por falta de RAM al cargar el modelo ONNX
+            # (bad allocation) en maquinas con poca memoria. Caemos al TTS del
+            # sistema (ligero) para no quedar sin audio.
+            try:
+                cleanup_voice_file(wav_path)
+            except Exception:
+                pass
+            _synthesize_system_wav(cleaned_text, wav_path, settings)
     else:
         _synthesize_system_wav(cleaned_text, wav_path, settings)
     if not wav_path.exists() or wav_path.stat().st_size <= 0:
