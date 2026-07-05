@@ -6,6 +6,7 @@ import re
 import threading
 import time
 from pathlib import Path
+from uuid import uuid4
 
 import memory_backup
 import yarbis_instance
@@ -234,6 +235,14 @@ MAX_CODING_PROPOSAL_ID_CHARS = 80
 MAX_CODING_VALIDATION_COMMAND_CHARS = 1_000
 MAX_CODING_VALIDATION_OUTPUT_CHARS = 6_000
 MAX_CODING_VALIDATION_TIMESTAMP_CHARS = 80
+DEFAULT_EVOLUTION_ENABLED = False
+DEFAULT_EVOLUTION_INTERVAL_HOURS = 6
+DEFAULT_EVOLUTION_MAX_PENDING = 2
+EVOLUTION_DIMENSIONS = ("code", "behavior", "goals", "skills")
+MAX_EVOLUTION_DIRECTIVES = 40
+MAX_EVOLUTION_DIRECTIVE_CHARS = 500
+MAX_EVOLUTION_DIRECTIVE_REASON_CHARS = 500
+MAX_EVOLUTION_DIRECTIVE_ID_CHARS = 80
 DEFAULT_MEMORY_PROTECTION_ENABLED = True
 DEFAULT_MEMORY_PROTECTION_BACKUP_ON_EVERY_CHANGE = True
 DEFAULT_MEMORY_PROTECTION_INCLUDE_SECRETS = False
@@ -332,6 +341,15 @@ def default_state():
                 "output": "",
                 "ran_at": "",
             },
+        },
+        "evolution": {
+            "enabled": DEFAULT_EVOLUTION_ENABLED,
+            "interval_hours": DEFAULT_EVOLUTION_INTERVAL_HOURS,
+            "last_run_at": "",
+            "max_pending": DEFAULT_EVOLUTION_MAX_PENDING,
+            "dimensions": list(EVOLUTION_DIMENSIONS),
+            "directives": [],
+            "directives_pending": [],
         },
         "memory_protection": {
             "enabled": DEFAULT_MEMORY_PROTECTION_ENABLED,
@@ -1145,6 +1163,74 @@ def _normalize_coding(coding):
         "pending_proposal_ids": pending_proposal_ids,
         "validation_command": validation_command,
         "last_validation": last_validation,
+    }
+
+
+def _normalize_evolution_directives(raw_list) -> list[dict]:
+    if not isinstance(raw_list, list):
+        return []
+    normalized = []
+    seen_ids = set()
+    for item in raw_list:
+        if not isinstance(item, dict):
+            continue
+        text = _coerce_text(item.get("text", ""), MAX_EVOLUTION_DIRECTIVE_CHARS).strip()
+        if not text:
+            continue
+        directive_id = _coerce_text(item.get("id", ""), MAX_EVOLUTION_DIRECTIVE_ID_CHARS).strip()
+        if not directive_id or directive_id in seen_ids:
+            directive_id = uuid4().hex[:12]
+        seen_ids.add(directive_id)
+        normalized.append({
+            "id": directive_id,
+            "text": text,
+            "reason": _coerce_text(item.get("reason", ""), MAX_EVOLUTION_DIRECTIVE_REASON_CHARS).strip(),
+            "created_at": _coerce_text(item.get("created_at", ""), MAX_CODING_VALIDATION_TIMESTAMP_CHARS).strip(),
+        })
+        if len(normalized) >= MAX_EVOLUTION_DIRECTIVES:
+            break
+    return normalized
+
+
+def _normalize_evolution(evolution):
+    defaults = default_state()["evolution"]
+    if not isinstance(evolution, dict):
+        evolution = {}
+
+    enabled = _normalize_bool(evolution.get("enabled", defaults["enabled"]), defaults["enabled"])
+
+    try:
+        interval_hours = int(evolution.get("interval_hours", defaults["interval_hours"]))
+    except (TypeError, ValueError):
+        interval_hours = defaults["interval_hours"]
+    interval_hours = max(1, min(168, interval_hours))
+
+    try:
+        max_pending = int(evolution.get("max_pending", defaults["max_pending"]))
+    except (TypeError, ValueError):
+        max_pending = defaults["max_pending"]
+    max_pending = max(1, min(20, max_pending))
+
+    raw_dimensions = evolution.get("dimensions", defaults["dimensions"])
+    if isinstance(raw_dimensions, str):
+        raw_dimensions = re.split(r"[,;\s]+", raw_dimensions)
+    if not isinstance(raw_dimensions, list):
+        raw_dimensions = list(defaults["dimensions"])
+    dimensions = [d for d in EVOLUTION_DIMENSIONS if d in {str(x).strip().lower() for x in raw_dimensions}]
+    if not dimensions:
+        dimensions = list(defaults["dimensions"])
+
+    return {
+        "enabled": enabled,
+        "interval_hours": interval_hours,
+        "last_run_at": _coerce_text(
+            evolution.get("last_run_at", defaults["last_run_at"]),
+            MAX_CODING_VALIDATION_TIMESTAMP_CHARS,
+        ).strip(),
+        "max_pending": max_pending,
+        "dimensions": dimensions,
+        "directives": _normalize_evolution_directives(evolution.get("directives", [])),
+        "directives_pending": _normalize_evolution_directives(evolution.get("directives_pending", [])),
     }
 
 
@@ -2377,6 +2463,7 @@ def normalize_state(state):
         migrate_legacy_step_limit=migrate_legacy_step_limit,
     )
     normalized["coding"] = _normalize_coding(state.get("coding", {}))
+    normalized["evolution"] = _normalize_evolution(state.get("evolution", {}))
     normalized["memory_protection"] = _normalize_memory_protection(state.get("memory_protection", {}))
     normalized["model_provider"] = _normalize_model_provider(state)
     normalized["ollama"] = dict(normalized["model_provider"][MODEL_PROVIDER_OLLAMA])

@@ -139,6 +139,55 @@ def _render_context_section(state: dict) -> str:
     )
 
 
+SELF_EVOLUTION_TICK_BASE_MESSAGE = (
+    "Autoevolucion de Yarbis: revisa tu propio proyecto y PROPON mejoras "
+    "concretas de alto valor para ti mismo, sin aplicar nada."
+)
+
+
+def build_self_evolution_tick_message(state: dict | None = None) -> str:
+    if state is None:
+        state = load_state()
+
+    evolution = state.get("evolution", {}) if isinstance(state, dict) else {}
+    if not isinstance(evolution, dict):
+        evolution = {}
+    dimensions = evolution.get("dimensions", []) if isinstance(evolution.get("dimensions"), list) else []
+    try:
+        max_pending = int(evolution.get("max_pending", 2))
+    except (TypeError, ValueError):
+        max_pending = 2
+
+    dim_labels = {
+        "code": "codigo (corrige bugs, optimiza, agrega features utiles)",
+        "skills": "skills/herramientas (propon tools nuevas como diff de codigo)",
+        "behavior": "comportamiento (anota mejoras de reglas/estrategia para revisarlas luego)",
+        "goals": "objetivos/memoria (sugiere refinamientos sin aplicarlos)",
+    }
+    active = [f"- {dim_labels[d]}" for d in ("code", "skills", "behavior", "goals") if d in dimensions and d in dim_labels]
+    dims_text = "\n".join(active) if active else "- codigo"
+
+    return (
+        f"{SELF_EVOLUTION_TICK_BASE_MESSAGE}\n\n"
+        "El workspace de coding activo ya apunta a tu propio proyecto. Usa "
+        "`coding_workspace_overview`, `coding_list_files`, `coding_search_text` y "
+        "`coding_read_text_range` para estudiar tu codigo antes de proponer.\n\n"
+        "Dimensiones a revisar:\n"
+        f"{dims_text}\n\n"
+        "Reglas ESTRICTAS:\n"
+        f"- Antes de proponer, revisa cuantas propuestas 'pending' hay. Si ya hay {max_pending} o mas, "
+        "NO crees nuevas: resume el estado y termina.\n"
+        "- Para codigo/skills crea la propuesta con `coding_propose_changes` incluyendo titulo, resumen, "
+        "motivo y `validation_command` = el comando de tests del repo (usa `coding_detect_validation_command` "
+        "si no lo sabes). Prefiere cambios pequenos, seguros y de alta confianza (un bugfix, una limpieza, "
+        "un test, una mejora acotada).\n"
+        "- NUNCA apliques cambios: no uses `coding_apply_proposal` ni edites archivos directamente. "
+        "El usuario revisa y aprueba cada propuesta.\n"
+        "- No toques rutas protegidas (.git, .venv, state.json, runtime, instancias).\n"
+        "- Si no encuentras una mejora clara de alto valor, deja una salida breve sin inventar trabajo."
+    )
+
+
 def build_proactive_tick_message(state: dict | None = None) -> str:
     if state is None:
         state = load_state()

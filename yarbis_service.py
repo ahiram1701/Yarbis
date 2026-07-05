@@ -53,7 +53,9 @@ from memory import (
     wait_for_memory_protection_maintenance,
 )
 from proactive_context import build_proactive_tick_message
+from proactive_context import build_self_evolution_tick_message
 from proactive_context import PROACTIVE_TICK_BASE_MESSAGE
+from proactive_context import SELF_EVOLUTION_TICK_BASE_MESSAGE
 from secrets_redaction import redact_secrets
 from notifications import (
     get_telegram_settings,
@@ -85,6 +87,9 @@ ENV_SERVICE_PROACTIVE_CYCLES = "YARBIS_SERVICE_PROACTIVE_CYCLES"
 ENV_SERVICE_PROACTIVE_START_DELAY_SECONDS = "YARBIS_SERVICE_PROACTIVE_START_DELAY_SECONDS"
 ENV_SERVICE_PROACTIVE_MAX_RUNTIME_SECONDS = "YARBIS_SERVICE_PROACTIVE_MAX_RUNTIME_SECONDS"
 ENV_SERVICE_PROACTIVE_MODEL = "YARBIS_SERVICE_PROACTIVE_MODEL"
+ENV_EVOLUTION_ENABLED = "YARBIS_EVOLUTION"
+ENV_EVOLUTION_INTERVAL_HOURS = "YARBIS_EVOLUTION_INTERVAL_HOURS"
+ENV_EVOLUTION_MAX_RUNTIME_SECONDS = "YARBIS_EVOLUTION_MAX_RUNTIME_SECONDS"
 
 SERVICE_LOOP_SLEEP_SECONDS = 1.0
 DEFAULT_SERVICE_PROACTIVE_MAX_RUNTIME_SECONDS = 60
@@ -100,6 +105,13 @@ PROACTIVE_SLOT_BUSY_PREFIX = "Pulso proactivo aplazado"
 PROACTIVE_SLOT_RETRY_SECONDS = 45
 PROACTIVE_START_JITTER_MAX_SECONDS = 90
 _PROACTIVE_SLOT_MUTEX_NAME = "Local\\YarbisProactivePulseSlot"
+
+# Autoevolucion: una sola instancia (mutex propio) revisa a Yarbis en cadencia
+# lenta y crea PROPUESTAS que el usuario aprueba; nunca aplica nada sola.
+DEFAULT_EVOLUTION_MAX_RUNTIME_SECONDS = 180
+DEFAULT_EVOLUTION_CYCLES = 4
+_SELF_EVOLUTION_MUTEX_NAME = "Local\\YarbisSelfEvolution"
+SELF_EVOLUTION_TICK_PREFIX = SELF_EVOLUTION_TICK_BASE_MESSAGE.split(":", 1)[0] + ":"
 
 
 class _NoopSlot:
@@ -119,13 +131,13 @@ class _WinMutexSlot:
             self._kernel32.CloseHandle(self._handle)
 
 
-def _acquire_proactive_slot():
-    """Reserva el turno global del pulso proactivo (0 espera).
+def _acquire_named_slot(mutex_name: str):
+    """Reserva un turno global entre instancias con un mutex de sesion (0 espera).
 
     Devuelve un objeto liberable si se obtuvo el turno, o None si otra instancia
     lo tiene. Ante cualquier problema devuelve un slot no-op para no desactivar la
-    proactividad por accidente. El mutex de Windows se libera solo si el proceso
-    muere, asi que un turno abandonado (WAIT_ABANDONED) tambien cuenta como libre.
+    funcion por accidente. El mutex de Windows se libera solo si el proceso muere,
+    asi que un turno abandonado (WAIT_ABANDONED) tambien cuenta como libre.
     """
     if os.name != "nt":
         return _NoopSlot()
@@ -134,7 +146,7 @@ def _acquire_proactive_slot():
         kernel32.CreateMutexW.restype = wintypes.HANDLE
         kernel32.CreateMutexW.argtypes = [wintypes.LPVOID, wintypes.BOOL, wintypes.LPCWSTR]
         kernel32.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
-        handle = kernel32.CreateMutexW(None, False, _PROACTIVE_SLOT_MUTEX_NAME)
+        handle = kernel32.CreateMutexW(None, False, mutex_name)
         if not handle:
             return _NoopSlot()
         result = kernel32.WaitForSingleObject(handle, 0)
@@ -144,6 +156,10 @@ def _acquire_proactive_slot():
         return None
     except Exception:
         return _NoopSlot()
+
+
+def _acquire_proactive_slot():
+    return _acquire_named_slot(_PROACTIVE_SLOT_MUTEX_NAME)
 
 
 def _proactive_start_jitter_seconds() -> int:
@@ -362,7 +378,7 @@ def _bounded_proactive_output(output: object) -> str:
     )
 
 
-def _drop_trailing_proactive_tick_messages(reason: str = "") -> bool:
+def _drop_trailing_tick_messages(prefix: str, reason: str = "", label: str = "drop_trailing_tick_messages") -> bool:
     def mutate(state):
         messages = state.get("messages", [])
         if not isinstance(messages, list):
@@ -374,7 +390,7 @@ def _drop_trailing_proactive_tick_messages(reason: str = "") -> bool:
             if (
                 isinstance(message, dict)
                 and message.get("role") == "user"
-                and str(message.get("content", "")).startswith(PROACTIVE_TICK_PREFIX)
+                and str(message.get("content", "")).startswith(prefix)
             ):
                 tick_index = index
                 break
@@ -386,7 +402,7 @@ def _drop_trailing_proactive_tick_messages(reason: str = "") -> bool:
             if (
                 isinstance(message, dict)
                 and message.get("role") == "user"
-                and not str(message.get("content", "")).startswith(PROACTIVE_TICK_PREFIX)
+                and not str(message.get("content", "")).startswith(prefix)
             ):
                 return False
 
@@ -397,7 +413,19 @@ def _drop_trailing_proactive_tick_messages(reason: str = "") -> bool:
             state["runtime"] = default_state()["runtime"]
         return True
 
-    return bool(state_transaction("drop_trailing_proactive_tick_messages", mutate))
+    return bool(state_transaction(label, mutate))
+
+
+def _drop_trailing_proactive_tick_messages(reason: str = "") -> bool:
+    return _drop_trailing_tick_messages(
+        PROACTIVE_TICK_PREFIX, reason, "drop_trailing_proactive_tick_messages"
+    )
+
+
+def _drop_trailing_self_evolution_tick_messages(reason: str = "") -> bool:
+    return _drop_trailing_tick_messages(
+        SELF_EVOLUTION_TICK_PREFIX, reason, "drop_trailing_self_evolution_tick_messages"
+    )
 
 
 def _send_telegram_operation_update(label: str, output: str) -> bool:
@@ -683,6 +711,213 @@ def run_proactive_pulse() -> str:
     return _run_proactive_pulse_with_timeout(settings, last_pulse_at)
 
 
+# ---------------------------------------------------------------------------
+# Autoevolucion: una sola instancia revisa a Yarbis en cadencia lenta y crea
+# PROPUESTAS que el usuario aprueba. Nunca aplica nada por si misma.
+# ---------------------------------------------------------------------------
+
+def get_self_evolution_settings() -> dict:
+    try:
+        evolution = load_state().get("evolution", {})
+    except Exception:
+        evolution = {}
+    if not isinstance(evolution, dict):
+        evolution = {}
+
+    interval_hours = _env_int(
+        ENV_EVOLUTION_INTERVAL_HOURS,
+        evolution.get("interval_hours", 6),
+        minimum=1,
+        maximum=168,
+    )
+    try:
+        max_pending = int(evolution.get("max_pending", 2))
+    except (TypeError, ValueError):
+        max_pending = 2
+
+    return {
+        "enabled": _env_bool(ENV_EVOLUTION_ENABLED, bool(evolution.get("enabled", False))),
+        "interval_hours": interval_hours,
+        "interval_seconds": interval_hours * 3600,
+        "max_pending": max(1, min(20, max_pending)),
+        "cycles": DEFAULT_EVOLUTION_CYCLES,
+        "max_runtime_seconds": _env_int(
+            ENV_EVOLUTION_MAX_RUNTIME_SECONDS,
+            DEFAULT_EVOLUTION_MAX_RUNTIME_SECONDS,
+            minimum=30,
+            maximum=30 * 60,
+        ),
+    }
+
+
+def _count_pending_coding_proposals(state: dict | None = None) -> int:
+    if state is None:
+        state = load_state()
+    coding = state.get("coding", {}) if isinstance(state, dict) else {}
+    pending = coding.get("pending_proposal_ids", []) if isinstance(coding, dict) else []
+    return len(pending) if isinstance(pending, list) else 0
+
+
+def _ensure_coding_workspace() -> None:
+    # La autoevolucion propone sobre el propio repo de Yarbis: si el workspace de
+    # coding no esta configurado, lo apunta al directorio del proyecto.
+    try:
+        coding = load_state().get("coding", {})
+        if isinstance(coding, dict) and str(coding.get("workspace_path", "")).strip():
+            return
+    except Exception:
+        pass
+
+    def mutate(state):
+        coding_state = state.setdefault("coding", {})
+        if not str(coding_state.get("workspace_path", "")).strip():
+            coding_state["workspace_path"] = str(WORKSPACE_ROOT)
+
+    try:
+        state_transaction("evolution_ensure_workspace", mutate, create_backup=False)
+    except Exception:
+        pass
+
+
+def _mark_evolution_run() -> str:
+    timestamp = _utc_timestamp()
+
+    def mutate(state):
+        evolution_state = state.setdefault("evolution", {})
+        evolution_state["last_run_at"] = timestamp
+
+    state_transaction("evolution_last_run", mutate, create_backup=False)
+    return timestamp
+
+
+def _append_self_evolution_tick_message():
+    def mutate(state):
+        state["messages"].append({
+            "role": "user",
+            "content": build_self_evolution_tick_message(state),
+        })
+
+    state_transaction("append_self_evolution_tick_message", mutate)
+
+
+def _run_self_evolution_inline(settings: dict) -> str:
+    try:
+        with session_operation_lock("Autoevolucion", blocking=False):
+            state = load_state()
+            if has_pending_user_question(state):
+                return "Autoevolucion omitida: esperando respuesta del usuario."
+
+            max_pending = int(settings.get("max_pending", 2))
+            pending_before = _count_pending_coding_proposals(state)
+            if pending_before >= max_pending:
+                return (
+                    f"Autoevolucion omitida: ya hay {pending_before} propuesta(s) pendientes "
+                    f"(limite {max_pending}). Aprueba o descarta antes de generar mas."
+                )
+
+            _ensure_coding_workspace()
+            _append_self_evolution_tick_message()
+            output = run_auto_with_output(cycles=settings.get("cycles"), emit_notifications=False)
+
+            refreshed_state = load_state()
+            if has_pending_user_question(refreshed_state):
+                notify_user_input_required(
+                    refreshed_state["awaiting_user_input"].get("question", ""),
+                    refreshed_state["awaiting_user_input"].get("reason", ""),
+                )
+            else:
+                new_count = max(0, _count_pending_coding_proposals(refreshed_state) - pending_before)
+                if new_count > 0:
+                    _send_telegram_operation_update(
+                        "Autoevolucion",
+                        f"Genere {new_count} propuesta(s) de mejora para tu aprobacion. "
+                        "Revisalas con /coding o en la UI movil (Ajustes).\n\n"
+                        + str(output),
+                    )
+
+            activity.emit_event(
+                "self_evolution_completed",
+                operation_id=current_operation_id(),
+                label="Autoevolucion",
+                new_proposals=max(0, _count_pending_coding_proposals(load_state()) - pending_before),
+            )
+            return output
+    except SessionOperationBusy:
+        activity.emit_event("self_evolution_skipped", label="Autoevolucion", reason="busy")
+        return "Autoevolucion omitida: hay una operacion de Yarbis en curso."
+
+
+def _run_self_evolution_child(settings: dict) -> str:
+    timeout_seconds = int(settings.get("max_runtime_seconds", DEFAULT_EVOLUTION_MAX_RUNTIME_SECONDS))
+    child_code = (
+        "import json, os, yarbis_service; "
+        "settings=json.loads(os.environ['YARBIS_EVOLUTION_SETTINGS_JSON']); "
+        "print(yarbis_service._run_self_evolution_inline(settings))"
+    )
+    child_env = os.environ.copy()
+    child_env["YARBIS_EVOLUTION_SETTINGS_JSON"] = json.dumps(settings)
+    child_env["YARBIS_OLLAMA_TIMEOUT_SECONDS"] = str(max(30, min(120, timeout_seconds - 10)))
+    child_env["PYTHONUTF8"] = "1"
+    child_env["PYTHONIOENCODING"] = "utf-8"
+
+    try:
+        process = subprocess.Popen(
+            [sys.executable, "-B", "-c", child_code],
+            cwd=str(WORKSPACE_ROOT),
+            env=child_env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            creationflags=_creationflags(),
+        )
+    except OSError as exc:
+        raise RuntimeError(f"No pude iniciar el proceso aislado de autoevolucion: {exc}") from exc
+
+    try:
+        stdout, stderr = process.communicate(timeout=timeout_seconds)
+    except subprocess.TimeoutExpired:
+        _kill_process_tree(process)
+        try:
+            stdout, stderr = process.communicate(timeout=5)
+        except Exception:
+            stdout, stderr = "", ""
+        clear_abandoned_runtime_operation()
+        message = f"Autoevolucion detenida por timeout duro ({timeout_seconds}s)."
+        _drop_trailing_self_evolution_tick_messages(message)
+        activity.emit_event("self_evolution_timed_out", label="Autoevolucion", timeout_seconds=timeout_seconds)
+        return message
+
+    combined = "\n".join(part.strip() for part in (stdout, stderr) if str(part).strip())
+    if process.returncode != 0:
+        clear_abandoned_runtime_operation()
+        _drop_trailing_self_evolution_tick_messages("Autoevolucion fallo en proceso aislado.")
+        raise RuntimeError(
+            "Autoevolucion fallo en proceso aislado"
+            + (f" (exit={process.returncode}).\n{combined}" if combined else f" (exit={process.returncode}).")
+        )
+
+    return _bounded_proactive_output(combined)
+
+
+def run_self_evolution() -> str:
+    settings = get_self_evolution_settings()
+    if not settings["enabled"]:
+        return "Autoevolucion desactivada."
+
+    # Solo una instancia evoluciona a la vez (evita 8 propuestas duplicadas y RAM).
+    slot = _acquire_named_slot(_SELF_EVOLUTION_MUTEX_NAME)
+    if slot is None:
+        return "Autoevolucion aplazada: otra instancia la esta ejecutando."
+
+    _mark_evolution_run()
+    try:
+        return _run_self_evolution_child(settings)
+    finally:
+        slot.release()
+
+
 def run_service_loop(should_stop=None):
     RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
     ignored_stop_mtime = _discard_startup_stop_file()
@@ -721,6 +956,17 @@ def run_service_loop(should_stop=None):
         else:
             _log("Proactividad 24/7 desactivada por configuracion.")
 
+        evolution_settings = get_self_evolution_settings()
+        next_evolution_at = time.monotonic() + evolution_settings["interval_seconds"]
+        if evolution_settings["enabled"]:
+            _log(
+                "Autoevolucion activa: revisa y propone mejoras cada "
+                f"{evolution_settings['interval_hours']}h (una sola instancia, "
+                "solo propuestas, aprobacion manual)."
+            )
+        else:
+            _log("Autoevolucion desactivada por configuracion.")
+
         try:
             recovered_output = _recover_unanswered_user_message()
             if recovered_output:
@@ -740,6 +986,10 @@ def run_service_loop(should_stop=None):
             except Exception:
                 _log("Error leyendo configuracion de proactividad:\n" + traceback.format_exc())
                 # Conservamos la ultima configuracion conocida para no detener el servicio.
+            try:
+                evolution_settings = get_self_evolution_settings()
+            except Exception:
+                _log("Error leyendo configuracion de autoevolucion:\n" + traceback.format_exc())
             try:
                 mobile_status = ensure_mobile_ui_servers()
                 if mobile_status:
@@ -787,6 +1037,21 @@ def run_service_loop(should_stop=None):
                     next_proactive_at = time.monotonic() + settings["interval_seconds"]
             elif not settings["enabled"]:
                 next_proactive_at = now + settings["interval_seconds"]
+
+            if evolution_settings["enabled"] and now >= next_evolution_at:
+                _log("Autoevolucion iniciada (revisa y propone mejoras).")
+                evo_result = ""
+                try:
+                    evo_result = run_self_evolution()
+                    _log(evo_result)
+                except Exception:
+                    _log("Error en autoevolucion:\n" + traceback.format_exc())
+                if isinstance(evo_result, str) and evo_result.startswith("Autoevolucion aplazada"):
+                    next_evolution_at = time.monotonic() + PROACTIVE_SLOT_RETRY_SECONDS
+                else:
+                    next_evolution_at = time.monotonic() + evolution_settings["interval_seconds"]
+            elif not evolution_settings["enabled"]:
+                next_evolution_at = now + evolution_settings["interval_seconds"]
 
             time.sleep(SERVICE_LOOP_SLEEP_SECONDS)
     except Exception:
