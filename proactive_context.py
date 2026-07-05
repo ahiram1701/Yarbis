@@ -1,3 +1,4 @@
+import activity
 from memory import load_state
 from pc_context import (
     load_latest_snapshot,
@@ -5,6 +6,20 @@ from pc_context import (
     normalize_local_context_settings,
     render_snapshot_summary,
 )
+
+# Tipos de evento que representan "como le fue" a Yarbis (senal de aprendizaje).
+_EXPERIENCE_EVENT_TYPES = {
+    "operation_finished",
+    "remote_job_failed",
+    "remote_job_completed",
+    "proactive_pulse_completed",
+    "proactive_pulse_skipped",
+    "proactive_pulse_timed_out",
+    "self_evolution_completed",
+    "self_evolution_timed_out",
+    "service_failed",
+    "stop_requested",
+}
 
 PROACTIVE_TICK_BASE_MESSAGE = (
     "Pulso proactivo 24/7 del servicio: revisa objetivo, perfil, notas, tareas "
@@ -190,13 +205,77 @@ def build_self_evolution_tick_message(state: dict | None = None) -> str:
     )
 
 
+def _recent_user_corrections(state: dict, limit: int = 4) -> list[str]:
+    messages = state.get("messages", []) if isinstance(state, dict) else []
+    if not isinstance(messages, list):
+        return []
+    tick_prefix = PROACTIVE_TICK_BASE_MESSAGE.split(":", 1)[0]
+    collected = []
+    for message in reversed(messages):
+        if not isinstance(message, dict) or message.get("role") != "user":
+            continue
+        content = str(message.get("content", "")).strip()
+        if not content or content.startswith(tick_prefix) or content.startswith("Autoevolucion"):
+            continue
+        collected.append(content[:200])
+        if len(collected) >= limit:
+            break
+    return list(reversed(collected))
+
+
+def _render_experience_section(state: dict) -> str:
+    parts = []
+
+    try:
+        events = activity.read_recent_events(limit=40)
+    except Exception:
+        events = []
+    outcome_lines = []
+    for event in events:
+        if not isinstance(event, dict):
+            continue
+        event_type = str(event.get("type", "")).strip()
+        if event_type not in _EXPERIENCE_EVENT_TYPES:
+            continue
+        label = str(event.get("label", "")).strip()
+        detail = str(event.get("reason") or event.get("content") or event.get("error") or "").strip()
+        piece = event_type + (f" · {label}" if label else "") + (f" · {detail}" if detail else "")
+        outcome_lines.append("- " + piece[:160])
+    outcome_lines = outcome_lines[-10:]
+    if outcome_lines:
+        parts.append("Resultados recientes:\n" + "\n".join(outcome_lines))
+
+    last_result = str(state.get("last_result", "")).strip()
+    if last_result:
+        parts.append("Ultimo resultado: " + last_result[:400])
+
+    corrections = _recent_user_corrections(state)
+    if corrections:
+        parts.append(
+            "Ultimas indicaciones/correcciones del usuario:\n"
+            + "\n".join(f"- {item}" for item in corrections)
+        )
+
+    if not parts:
+        return "Experiencia reciente:\n- Sin senales nuevas relevantes."
+    return "Experiencia reciente:\n" + "\n\n".join(parts)
+
+
 def build_proactive_tick_message(state: dict | None = None) -> str:
     if state is None:
         state = load_state()
 
     return (
         f"{PROACTIVE_TICK_BASE_MESSAGE}\n\n"
+        f"{_render_experience_section(state)}\n\n"
         f"{_render_context_section(state)}\n\n"
+        "Aprendizaje continuo (parte de tu forma de operar, no una tarea aparte):\n"
+        "- Reflexiona brevemente sobre los resultados recientes y las correcciones del usuario antes de avanzar.\n"
+        "- Si observas un hecho o preferencia estable del usuario o del entorno, guardalo con `save_note` "
+        "(categoria 'aprendizaje'); no dupliques notas existentes ni guardes secretos.\n"
+        "- Si notas una forma mejor y estable de comportarte, proponla con `evolution_propose_directive` "
+        "(queda pendiente de aprobacion; NO cambies tu conducta base sin aprobacion).\n"
+        "- No inventes aprendizajes: si no hay una leccion clara, no guardes ni propongas nada.\n\n"
         "Reglas para usar este contexto local:\n"
         "- Tratalo como senal auxiliar, no como certeza absoluta.\n"
         "- No menciones datos sensibles si no aportan al siguiente paso.\n"
