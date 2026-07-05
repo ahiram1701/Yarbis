@@ -190,6 +190,16 @@ class EvolutionSuggestionsTestCase(unittest.TestCase):
             self.assertEqual(state["goal"], "Ser el mejor asistente de trading")
             self.assertEqual(state["evolution"]["suggestions_pending"], [])
 
+    def test_propose_goal_empty_text_rejected(self):
+        state = memory.default_state()
+        p1, p2 = self._bind(state)
+        with p1, p2:
+            out = tools.evolution_propose_goal("", "vacio")
+            self.assertIn("no puede quedar vacia", out)
+            out2 = tools.evolution_propose_goal("   ", "solo espacios")
+            self.assertIn("no puede quedar vacia", out2)
+            self.assertEqual(state.get("evolution", {}).get("suggestions_pending", []), [])
+
     def test_propose_memory_apply_saves_note(self):
         state = memory.default_state()
         p1, p2 = self._bind(state)
