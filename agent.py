@@ -130,6 +130,9 @@ from tools import (
     evolution_list_suggestions,
     evolution_apply_suggestion,
     evolution_discard_suggestion,
+    analyze_image,
+    vision_status,
+    vision_set_model,
 )
 
 
@@ -837,6 +840,9 @@ tool_definitions = [
     evolution_list_suggestions,
     evolution_apply_suggestion,
     evolution_discard_suggestion,
+    analyze_image,
+    vision_status,
+    vision_set_model,
 ]
 
 available_functions = {
@@ -931,6 +937,9 @@ available_functions = {
     "evolution_list_suggestions": evolution_list_suggestions,
     "evolution_apply_suggestion": evolution_apply_suggestion,
     "evolution_discard_suggestion": evolution_discard_suggestion,
+    "analyze_image": analyze_image,
+    "vision_status": vision_status,
+    "vision_set_model": vision_set_model,
 }
 
 PROACTIVE_SAFE_TOOL_NAMES = {
@@ -986,6 +995,8 @@ PROACTIVE_SAFE_TOOL_NAMES = {
     "evolution_propose_goal",
     "evolution_propose_memory",
     "evolution_list_suggestions",
+    "analyze_image",
+    "vision_status",
     "social_accounts_overview",
     "save_social_draft",
     "list_social_drafts",

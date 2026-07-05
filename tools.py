@@ -22,6 +22,7 @@ from integrations import (
 from internet import fetch_web_page as fetch_public_web_page
 from internet import search_web as search_public_web
 import memory_transfer
+import vision
 import yarbis_bus
 import yarbis_instance
 from memory import (
@@ -32,6 +33,7 @@ from memory import (
     MAX_EVOLUTION_DIRECTIVES,
     MAX_EVOLUTION_SUGGESTION_CHARS,
     MAX_EVOLUTION_SUGGESTIONS,
+    MAX_VISION_MODEL_CHARS,
     MAX_VISUAL_BOARD_EDGES,
     MAX_VISUAL_BOARD_NODES,
     MAX_VISUAL_BOARDS_PER_PROJECT,
@@ -5901,3 +5903,77 @@ def evolution_discard_suggestion(suggestion_id: str) -> str:
 
     state_transaction("evolution_discard_suggestion", mutate)
     return "Sugerencia descartada." if removed["value"] else f"No encontre una sugerencia con id {cleaned_id}."
+
+
+# ---------------------------------------------------------------------------
+# Vision: analisis de imagenes con un modelo multimodal de Ollama Cloud.
+# ---------------------------------------------------------------------------
+
+def analyze_image(path: str, question: str = "") -> str:
+    """
+    Analiza una imagen del disco con el modelo de vision y devuelve una descripcion.
+
+    Usala cuando el usuario comparta una imagen o cuando necesites entender el
+    contenido de una imagen (captura, foto, diagrama). Puede transcribir texto (OCR).
+
+    Args:
+        path (str): Ruta de la imagen (absoluta o relativa al workspace de Yarbis).
+        question (str): Pregunta o instruccion opcional sobre la imagen.
+
+    Returns:
+        str: Analisis o respuesta sobre la imagen.
+    """
+    cleaned = str(path).strip()
+    if not cleaned:
+        return "Indica la ruta de la imagen."
+    candidate = Path(cleaned)
+    resolved = (candidate if candidate.is_absolute() else (WORKSPACE_ROOT / candidate)).resolve()
+    if not resolved.exists():
+        return f"No encontre la imagen: {resolved}"
+    if not resolved.is_file():
+        return f"La ruta no es un archivo: {resolved}"
+    try:
+        return vision.analyze_image(resolved, question)
+    except vision.VisionError as exc:
+        return f"No pude analizar la imagen: {exc}"
+    except Exception as exc:
+        return f"Error inesperado analizando la imagen: {exc}"
+
+
+def vision_status() -> str:
+    """
+    Muestra la configuracion de vision (modelo, tamano max de imagen, timeout).
+
+    Returns:
+        str: Estado de vision.
+    """
+    settings = load_state().get("vision", {})
+    if not isinstance(settings, dict):
+        settings = {}
+    return (
+        "Vision de Yarbis:\n"
+        f"- Modelo: {settings.get('model', '')}\n"
+        f"- Tamano maximo de imagen: {settings.get('max_image_dim', '')}px\n"
+        f"- Timeout: {settings.get('timeout_seconds', '')}s"
+    )
+
+
+def vision_set_model(model: str) -> str:
+    """
+    Cambia el modelo de vision (debe ser un modelo multimodal de Ollama Cloud).
+
+    Args:
+        model (str): Nombre del modelo (ej. gemma3:12b-cloud).
+
+    Returns:
+        str: Confirmacion.
+    """
+    cleaned = str(model).strip()[:MAX_VISION_MODEL_CHARS]
+    if not cleaned:
+        return "Indica el nombre del modelo de vision."
+
+    def mutate(state):
+        state.setdefault("vision", {})["model"] = cleaned
+
+    state_transaction("vision_set_model", mutate)
+    return f"Modelo de vision configurado: {cleaned}"

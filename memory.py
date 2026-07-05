@@ -246,6 +246,10 @@ MAX_EVOLUTION_DIRECTIVE_ID_CHARS = 80
 MAX_EVOLUTION_SUGGESTIONS = 40
 MAX_EVOLUTION_SUGGESTION_CHARS = 2_000
 EVOLUTION_SUGGESTION_KINDS = ("goal", "memory")
+DEFAULT_VISION_MODEL = "gemma3:12b-cloud"
+DEFAULT_VISION_MAX_IMAGE_DIM = 1280
+DEFAULT_VISION_TIMEOUT_SECONDS = 120
+MAX_VISION_MODEL_CHARS = 200
 DEFAULT_MEMORY_PROTECTION_ENABLED = True
 DEFAULT_MEMORY_PROTECTION_BACKUP_ON_EVERY_CHANGE = True
 DEFAULT_MEMORY_PROTECTION_INCLUDE_SECRETS = False
@@ -354,6 +358,11 @@ def default_state():
             "directives": [],
             "directives_pending": [],
             "suggestions_pending": [],
+        },
+        "vision": {
+            "model": DEFAULT_VISION_MODEL,
+            "max_image_dim": DEFAULT_VISION_MAX_IMAGE_DIM,
+            "timeout_seconds": DEFAULT_VISION_TIMEOUT_SECONDS,
         },
         "memory_protection": {
             "enabled": DEFAULT_MEMORY_PROTECTION_ENABLED,
@@ -1266,6 +1275,32 @@ def _normalize_evolution(evolution):
         "directives": _normalize_evolution_directives(evolution.get("directives", [])),
         "directives_pending": _normalize_evolution_directives(evolution.get("directives_pending", [])),
         "suggestions_pending": _normalize_evolution_suggestions(evolution.get("suggestions_pending", [])),
+    }
+
+
+def _normalize_vision(vision):
+    defaults = default_state()["vision"]
+    if not isinstance(vision, dict):
+        vision = {}
+
+    model = _coerce_text(vision.get("model", defaults["model"]), MAX_VISION_MODEL_CHARS).strip() or defaults["model"]
+
+    try:
+        max_image_dim = int(vision.get("max_image_dim", defaults["max_image_dim"]))
+    except (TypeError, ValueError):
+        max_image_dim = defaults["max_image_dim"]
+    max_image_dim = max(256, min(4096, max_image_dim))
+
+    try:
+        timeout_seconds = int(vision.get("timeout_seconds", defaults["timeout_seconds"]))
+    except (TypeError, ValueError):
+        timeout_seconds = defaults["timeout_seconds"]
+    timeout_seconds = max(10, min(600, timeout_seconds))
+
+    return {
+        "model": model,
+        "max_image_dim": max_image_dim,
+        "timeout_seconds": timeout_seconds,
     }
 
 
@@ -2499,6 +2534,7 @@ def normalize_state(state):
     )
     normalized["coding"] = _normalize_coding(state.get("coding", {}))
     normalized["evolution"] = _normalize_evolution(state.get("evolution", {}))
+    normalized["vision"] = _normalize_vision(state.get("vision", {}))
     normalized["memory_protection"] = _normalize_memory_protection(state.get("memory_protection", {}))
     normalized["model_provider"] = _normalize_model_provider(state)
     normalized["ollama"] = dict(normalized["model_provider"][MODEL_PROVIDER_OLLAMA])
