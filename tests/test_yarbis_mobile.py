@@ -545,14 +545,14 @@ class YarbisMobileTestCase(unittest.TestCase):
                 with patch.object(
                     yarbis_mobile.yarbis_voice,
                     "list_tts_voices",
-                    return_value=[{"index": 2, "id": "ef_dora", "provider": "kokoro"}],
+                    return_value=[{"index": 2, "id": "es-MX-JorgeNeural", "provider": "edge"}],
                 ) as voices_mock:
                     conn.request("GET", "/api/voice/voices?catalog=1&refresh=1", headers={"Cookie": cookie})
                     response = conn.getresponse()
                     payload = json.loads(response.read().decode("utf-8"))
 
                 self.assertEqual(response.status, 200)
-                self.assertEqual(payload["voices"][0]["provider"], "kokoro")
+                self.assertEqual(payload["voices"][0]["provider"], "edge")
                 self.assertTrue(voices_mock.call_args.kwargs["include_downloadable"])
                 self.assertTrue(voices_mock.call_args.kwargs["refresh_catalog"])
 
@@ -653,24 +653,24 @@ class YarbisMobileTestCase(unittest.TestCase):
         self.assertEqual(state["communication"]["detail_level"], "brief")
         self.assertEqual(state["communication"]["proactivity"], "high")
 
-    def test_mobile_voice_settings_action_updates_kokoro_state(self):
-        state_path = TEST_RUNTIME_DIR / "mobile_voice_kokoro_settings_state.json"
+    def test_mobile_voice_settings_action_updates_edge_state(self):
+        state_path = TEST_RUNTIME_DIR / "mobile_voice_edge_settings_state.json"
         state_path.parent.mkdir(parents=True, exist_ok=True)
 
         with patch.object(memory, "STATE_FILE", state_path):
             memory.save_state(memory.default_state())
             result = yarbis_mobile._execute_action("voice_settings", {
                 "enabled": True,
-                "tts_provider": "kokoro",
-                "kokoro_voice_id": "em_alex",
+                "tts_provider": "edge",
+                "edge_voice": "es-ES-AlvaroNeural",
                 "tts_rate": 200,
                 "telegram_reply_mode": "auto",
             })
             state = memory.load_state()
 
         self.assertIn("Voz actualizada", result["result"])
-        self.assertEqual(state["voice"]["tts_provider"], "kokoro")
-        self.assertEqual(state["voice"]["kokoro_voice_id"], "em_alex")
+        self.assertEqual(state["voice"]["tts_provider"], "edge")
+        self.assertEqual(state["voice"]["edge_voice"], "es-ES-AlvaroNeural")
 
     def test_public_state_default_is_lightweight_and_loads_state_once(self):
         seeded_state = memory.default_state()
@@ -804,14 +804,14 @@ class YarbisMobileTestCase(unittest.TestCase):
         self.assertIn("communicationTone", html)
         self.assertIn("save-communication", html)
         self.assertIn("preferredLocalSpeechFormat", html)
-        self.assertIn("Catálogo Kokoro", html)
+        self.assertIn("Refrescar voces", html)
         self.assertIn("modalBackdrop", html)
         self.assertNotIn("confirm(", html)
         self.assertNotIn("prompt(", html)
-        self.assertIn("Kokoro local", html)
+        self.assertIn("Voz neural (edge-tts)", html)
         self.assertIn("Usar seleccionada", html)
         self.assertIn("Probar voz", html)
-        self.assertIn("kokoroVoiceFilter", html)
+        self.assertIn("edgeVoiceFilter", html)
         self.assertIn("Guardar validación", html)
         self.assertIn("coding_validate", html)
         self.assertIn("coding_check", html)
@@ -1291,26 +1291,26 @@ class YarbisMobileTestCase(unittest.TestCase):
     def test_voice_settings_dialog_apply_preserves_provider_choices(self):
         dialog = object.__new__(VoiceSettingsDialog)
         dialog.enabled_var = SimpleNamespace(get=lambda: True)
-        dialog.provider_var = SimpleNamespace(get=lambda: "kokoro")
+        dialog.provider_var = SimpleNamespace(get=lambda: "edge")
         dialog.voice_combo = SimpleNamespace(get=lambda: "Sistema Uno")
-        dialog.kokoro_combo = SimpleNamespace(get=lambda: "Kokoro Uno")
+        dialog.edge_combo = SimpleNamespace(get=lambda: "Neural Uno")
         dialog.rate_var = SimpleNamespace(get=lambda: "195")
         dialog.telegram_mode_var = SimpleNamespace(get=lambda: "always")
         dialog._system_label_to_id = {"Sistema Uno": "system-voice"}
-        dialog._kokoro_label_to_id = {"Kokoro Uno": "em_alex"}
+        dialog._edge_label_to_id = {"Neural Uno": "es-ES-AlvaroNeural"}
 
         VoiceSettingsDialog.apply(dialog)
 
-        self.assertEqual(dialog.result["tts_provider"], "kokoro")
+        self.assertEqual(dialog.result["tts_provider"], "edge")
         self.assertEqual(dialog.result["tts_voice_id"], "system-voice")
-        self.assertEqual(dialog.result["kokoro_voice_id"], "em_alex")
+        self.assertEqual(dialog.result["edge_voice"], "es-ES-AlvaroNeural")
 
-    def test_voice_settings_dialog_requires_kokoro_voice_for_kokoro_provider(self):
+    def test_voice_settings_dialog_requires_edge_voice_for_edge_provider(self):
         dialog = object.__new__(VoiceSettingsDialog)
-        dialog.provider_var = SimpleNamespace(get=lambda: "kokoro")
-        dialog.kokoro_combo = SimpleNamespace(get=lambda: "sin elegir")
+        dialog.provider_var = SimpleNamespace(get=lambda: "edge")
+        dialog.edge_combo = SimpleNamespace(get=lambda: "sin elegir")
         dialog.rate_var = SimpleNamespace(get=lambda: "175")
-        dialog._kokoro_label_to_id = {"sin elegir": ""}
+        dialog._edge_label_to_id = {"sin elegir": ""}
 
         with patch("ui_settings_dialogs.messagebox.showwarning") as warning_mock:
             self.assertFalse(VoiceSettingsDialog.validate(dialog))

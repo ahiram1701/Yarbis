@@ -946,7 +946,7 @@ class YarbisDesktop(tk.Tk):
             padx=8,
             pady=3,
         )
-        ttk.Button(quick, text="Voz Kokoro", command=self._choose_kokoro_voice).pack(
+        ttk.Button(quick, text="Voz neural", command=self._choose_edge_voice).pack(
             fill="x",
             padx=8,
             pady=3,
@@ -1452,9 +1452,9 @@ class YarbisDesktop(tk.Tk):
         )
         self._build_action_group(
             left,
-            "Voz, Kokoro y avisos",
+            "Voz, neural y avisos",
             (
-                {"text": "Elegir voz Kokoro", "command": self._choose_kokoro_voice, "style": "Accent.TButton"},
+                {"text": "Elegir voz neural", "command": self._choose_edge_voice, "style": "Accent.TButton"},
                 {"text": "Configurar voz", "command": self._edit_voice_settings},
                 {"text": "Probar voz", "command": self._test_voice},
                 {"text": "Notificaciones", "command": self._edit_notifications},
@@ -3336,7 +3336,7 @@ class YarbisDesktop(tk.Tk):
         self._append_activity("Modelo", result)
         self.refresh_state_view()
 
-    def _edit_voice_settings(self, prefer_kokoro: bool = False):
+    def _edit_voice_settings(self, prefer_edge: bool = False):
         try:
             voices = yarbis_voice.list_tts_voices(load_state(), include_downloadable=True, language="all")
         except Exception as exc:
@@ -3347,7 +3347,7 @@ class YarbisDesktop(tk.Tk):
             self,
             initial_settings=load_state().get("voice", {}),
             voices=voices,
-            prefer_kokoro=prefer_kokoro,
+            prefer_edge=prefer_edge,
         )
         if dialog.result is None:
             return
@@ -3364,8 +3364,8 @@ class YarbisDesktop(tk.Tk):
         self._append_activity("Voz", result)
         self.refresh_state_view()
 
-    def _choose_kokoro_voice(self):
-        self._edit_voice_settings(prefer_kokoro=True)
+    def _choose_edge_voice(self):
+        self._edit_voice_settings(prefer_edge=True)
 
     def _test_voice(self):
         def worker():

@@ -657,7 +657,7 @@ def _voice_status_text() -> str:
         f"- max audio: {settings.get('max_audio_seconds', 120)}s\n"
         f"- proveedor TTS: {settings.get('tts_provider', 'system')}\n"
         f"- voz sistema: {settings.get('tts_voice_id') or 'predeterminada'}\n"
-        f"- voz Kokoro: {settings.get('kokoro_voice_id') or 'ef_dora'}\n"
+        f"- voz neural (edge): {settings.get('edge_voice') or 'es-MX-JorgeNeural'}\n"
         f"- velocidad sistema: {settings.get('tts_rate', 175)}\n"
         f"- Telegram voz: {settings.get('telegram_reply_mode', 'auto')}"
     )
@@ -698,14 +698,14 @@ def _dispatch_voice_command(argument_text: str) -> str:
     if argument.startswith("catalogo") or argument.startswith("catálogo"):
         parts = argument_text.strip().split(maxsplit=1)
         language = parts[1].strip() if len(parts) > 1 else "es"
-        return yarbis_voice.kokoro_catalog_text(language or "es")
+        return yarbis_voice.edge_catalog_text(language or "es")
     if argument.startswith("proveedor "):
         provider = argument_text.strip().split(maxsplit=1)[1].strip().lower()
         if provider == "sistema":
             provider = "system"
+        if provider in {"kokoro", "neural"}:
+            provider = "edge"
         return yarbis_voice.update_voice_settings_text(tts_provider=provider)
-    if argument.startswith("descargar "):
-        return "Kokoro se descarga automáticamente en el primer uso; usa /voz usar ID."
     if argument in {"callar", "silencio", "mute"}:
         return yarbis_voice.update_voice_settings_text(telegram_reply_mode="off")
 
@@ -729,15 +729,15 @@ def _dispatch_voice_command(argument_text: str) -> str:
             return str(exc)
         provider = str(voice.get("provider", "system"))
         voice_id = str(voice.get("id", voice.get("voice_id", ""))).strip()
-        if provider == "kokoro":
-            return yarbis_voice.update_voice_settings_text(tts_provider="kokoro", kokoro_voice_id=voice_id)
+        if provider == "edge":
+            return yarbis_voice.update_voice_settings_text(tts_provider="edge", edge_voice=voice_id)
         return yarbis_voice.update_voice_settings_text(tts_provider="system", tts_voice_id=voice_id)
 
     if argument.startswith("velocidad "):
         rate = argument_text.strip()[len("velocidad "):].strip()
         return yarbis_voice.update_voice_settings_text(tts_rate=rate)
 
-    return "Uso: /voz auto, /voz on, /voz off, /voz status, /voz voces, /voz catalogo, /voz proveedor kokoro|sistema, /voz usar NUMERO, /voz velocidad NUMERO o /voz callar"
+    return "Uso: /voz auto, /voz on, /voz off, /voz status, /voz voces, /voz catalogo, /voz proveedor edge|sistema, /voz usar NUMERO, /voz velocidad NUMERO o /voz callar"
 
 
 def _communication_status_text() -> str:

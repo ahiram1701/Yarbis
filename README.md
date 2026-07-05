@@ -55,7 +55,7 @@ Dependencias Python declaradas:
 - `pyttsx3>=2.99,<3`
 - `sounddevice>=0.5,<1`
 - `imageio-ffmpeg>=0.6,<1`
-- `pykokoro>=0.6,<1`
+- `edge-tts>=7,<8`
 
 ## Instalacion
 
@@ -426,8 +426,8 @@ Comandos disponibles por Telegram:
 - `/voz off`: desactiva entrada y respuestas de voz
 - `/voz status`: muestra configuracion de voz
 - `/voz voces`: lista voces locales disponibles para TTS
-- `/voz catalogo [es|en|all]`: lista voces Kokoro disponibles
-- `/voz proveedor kokoro|sistema`: cambia entre voces del sistema y Kokoro local
+- `/voz catalogo [es|all]`: lista voces neurales (edge-tts) disponibles
+- `/voz proveedor edge|sistema`: cambia entre voz neural (edge-tts) y voz del sistema
 - `/voz usar NUMERO`: cambia la voz del sistema/Telegram por numero o ID
 - `/voz velocidad 190`: cambia la velocidad de lectura local
 - `/voz callar`: desactiva futuras respuestas habladas por Telegram
@@ -458,34 +458,34 @@ o contexto libre cuando no coinciden con una accion remota explicita.
 
 ## Voz local
 
-Yarbis puede entender voz sin APIs pagadas ni subir audio a terceros. Usa `faster-whisper`
-en CPU para transcribir, `pyttsx3` para leer respuestas con la voz del sistema y
-`pykokoro` para voces neuronales locales. `imageio-ffmpeg` convierte audio
-cuando Telegram necesita una nota de voz.
+Yarbis transcribe voz localmente con `faster-whisper` en CPU (sin subir audio a terceros)
+y lee respuestas con `edge-tts` (voces neurales de Microsoft, en la nube, sin consumir RAM
+local) o con la voz del sistema (`pyttsx3`) como alternativa/fallback sin internet.
+`imageio-ffmpeg` convierte audio cuando Telegram necesita una nota de voz.
 
 El primer uso de transcripcion puede descargar el modelo local `base`. La configuracion
 por defecto queda en `state.json` bajo `voice`: idioma `es`, `stt_model=base`,
-`stt_compute_type=int8`, maximo 120 segundos, proveedor TTS `system`, velocidad `175`,
-voz Kokoro opcional, voz del navegador opcional y respuestas de Telegram en modo `auto`.
-Kokoro descarga sus pesos locales la primera vez que se usa una voz. Las voces visibles incluyen
-espanol (`ef_dora`, `em_alex`, `em_santa`), ingles, frances, portugues, italiano, japones y mandarin.
+`stt_compute_type=int8`, maximo 120 segundos, proveedor TTS `edge`, velocidad `175`,
+voz neural por defecto `es-MX-JorgeNeural` (`edge_voice`), voz del navegador opcional y
+respuestas de Telegram en modo `auto`. Las voces neurales son un catalogo curado en espanol
+con varios acentos (Mexico, Espana, Argentina, Colombia, Chile, Peru, EEUU, etc.) y ambos generos.
 
 Superficies disponibles:
 
 - Telegram entiende `voice` y `audio`; siempre responde con texto y, en modo `auto`,
   tambien envia nota de voz cuando la respuesta es corta. Usa `/voz catalogo es`,
-  `/voz proveedor kokoro`, `/voz usar NUMERO`,
+  `/voz proveedor edge`, `/voz usar NUMERO`,
   `/voz velocidad NUMERO` y `/voz callar` para ajustar o silenciar.
 - La UI movil permite grabar en el compositor y transcribe en Yarbis mediante
   `/api/voice/transcribe`; tambien puede leer resultados con `speechSynthesis` del navegador,
-  elegir motor `Sistema/Kokoro`, probar voz, elegir voz/rate/pitch
-  en `Config` -> `Voz` y detener habla activa con `Detener habla`. Para Kokoro en Safari/iPhone,
+  elegir motor `Voz neural (edge)/Sistema`, probar voz, elegir voz/rate/pitch
+  en `Config` -> `Voz` y detener habla activa con `Detener habla`. Con voz neural en Safari/iPhone,
   la UI web pide audio WAV porque iOS no reproduce OGG/Opus de forma consistente.
   Para voz en vivo en iPhone, abre la UI desde el enlace HTTPS de Tailscale; Safari bloquea
   el microfono en la URL HTTP. Si no aparece `secure_url`, revisa que `HTTPS Certificates`
   este habilitado en `Tailscale Admin` -> `DNS`.
-- La app de escritorio tiene `Dictar` en el compositor, `Voz` para elegir motor, voz del sistema
-  o Kokoro, velocidad y modo Telegram, `Voces Kokoro`, `Probar voz`,
+- La app de escritorio tiene `Dictar` en el compositor, `Voz` para elegir motor, voz neural (edge)
+  o voz del sistema, velocidad y modo Telegram, `Voz neural`, `Probar voz`,
   `Leer ultimo resultado` y `Detener voz`.
 
 Por seguridad, puedes pedir apagado o reinicio por voz, pero la confirmacion final

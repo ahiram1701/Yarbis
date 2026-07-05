@@ -1894,13 +1894,13 @@ def _execute_action(action: str, payload: dict | None = None) -> dict:
     if action == "mobile_https_claim":
         return {"result": claim_mobile_https_for_current_instance()}
     if action == "voice_settings":
-        tts_provider = _payload_text(payload, "tts_provider", "system") or "system"
+        tts_provider = _payload_text(payload, "tts_provider", "edge") or "edge"
         return {"result": yarbis_voice.update_voice_settings_text(
             enabled=bool(payload.get("enabled", True)),
             tts_provider=tts_provider,
             tts_voice_id=_payload_text(payload, "tts_voice_id"),
             tts_rate=payload.get("tts_rate"),
-            kokoro_voice_id=_payload_text(payload, "kokoro_voice_id"),
+            edge_voice=_payload_text(payload, "edge_voice"),
             browser_voice_name=_payload_text(payload, "browser_voice_name"),
             browser_tts_rate=payload.get("browser_tts_rate"),
             browser_tts_pitch=payload.get("browser_tts_pitch"),
@@ -2485,7 +2485,7 @@ let instancesData = null;
 let localSpeechAudio = null;
 let mobileSpeechUnlocked = false;
 let mobileSpeechUnlockAudio = null;
-let kokoroVoiceFilter = "";
+let edgeVoiceFilter = "";
 let visualSelection = { projectId: "", boardId: "", nodeId: "" };
 let codingSelection = { proposalId: "" };
 let visualDrag = null;
@@ -2744,10 +2744,10 @@ async function speakText(text) {
   }
   await unlockMobileSpeechOutput();
   const voiceSettings = (appState && appState.voice) || {};
-  if (voiceSettings.tts_provider === "kokoro") {
+  if (voiceSettings.tts_provider === "edge") {
     try {
       stopSpeech(false);
-      toast("Generando voz local...");
+      toast("Generando voz neural...");
       const data = await api("/api/voice/speak", {
         method: "POST",
         headers: { "X-CSRF-Token": csrfToken },
@@ -3210,12 +3210,12 @@ async function analyzeImageUpload() {
   }
 }
 
-function selectedKokoroVoiceId() {
-  const selected = $("kokoroVoiceId") ? $("kokoroVoiceId").value : "";
+function selectedEdgeVoiceId() {
+  const selected = $("edgeVoiceId") ? $("edgeVoiceId").value : "";
   if (selected) return selected;
-  const candidates = localTtsVoices.filter(item => item.provider === "kokoro");
+  const candidates = localTtsVoices.filter(item => item.provider === "edge");
   const filtered = candidates.filter(item => {
-    const needle = kokoroVoiceFilter.trim().toLowerCase();
+    const needle = edgeVoiceFilter.trim().toLowerCase();
     if (!needle) return true;
     return `${item.id || ""} ${item.name || ""} ${(item.languages || []).join(" ")}`.toLowerCase().includes(needle);
   });
@@ -3223,9 +3223,9 @@ function selectedKokoroVoiceId() {
   return first.id || "";
 }
 
-async function saveVoiceSettings(providerOverride = null, kokoroVoiceOverride = null) {
+async function saveVoiceSettings(providerOverride = null, edgeVoiceOverride = null) {
   const provider = providerOverride || $("voiceProvider").value;
-  const kokoroVoiceId = kokoroVoiceOverride || $("kokoroVoiceId").value;
+  const edgeVoiceId = edgeVoiceOverride || $("edgeVoiceId").value;
   window.localStorage.setItem("yarbis_browser_voice_name", $("browserVoiceName").value);
   window.localStorage.setItem("yarbis_browser_tts_rate", $("browserTtsRate").value);
   window.localStorage.setItem("yarbis_browser_tts_pitch", $("browserTtsPitch").value);
@@ -3234,7 +3234,7 @@ async function saveVoiceSettings(providerOverride = null, kokoroVoiceOverride = 
     tts_provider: provider,
     tts_voice_id: $("ttsVoiceId").value,
     tts_rate: $("ttsRate").value,
-    kokoro_voice_id: kokoroVoiceId,
+    edge_voice: edgeVoiceId,
     browser_voice_name: $("browserVoiceName").value,
     browser_tts_rate: $("browserTtsRate").value,
     browser_tts_pitch: $("browserTtsPitch").value,
@@ -4036,10 +4036,10 @@ function renderSettings() {
     const label = `${item.index}. ${item.name}${item.languages && item.languages.length ? " - " + item.languages.join(", ") : ""}`;
     return `<option value="${escapeHtml(item.id || "")}">${escapeHtml(label)}</option>`;
   }).join("");
-  const kokoroNeedle = kokoroVoiceFilter.trim().toLowerCase();
-  const kokoroVoiceOptions = localTtsVoices.filter(item => item.provider === "kokoro").filter(item => {
-    if (!kokoroNeedle) return true;
-    return `${item.id || ""} ${item.name || ""} ${(item.languages || []).join(" ")}`.toLowerCase().includes(kokoroNeedle);
+  const edgeNeedle = edgeVoiceFilter.trim().toLowerCase();
+  const edgeVoiceOptions = localTtsVoices.filter(item => item.provider === "edge").filter(item => {
+    if (!edgeNeedle) return true;
+    return `${item.id || ""} ${item.name || ""} ${(item.languages || []).join(" ")}`.toLowerCase().includes(edgeNeedle);
   }).map(item => {
     const label = `${item.index}. ${item.name}`;
     return `<option value="${escapeHtml(item.id || "")}">${escapeHtml(label)}</option>`;
@@ -4127,10 +4127,10 @@ function renderSettings() {
       <h2>Voz</h2>
       <div class="setting-group form-grid wide">
         <label><input id="voiceEnabled" type="checkbox" ${voice.enabled === false ? "" : "checked"}> Activa</label>
-        <div><label>Motor TTS</label><select id="voiceProvider"><option value="system">Sistema</option><option value="kokoro">Kokoro local</option></select></div>
+        <div><label>Motor TTS</label><select id="voiceProvider"><option value="edge">Voz neural (edge-tts)</option><option value="system">Voz del sistema</option></select></div>
         <div><label>Voz sistema/Telegram</label><select id="ttsVoiceId"><option value="">predeterminada</option>${systemVoiceOptions}</select></div>
-        <div><label>Buscar Kokoro</label><input id="kokoroVoiceFilter" value="${escapeHtml(kokoroVoiceFilter)}" placeholder="es, dora, alex, english"></div>
-        <div><label>Voz Kokoro</label><select id="kokoroVoiceId"><option value="">elige voz Kokoro</option>${kokoroVoiceOptions}</select></div>
+        <div><label>Buscar voz neural</label><input id="edgeVoiceFilter" value="${escapeHtml(edgeVoiceFilter)}" placeholder="mexico, jorge, dalia, espana"></div>
+        <div><label>Voz neural</label><select id="edgeVoiceId"><option value="">elige voz neural</option>${edgeVoiceOptions}</select></div>
         <div><label>Velocidad sistema</label><input id="ttsRate" type="number" min="80" max="320" value="${escapeHtml(voice.tts_rate || 175)}"></div>
         <div><label>Voz navegador</label><select id="browserVoiceName"><option value="">predeterminada</option>${browserVoiceOptions}</select></div>
         <div><label>Velocidad navegador</label><input id="browserTtsRate" type="number" min="0.5" max="2" step="0.1" value="${escapeHtml(voice.browser_tts_rate || 1)}"></div>
@@ -4142,7 +4142,7 @@ function renderSettings() {
         <div><label>Turno max segundos</label><input id="liveMaxTurnSeconds" type="number" min="3" max="300" value="${escapeHtml(live.max_turn_seconds || 45)}"></div>
         <label><input id="liveAutoSpeak" type="checkbox" ${live.auto_speak === false ? "" : "checked"}> Responder con voz automaticamente</label>
         <label><input id="liveBargeIn" type="checkbox" ${live.barge_in === false ? "" : "checked"}> Permitir interrupcion</label>
-        <button data-action="refresh-voice-catalog">Catálogo Kokoro</button>
+        <button data-action="refresh-voice-catalog">Refrescar voces</button>
         <button data-action="use-free-voice">Usar seleccionada</button>
         <button data-action="test-voice">Probar voz</button>
         <button data-action="save-voice">Guardar voz</button>
@@ -4243,9 +4243,9 @@ function renderSettings() {
   const ttsVoiceId = $("ttsVoiceId");
   if (ttsVoiceId) ttsVoiceId.value = voice.tts_voice_id || "";
   const voiceProvider = $("voiceProvider");
-  if (voiceProvider) voiceProvider.value = voice.tts_provider || "system";
-  const kokoroVoiceId = $("kokoroVoiceId");
-  if (kokoroVoiceId) kokoroVoiceId.value = voice.kokoro_voice_id || "";
+  if (voiceProvider) voiceProvider.value = voice.tts_provider || "edge";
+  const edgeVoiceId = $("edgeVoiceId");
+  if (edgeVoiceId) edgeVoiceId.value = voice.edge_voice || "";
   const browserVoiceName = $("browserVoiceName");
   if (browserVoiceName) browserVoiceName.value = voice.browser_voice_name || window.localStorage.getItem("yarbis_browser_voice_name") || "";
   const telegramVoiceMode = $("telegramVoiceMode");
@@ -4550,22 +4550,22 @@ document.addEventListener("click", async (event) => {
     } else if (name === "save-communication") {
       await saveCommunicationSettings();
     } else if (name === "refresh-voice-catalog") {
-      toast("Cargando voces Kokoro...");
+      toast("Cargando voces neurales...");
       await loadVoiceOptions(true, true, true);
-      toast("Voces Kokoro listas");
+      toast("Voces neurales listas");
     } else if (name === "use-free-voice") {
-      if (!localTtsVoices.some(item => item.provider === "kokoro")) {
-        toast("Cargando voces Kokoro...");
+      if (!localTtsVoices.some(item => item.provider === "edge")) {
+        toast("Cargando voces neurales...");
         await loadVoiceOptions(true, true, true);
       }
-      const kokoroVoiceId = selectedKokoroVoiceId();
-      if (!kokoroVoiceId) throw new Error("No encontre voces Kokoro.");
-      if ($("voiceProvider")) $("voiceProvider").value = "kokoro";
-      if ($("kokoroVoiceId")) $("kokoroVoiceId").value = kokoroVoiceId;
-      await saveVoiceSettings("kokoro", kokoroVoiceId);
+      const edgeVoiceId = selectedEdgeVoiceId();
+      if (!edgeVoiceId) throw new Error("No encontre voces neurales.");
+      if ($("voiceProvider")) $("voiceProvider").value = "edge";
+      if ($("edgeVoiceId")) $("edgeVoiceId").value = edgeVoiceId;
+      await saveVoiceSettings("edge", edgeVoiceId);
       await speakText("Hola, soy Yarbis con esta voz.");
     } else if (name === "test-voice") {
-      await speakText("Hola, soy Yarbis probando esta voz local.");
+      await speakText("Hola, soy Yarbis probando esta voz.");
     } else if (name === "save-voice") {
       await saveVoiceSettings();
     } else if (name === "save-pulse") {
@@ -4638,8 +4638,8 @@ document.addEventListener("click", async (event) => {
 
 document.addEventListener("change", async (event) => {
   const input = event.target;
-  if (input && input.id === "kokoroVoiceFilter") {
-    kokoroVoiceFilter = input.value || "";
+  if (input && input.id === "edgeVoiceFilter") {
+    edgeVoiceFilter = input.value || "";
     renderCurrent();
     return;
   }

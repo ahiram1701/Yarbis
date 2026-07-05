@@ -12,7 +12,6 @@ from memory import (
     DEFAULT_VOICE_BROWSER_TTS_PITCH,
     DEFAULT_VOICE_BROWSER_TTS_RATE,
     DEFAULT_VOICE_EDGE_VOICE,
-    DEFAULT_VOICE_KOKORO_VOICE_ID,
     DEFAULT_VOICE_TELEGRAM_REPLY_MODE,
     DEFAULT_VOICE_TTS_RATE,
     DEFAULT_VOICE_TTS_PROVIDER,
@@ -40,46 +39,38 @@ import yarbis_instance
 
 WORKSPACE_ROOT = Path(__file__).resolve().parent
 VOICE_RUNTIME_DIR = yarbis_instance.runtime_dir() / "voice"
-KOKORO_DOWNLOAD_PAGE_URL = "https://huggingface.co/hexgrad/Kokoro-82M"
-KOKORO_VOICES = (
-    ("ef_dora", "Dora - Espanol femenino", ("es",)),
-    ("em_alex", "Alex - Espanol masculino", ("es",)),
-    ("em_santa", "Santa - Espanol masculino", ("es",)),
-    ("af_heart", "Heart - Ingles US femenino", ("en-us",)),
-    ("af_bella", "Bella - Ingles US femenino", ("en-us",)),
-    ("af_nicole", "Nicole - Ingles US femenino", ("en-us",)),
-    ("am_michael", "Michael - Ingles US masculino", ("en-us",)),
-    ("bf_alice", "Alice - Ingles UK femenino", ("en-gb",)),
-    ("bm_george", "George - Ingles UK masculino", ("en-gb",)),
-    ("ff_siwis", "Siwis - Frances femenino", ("fr-fr",)),
-    ("pf_dora", "Dora - Portugues BR femenino", ("pt-br",)),
-    ("pm_alex", "Alex - Portugues BR masculino", ("pt-br",)),
-    ("if_sara", "Sara - Italiano femenino", ("it",)),
-    ("im_nicola", "Nicola - Italiano masculino", ("it",)),
-    ("jf_alpha", "Alpha - Japones femenino", ("ja",)),
-    ("jm_kumo", "Kumo - Japones masculino", ("ja",)),
-    ("zf_xiaoxiao", "Xiaoxiao - Mandarin femenino", ("cmn",)),
-    ("zm_yunxi", "Yunxi - Mandarin masculino", ("cmn",)),
+# Catalogo curado de voces neurales de edge-tts (Microsoft, cloud). Solo espanol,
+# con buen reparto de acentos y ambos generos. Los ids estan validados contra
+# edge_tts.list_voices() (locale es-*). La primera es la voz por defecto.
+EDGE_VOICES = (
+    ("es-MX-JorgeNeural", "Jorge - Espanol Mexico (masculino)", ("es-mx",)),
+    ("es-MX-DaliaNeural", "Dalia - Espanol Mexico (femenino)", ("es-mx",)),
+    ("es-US-AlonsoNeural", "Alonso - Espanol EEUU (masculino)", ("es-us",)),
+    ("es-US-PalomaNeural", "Paloma - Espanol EEUU (femenino)", ("es-us",)),
+    ("es-ES-AlvaroNeural", "Alvaro - Espanol Espana (masculino)", ("es-es",)),
+    ("es-ES-ElviraNeural", "Elvira - Espanol Espana (femenino)", ("es-es",)),
+    ("es-ES-XimenaNeural", "Ximena - Espanol Espana (femenino)", ("es-es",)),
+    ("es-AR-TomasNeural", "Tomas - Espanol Argentina (masculino)", ("es-ar",)),
+    ("es-AR-ElenaNeural", "Elena - Espanol Argentina (femenino)", ("es-ar",)),
+    ("es-CO-GonzaloNeural", "Gonzalo - Espanol Colombia (masculino)", ("es-co",)),
+    ("es-CO-SalomeNeural", "Salome - Espanol Colombia (femenino)", ("es-co",)),
+    ("es-CL-LorenzoNeural", "Lorenzo - Espanol Chile (masculino)", ("es-cl",)),
+    ("es-CL-CatalinaNeural", "Catalina - Espanol Chile (femenino)", ("es-cl",)),
+    ("es-PE-AlexNeural", "Alex - Espanol Peru (masculino)", ("es-pe",)),
+    ("es-PE-CamilaNeural", "Camila - Espanol Peru (femenino)", ("es-pe",)),
+    ("es-VE-SebastianNeural", "Sebastian - Espanol Venezuela (masculino)", ("es-ve",)),
+    ("es-VE-PaolaNeural", "Paola - Espanol Venezuela (femenino)", ("es-ve",)),
+    ("es-UY-MateoNeural", "Mateo - Espanol Uruguay (masculino)", ("es-uy",)),
+    ("es-UY-ValentinaNeural", "Valentina - Espanol Uruguay (femenino)", ("es-uy",)),
+    ("es-CR-JuanNeural", "Juan - Espanol Costa Rica (masculino)", ("es-cr",)),
+    ("es-CR-MariaNeural", "Maria - Espanol Costa Rica (femenino)", ("es-cr",)),
+    ("es-EC-LuisNeural", "Luis - Espanol Ecuador (masculino)", ("es-ec",)),
+    ("es-EC-AndreaNeural", "Andrea - Espanol Ecuador (femenino)", ("es-ec",)),
+    ("es-PA-RobertoNeural", "Roberto - Espanol Panama (masculino)", ("es-pa",)),
+    ("es-PA-MargaritaNeural", "Margarita - Espanol Panama (femenino)", ("es-pa",)),
+    ("es-DO-EmilioNeural", "Emilio - Espanol Rep. Dominicana (masculino)", ("es-do",)),
+    ("es-DO-RamonaNeural", "Ramona - Espanol Rep. Dominicana (femenino)", ("es-do",)),
 )
-KOKORO_LANG_BY_PREFIX = {
-    "af": "en-us",
-    "am": "en-us",
-    "bf": "en-gb",
-    "bm": "en-gb",
-    "ef": "es",
-    "em": "es",
-    "ff": "fr-fr",
-    "hf": "hi",
-    "hm": "hi",
-    "if": "it",
-    "im": "it",
-    "jf": "ja",
-    "jm": "ja",
-    "pf": "pt-br",
-    "pm": "pt-br",
-    "zf": "cmn",
-    "zm": "cmn",
-}
 MAX_VOICE_AUDIO_BYTES = 20 * 1024 * 1024
 TELEGRAM_AUTO_VOICE_REPLY_MAX_CHARS = 800
 DEFAULT_TTS_VOLUME = 1.0
@@ -91,11 +82,6 @@ _WHISPER_MODELS = {}
 _WHISPER_TRANSCRIBE_LOCK = threading.Lock()
 _TTS_LOCK = threading.RLock()
 _TTS_ENGINE = None
-_KOKORO_LOCK = threading.RLock()
-_KOKORO_PIPELINES = {}
-_KOKORO_PIPELINE_CACHE_LIMIT = 2
-_KOKORO_SPACY_LOCK = threading.Lock()
-_KOKORO_ESPEAK_LANGUAGES = {"es", "pt-br", "it", "ja", "cmn", "hi"}
 
 
 class VoiceError(RuntimeError):
@@ -277,50 +263,53 @@ def _tts_engine(settings: dict):
     return engine
 
 
-def _kokoro_voice_language(voice_id: str) -> str:
-    prefix = str(voice_id or "")[:2].lower()
-    return KOKORO_LANG_BY_PREFIX.get(prefix, "es")
-
-
-def _kokoro_language_matches(voice_id: str, language: str | None) -> bool:
+def _edge_language_matches(languages: tuple[str, ...], language: str | None) -> bool:
     cleaned = str(language or "").strip().lower()
     if not cleaned or cleaned == "all":
         return True
-    voice_language = _kokoro_voice_language(voice_id)
-    return cleaned in {voice_language, voice_language.split("-", 1)[0]}
+    for voice_language in languages:
+        vl = str(voice_language or "").strip().lower()
+        if cleaned == vl or cleaned == vl.split("-", 1)[0] or vl.split("-", 1)[0] == cleaned:
+            return True
+    return False
 
 
-def _safe_kokoro_voice_id(value: str) -> str:
+def _safe_edge_voice(value: str) -> str:
     cleaned = str(value or "").strip()
-    known_ids = {voice_id for voice_id, _name, _languages in KOKORO_VOICES}
     if not cleaned:
-        return DEFAULT_VOICE_KOKORO_VOICE_ID
-    if cleaned not in known_ids:
-        raise VoiceError("ID de voz Kokoro invalido.")
-    return cleaned
+        return DEFAULT_VOICE_EDGE_VOICE
+    known_ids = {voice_id for voice_id, _name, _languages in EDGE_VOICES}
+    if cleaned in known_ids:
+        return cleaned
+    # Aceptar tambien por comparacion sin distinguir mayusculas.
+    lowered = cleaned.lower()
+    for voice_id in known_ids:
+        if voice_id.lower() == lowered:
+            return voice_id
+    return DEFAULT_VOICE_EDGE_VOICE
 
 
-def _render_kokoro_voice(voice_id: str, name: str, languages: tuple[str, ...], *, index: int) -> dict:
+def _render_edge_voice(voice_id: str, name: str, languages: tuple[str, ...], *, index: int) -> dict:
     return {
         "index": index,
         "id": voice_id,
         "voice_id": voice_id,
         "name": name,
         "languages": list(languages),
-        "provider": "kokoro",
-        "status": "local",
+        "provider": "edge",
+        "status": "cloud",
         "installed": True,
         "downloadable": False,
     }
 
 
-def _list_kokoro_voices(*, language: str | None = None, start_index: int = 1) -> list[dict]:
+def _list_edge_voices(*, language: str | None = None, start_index: int = 1) -> list[dict]:
     rendered = []
     next_index = start_index
-    for voice_id, name, languages in KOKORO_VOICES:
-        if not _kokoro_language_matches(voice_id, language):
+    for voice_id, name, languages in EDGE_VOICES:
+        if not _edge_language_matches(languages, language):
             continue
-        rendered.append(_render_kokoro_voice(voice_id, name, languages, index=next_index))
+        rendered.append(_render_edge_voice(voice_id, name, languages, index=next_index))
         next_index += 1
     return rendered
 
@@ -377,7 +366,7 @@ def list_tts_voices(
         rendered = _list_system_voices(settings)
     except Exception:
         rendered = []
-    rendered.extend(_list_kokoro_voices(language=language, start_index=len(rendered) + 1))
+    rendered.extend(_list_edge_voices(language=language, start_index=len(rendered) + 1))
     return rendered
 
 
@@ -404,18 +393,18 @@ def find_tts_voice(selection: str, *, include_downloadable: bool = True, languag
     return None
 
 
-def kokoro_catalog_text(language: str | None = "es", *, limit: int = 30) -> str:
+def edge_catalog_text(language: str | None = "es", *, limit: int = 40) -> str:
     voices = [
         item for item in list_tts_voices(include_downloadable=True, language=language)
-        if item.get("provider") == "kokoro"
+        if item.get("provider") == "edge"
     ]
     if not voices:
-        return "No encontre voces Kokoro para ese idioma."
-    lines = [f"Voces Kokoro ({language or 'all'}):"]
+        return "No encontre voces neurales (edge) para ese idioma."
+    lines = [f"Voces neurales edge ({language or 'all'}):"]
     for item in voices[:limit]:
         lines.append(f"{item.get('index')}. {item.get('name')}\n   {item.get('id')}")
     if len(voices) > limit:
-        lines.append(f"... y {len(voices) - limit} mas. Usa /voz catalogo all para ver mas idiomas.")
+        lines.append(f"... y {len(voices) - limit} mas. Usa /voz catalogo all para ver todas.")
     return "\n".join(lines)
 
 
@@ -443,101 +432,6 @@ class _AudioPlayback:
             winsound.PlaySound(None, getattr(winsound, "SND_PURGE", 0))
         except Exception:
             pass
-
-
-def _kokoro_speed_from_rate(rate) -> float:
-    numeric_rate = max(MIN_VOICE_TTS_RATE, min(MAX_VOICE_TTS_RATE, _optional_int(rate, DEFAULT_VOICE_TTS_RATE)))
-    return max(0.5, min(2.0, numeric_rate / DEFAULT_VOICE_TTS_RATE))
-
-
-def _kokoro_voice_for_settings(settings: dict) -> str:
-    return _safe_kokoro_voice_id(str(settings.get("kokoro_voice_id", DEFAULT_VOICE_KOKORO_VOICE_ID)).strip())
-
-
-def _load_kokoro_pipeline(settings: dict):
-    voice_id = _kokoro_voice_for_settings(settings)
-    language = _kokoro_voice_language(voice_id)
-    speed = _kokoro_speed_from_rate(settings.get("tts_rate"))
-    key = (voice_id, language, speed)
-    with _KOKORO_LOCK:
-        cached = _KOKORO_PIPELINES.get(key)
-        if cached is not None:
-            return cached
-        try:
-            from pykokoro import GenerationConfig, KokoroPipeline, PipelineConfig
-            from pykokoro.tokenizer import TokenizerConfig
-        except Exception as exc:
-            raise VoiceError("Falta pykokoro. Instala dependencias con python -m pip install -r requirements.txt.") from exc
-        try:
-            backend = "espeak" if language in _KOKORO_ESPEAK_LANGUAGES else "kokorog2p"
-            pipeline = KokoroPipeline(
-                PipelineConfig(
-                    voice=voice_id,
-                    generation=GenerationConfig(lang=language, speed=speed),
-                    tokenizer_config=TokenizerConfig(backend=backend, spacy_model_size="sm"),
-                )
-            )
-        except Exception as exc:
-            raise VoiceError(f"No pude cargar Kokoro con la voz '{voice_id}': {exc}") from exc
-        while len(_KOKORO_PIPELINES) >= _KOKORO_PIPELINE_CACHE_LIMIT:
-            _KOKORO_PIPELINES.pop(next(iter(_KOKORO_PIPELINES)))
-        _KOKORO_PIPELINES[key] = pipeline
-        return pipeline
-
-
-def _missing_spacy_model_name(error: Exception) -> str:
-    message = str(error or "")
-    marker = "spaCy language model '"
-    if marker not in message:
-        return ""
-    candidate = message.split(marker, 1)[1].split("'", 1)[0].strip()
-    if not candidate.replace("_", "").replace("-", "").isalnum():
-        return ""
-    return candidate
-
-
-def _ensure_spacy_model(model_name: str) -> None:
-    cleaned = str(model_name or "").strip()
-    if not cleaned:
-        return
-    with _KOKORO_SPACY_LOCK:
-        try:
-            import spacy
-        except Exception as exc:
-            raise VoiceError("Falta spaCy para preparar la voz Kokoro.") from exc
-        if cleaned in set(spacy.util.get_installed_models()):
-            return
-        try:
-            from spacy.cli import download
-
-            download(cleaned)
-        except Exception as exc:
-            raise VoiceError(f"No pude descargar el modelo local de spaCy '{cleaned}' para Kokoro: {exc}") from exc
-
-
-def _write_float_audio_wav(audio, sample_rate: int, wav_path: Path) -> None:
-    try:
-        import numpy as np
-    except Exception as exc:
-        raise VoiceError("Falta numpy para guardar audio Kokoro.") from exc
-    samples = np.asarray(audio)
-    if samples.size <= 0:
-        raise VoiceError("Kokoro no genero audio.")
-    if samples.ndim == 1:
-        channels = 1
-    elif samples.ndim == 2:
-        channels = int(samples.shape[1])
-        samples = samples.reshape(-1)
-    else:
-        samples = samples.reshape(-1)
-        channels = 1
-    pcm = np.clip(samples, -1.0, 1.0)
-    pcm = (pcm * 32767.0).astype("<i2")
-    with wave.open(str(wav_path), "wb") as wav_file:
-        wav_file.setnchannels(max(1, channels))
-        wav_file.setsampwidth(2)
-        wav_file.setframerate(int(sample_rate) or 24000)
-        wav_file.writeframes(pcm.tobytes())
 
 
 def _settings_tts_provider(settings: dict) -> str:
@@ -616,25 +510,6 @@ def _synthesize_edge_wav(cleaned_text: str, wav_path: Path, settings: dict) -> N
         cleanup_voice_file(mp3_path)
 
 
-def _synthesize_kokoro_wav(cleaned_text: str, wav_path: Path, settings: dict) -> None:
-    pipeline = _load_kokoro_pipeline(settings)
-    for attempt in range(2):
-        try:
-            result = pipeline.run(cleaned_text)
-            _write_float_audio_wav(result.audio, int(result.sample_rate), wav_path)
-            return
-        except Exception as exc:
-            spacy_model_name = _missing_spacy_model_name(exc)
-            if attempt == 0 and spacy_model_name:
-                _ensure_spacy_model(spacy_model_name)
-                with _KOKORO_LOCK:
-                    _KOKORO_PIPELINES.clear()
-                pipeline = _load_kokoro_pipeline(settings)
-                continue
-            cleanup_voice_file(wav_path)
-            raise VoiceError(f"No pude sintetizar la voz Kokoro: {exc}") from exc
-
-
 def _synthesize_wav_file(cleaned_text: str, settings: dict) -> Path:
     VOICE_RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
     token = f"{time.time_ns()}-{threading.get_ident()}"
@@ -645,18 +520,6 @@ def _synthesize_wav_file(cleaned_text: str, settings: dict) -> Path:
             _synthesize_edge_wav(cleaned_text, wav_path, settings)
         except Exception:
             # Sin internet o edge fallo: caemos a la voz del sistema (Sabina).
-            try:
-                cleanup_voice_file(wav_path)
-            except Exception:
-                pass
-            _synthesize_system_wav(cleaned_text, wav_path, settings)
-    elif provider == "kokoro":
-        try:
-            _synthesize_kokoro_wav(cleaned_text, wav_path, settings)
-        except Exception:
-            # Kokoro puede fallar por falta de RAM al cargar el modelo ONNX
-            # (bad allocation) en maquinas con poca memoria. Caemos al TTS del
-            # sistema (ligero) para no quedar sin audio.
             try:
                 cleanup_voice_file(wav_path)
             except Exception:
@@ -685,7 +548,8 @@ def speak_text(text: str, settings: dict | None = None, cancellable: bool = True
     cleaned_text = str(text or "").strip()
     if not cleaned_text:
         raise VoiceError("No hay texto para leer.")
-    if _settings_tts_provider(voice_settings) == "kokoro":
+    if _settings_tts_provider(voice_settings) == "edge":
+        # edge-tts produce un WAV (cloud, sin RAM); lo reproducimos con winsound.
         playback = _AudioPlayback()
         wav_path = _synthesize_wav_file(cleaned_text, voice_settings)
         if cancellable:
@@ -695,7 +559,7 @@ def speak_text(text: str, settings: dict | None = None, cancellable: bool = True
             try:
                 import winsound
             except Exception as exc:
-                raise VoiceError("No pude reproducir la voz Kokoro en este sistema.") from exc
+                raise VoiceError("No pude reproducir la voz neural en este sistema.") from exc
             winsound.PlaySound(str(wav_path), winsound.SND_FILENAME | winsound.SND_ASYNC)
             deadline = time.monotonic() + max(0.1, _wav_duration_seconds(wav_path) + 0.25)
             while time.monotonic() < deadline and not playback.stop_event.wait(0.05):
@@ -751,7 +615,7 @@ def update_voice_settings_text(
     tts_provider: str | None = None,
     tts_voice_id: str | None = None,
     tts_rate=None,
-    kokoro_voice_id: str | None = None,
+    edge_voice: str | None = None,
     browser_voice_name: str | None = None,
     browser_tts_rate=None,
     browser_tts_pitch=None,
@@ -771,15 +635,15 @@ def update_voice_settings_text(
     if next_provider == "sistema":
         next_provider = "system"
     if next_provider not in VALID_VOICE_TTS_PROVIDERS:
-        raise ValueError("Proveedor de voz invalido. Usa system o kokoro.")
+        raise ValueError("Proveedor de voz invalido. Usa system o edge.")
     next_tts_rate = max(
         MIN_VOICE_TTS_RATE,
         min(MAX_VOICE_TTS_RATE, _optional_int(tts_rate, int(current.get("tts_rate", DEFAULT_VOICE_TTS_RATE)))),
     )
-    next_kokoro_voice_id = str(
-        kokoro_voice_id if kokoro_voice_id is not None else current.get("kokoro_voice_id", DEFAULT_VOICE_KOKORO_VOICE_ID)
+    next_edge_voice = str(
+        edge_voice if edge_voice is not None else current.get("edge_voice", DEFAULT_VOICE_EDGE_VOICE)
     ).strip()
-    next_kokoro_voice_id = _safe_kokoro_voice_id(next_kokoro_voice_id)
+    next_edge_voice = _safe_edge_voice(next_edge_voice)
     next_browser_rate = max(
         MIN_VOICE_BROWSER_TTS_RATE,
         min(
@@ -829,7 +693,7 @@ def update_voice_settings_text(
         voice["tts_provider"] = next_provider
         if tts_voice_id is not None:
             voice["tts_voice_id"] = str(tts_voice_id).strip()
-        voice["kokoro_voice_id"] = next_kokoro_voice_id
+        voice["edge_voice"] = next_edge_voice
         voice["tts_rate"] = next_tts_rate
         if browser_voice_name is not None:
             voice["browser_voice_name"] = str(browser_voice_name).strip()
@@ -853,7 +717,7 @@ def update_voice_settings_text(
         f"{'activa' if (bool(enabled) if enabled is not None else current.get('enabled', True)) else 'desactivada'}, "
         f"proveedor={next_provider}, "
         f"sistema={'predeterminada' if not str(tts_voice_id if tts_voice_id is not None else current.get('tts_voice_id', '')).strip() else 'personalizada'}, "
-        f"kokoro={next_kokoro_voice_id}, "
+        f"edge={next_edge_voice}, "
         f"velocidad={next_tts_rate}, navegador={next_browser_rate:g}/{next_browser_pitch:g}, "
         f"Telegram={next_reply_mode}, voz en vivo='{next_live_wake_phrase}'."
     )

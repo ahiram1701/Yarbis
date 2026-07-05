@@ -410,8 +410,8 @@ class TelegramInboxTestCase(unittest.TestCase):
         self.assertEqual(state["communication"]["detail_level"], "brief")
         self.assertEqual(state["communication"]["proactivity"], "high")
 
-    def test_telegram_voice_kokoro_catalog_provider_and_select(self):
-        state_path = TEST_RUNTIME_DIR / "telegram_voice_kokoro_commands_state.json"
+    def test_telegram_voice_edge_catalog_provider_and_select(self):
+        state_path = TEST_RUNTIME_DIR / "telegram_voice_edge_commands_state.json"
         state_path.parent.mkdir(parents=True, exist_ok=True)
 
         seeded_state = memory.normalize_state({
@@ -427,20 +427,20 @@ class TelegramInboxTestCase(unittest.TestCase):
 
         updates = [
             {"update_id": 213, "message": {"chat": {"id": 123, "type": "private"}, "text": "/voz catalogo es"}},
-            {"update_id": 214, "message": {"chat": {"id": 123, "type": "private"}, "text": "/voz proveedor kokoro"}},
-            {"update_id": 215, "message": {"chat": {"id": 123, "type": "private"}, "text": "/voz usar em_alex"}},
+            {"update_id": 214, "message": {"chat": {"id": 123, "type": "private"}, "text": "/voz proveedor edge"}},
+            {"update_id": 215, "message": {"chat": {"id": 123, "type": "private"}, "text": "/voz usar es-ES-AlvaroNeural"}},
         ]
 
         with patch.object(memory, "STATE_FILE", state_path):
             memory.save_state(seeded_state)
-            with patch.object(telegram_inbox.yarbis_voice, "kokoro_catalog_text", return_value="Catalogo Kokoro"):
+            with patch.object(telegram_inbox.yarbis_voice, "edge_catalog_text", return_value="Catalogo neural"):
                 with patch.object(
                     telegram_inbox.yarbis_voice,
                     "find_tts_voice",
                     return_value={
-                        "provider": "kokoro",
-                        "id": "em_alex",
-                        "name": "Alex",
+                        "provider": "edge",
+                        "id": "es-ES-AlvaroNeural",
+                        "name": "Alvaro",
                         "installed": True,
                     },
                 ):
@@ -450,9 +450,9 @@ class TelegramInboxTestCase(unittest.TestCase):
             state = memory.load_state()
 
         sent_text = "\n".join(call.args[0] for call in send_mock.call_args_list)
-        self.assertIn("Catalogo Kokoro", sent_text)
-        self.assertEqual(state["voice"]["tts_provider"], "kokoro")
-        self.assertEqual(state["voice"]["kokoro_voice_id"], "em_alex")
+        self.assertIn("Catalogo neural", sent_text)
+        self.assertEqual(state["voice"]["tts_provider"], "edge")
+        self.assertEqual(state["voice"]["edge_voice"], "es-ES-AlvaroNeural")
 
     def test_process_telegram_update_stops_current_operation(self):
         state_path = TEST_RUNTIME_DIR / "telegram_stop_state.json"

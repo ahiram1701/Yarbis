@@ -1061,13 +1061,13 @@ class VoiceSettingsDialog(ThemedDialog):
         parent,
         initial_settings: dict,
         voices: list[dict] | None = None,
-        prefer_kokoro: bool = False,
+        prefer_edge: bool = False,
     ):
         self.initial_settings = initial_settings if isinstance(initial_settings, dict) else {}
         self.voices = voices if isinstance(voices, list) else []
-        self.prefer_kokoro = bool(prefer_kokoro)
+        self.prefer_edge = bool(prefer_edge)
         self._system_label_to_id = {}
-        self._kokoro_label_to_id = {}
+        self._edge_label_to_id = {}
         super().__init__(parent, "Voz")
 
     def body(self, master):
@@ -1076,7 +1076,7 @@ class VoiceSettingsDialog(ThemedDialog):
         master.columnconfigure(1, weight=1)
 
         self.enabled_var = tk.BooleanVar(value=bool(self.initial_settings.get("enabled", True)))
-        provider_value = "kokoro" if self.prefer_kokoro else str(self.initial_settings.get("tts_provider", "system") or "system")
+        provider_value = "edge" if self.prefer_edge else str(self.initial_settings.get("tts_provider", "edge") or "edge")
         self.provider_var = tk.StringVar(value=provider_value)
         self.rate_var = tk.StringVar(value=str(self.initial_settings.get("tts_rate", DEFAULT_VOICE_TTS_RATE)))
         self.telegram_mode_var = tk.StringVar(
@@ -1093,7 +1093,7 @@ class VoiceSettingsDialog(ThemedDialog):
         self.provider_combo = ttk.Combobox(
             master,
             textvariable=self.provider_var,
-            values=("system", "kokoro"),
+            values=("edge", "system"),
             state="readonly",
             width=16,
         )
@@ -1121,26 +1121,26 @@ class VoiceSettingsDialog(ThemedDialog):
         self.voice_combo.grid(row=2, column=1, sticky="ew", padx=6)
         self.voice_combo.set(selected_system_label)
 
-        ttk.Label(master, text="Voz Kokoro").grid(row=3, column=0, columnspan=2, sticky="w", padx=6, pady=(10, 2))
-        kokoro_values = ["sin elegir"]
-        self._kokoro_label_to_id = {"sin elegir": ""}
-        current_kokoro_id = str(self.initial_settings.get("kokoro_voice_id", "")).strip()
-        selected_kokoro_label = "sin elegir"
+        ttk.Label(master, text="Voz neural (edge)").grid(row=3, column=0, columnspan=2, sticky="w", padx=6, pady=(10, 2))
+        edge_values = ["sin elegir"]
+        self._edge_label_to_id = {"sin elegir": ""}
+        current_edge_id = str(self.initial_settings.get("edge_voice", "")).strip()
+        selected_edge_label = "sin elegir"
         for item in self.voices:
-            if str(item.get("provider", "")) != "kokoro":
+            if str(item.get("provider", "")) != "edge":
                 continue
             voice_id = str(item.get("id", "")).strip()
-            label = f"{item.get('index', len(kokoro_values))}. {item.get('name', voice_id or 'Kokoro')}"
-            self._kokoro_label_to_id[label] = voice_id
-            kokoro_values.append(label)
-            if voice_id and voice_id == current_kokoro_id:
-                selected_kokoro_label = label
-            elif self.prefer_kokoro and selected_kokoro_label == "sin elegir":
-                selected_kokoro_label = label
+            label = f"{item.get('index', len(edge_values))}. {item.get('name', voice_id or 'Voz neural')}"
+            self._edge_label_to_id[label] = voice_id
+            edge_values.append(label)
+            if voice_id and voice_id == current_edge_id:
+                selected_edge_label = label
+            elif self.prefer_edge and selected_edge_label == "sin elegir":
+                selected_edge_label = label
 
-        self.kokoro_combo = ttk.Combobox(master, values=kokoro_values, state="readonly", width=56)
-        self.kokoro_combo.grid(row=4, column=0, columnspan=2, sticky="ew", padx=6)
-        self.kokoro_combo.set(selected_kokoro_label)
+        self.edge_combo = ttk.Combobox(master, values=edge_values, state="readonly", width=56)
+        self.edge_combo.grid(row=4, column=0, columnspan=2, sticky="ew", padx=6)
+        self.edge_combo.set(selected_edge_label)
 
         ttk.Label(master, text="Velocidad").grid(row=5, column=0, sticky="w", padx=6, pady=(10, 2))
         self.rate_spin = ttk.Spinbox(
@@ -1176,7 +1176,7 @@ class VoiceSettingsDialog(ThemedDialog):
             foreground=self.theme_palette["muted"],
             wraplength=420,
         ).grid(row=9, column=0, columnspan=2, sticky="ew", padx=6, pady=(8, 6))
-        return self.kokoro_combo if self.prefer_kokoro else self.voice_combo
+        return self.edge_combo if self.prefer_edge else self.voice_combo
 
     def validate(self):
         try:
@@ -1191,20 +1191,20 @@ class VoiceSettingsDialog(ThemedDialog):
                 parent=self,
             )
             return False
-        kokoro_label = self.kokoro_combo.get().strip() or "sin elegir"
-        if self.provider_var.get().strip() == "kokoro" and not self._kokoro_label_to_id.get(kokoro_label, ""):
-            messagebox.showwarning("Yarbis", "Elige una voz Kokoro.", parent=self)
+        edge_label = self.edge_combo.get().strip() or "sin elegir"
+        if self.provider_var.get().strip() == "edge" and not self._edge_label_to_id.get(edge_label, ""):
+            messagebox.showwarning("Yarbis", "Elige una voz neural.", parent=self)
             return False
         return True
 
     def apply(self):
         system_label = self.voice_combo.get().strip() or "predeterminada"
-        kokoro_label = self.kokoro_combo.get().strip() or "sin elegir"
+        edge_label = self.edge_combo.get().strip() or "sin elegir"
         self.result = {
             "enabled": self.enabled_var.get(),
-            "tts_provider": self.provider_var.get().strip() or "system",
+            "tts_provider": self.provider_var.get().strip() or "edge",
             "tts_voice_id": self._system_label_to_id.get(system_label, ""),
-            "kokoro_voice_id": self._kokoro_label_to_id.get(kokoro_label, ""),
+            "edge_voice": self._edge_label_to_id.get(edge_label, ""),
             "tts_rate": self.rate_var.get().strip(),
             "telegram_reply_mode": self.telegram_mode_var.get().strip() or "auto",
         }
