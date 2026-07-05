@@ -1825,7 +1825,9 @@ def process_telegram_update(update: dict) -> str:
     if job_label:
         _emit_job_finished(job_label, reply, operation_id=operation_id)
 
-    voice_reply_text = str(reply).strip()
+    # El audio debe leer solo la respuesta limpia, sin ruido operativo
+    # (=== CICLO ===, > Ejecutando tool, "Decidi usar herramientas", etc.).
+    voice_reply_text = conversation_ux.spoken_reply_text(reply) or str(reply).strip()
     if binding_notice:
         reply = f"{binding_notice}\n\n{_telegram_reply_for_delivery(job_label, reply)}"
     else:
