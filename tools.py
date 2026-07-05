@@ -170,10 +170,14 @@ def _coding_write_block_reason(path: Path) -> str | None:
         return None
 
     workspace_text = str(coding.get("workspace_path", "")).strip()
-    if not workspace_text:
-        return None
+    if workspace_text:
+        workspace_path = Path(workspace_text).resolve()
+    else:
+        # Gate hermetico: aunque una instancia no tenga workspace de coding
+        # configurado, protegemos el propio repo de Yarbis para que ningun pulso
+        # reescriba su codigo sin pasar por una propuesta aprobada.
+        workspace_path = WORKSPACE_ROOT.resolve()
 
-    workspace_path = Path(workspace_text).resolve()
     if _is_relative_to(path.resolve(), workspace_path):
         return (
             "Escritura bloqueada dentro del workspace de codigo activo en modo propose_first. "
