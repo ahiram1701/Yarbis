@@ -72,6 +72,8 @@ from session import (
     evolution_discard_directive_text,
     evolution_apply_suggestion_text,
     evolution_discard_suggestion_text,
+    analyze_image_text,
+    vision_status_text,
     create_memory_backup_text,
     get_local_context_settings,
     get_model_provider_settings,
@@ -1471,6 +1473,14 @@ class YarbisDesktop(tk.Tk):
                 {"text": "Descartar propuesta…", "command": self._discard_evolution_item},
             ),
         )
+        self._build_action_group(
+            left,
+            "Imagen",
+            (
+                {"text": "Analizar imagen…", "command": self._analyze_image_file, "style": "Accent.TButton"},
+                {"text": "Modelo de visión", "command": self._show_vision_status},
+            ),
+        )
         self._build_service_group(right)
         self._build_action_group(
             right,
@@ -1539,6 +1549,28 @@ class YarbisDesktop(tk.Tk):
             result = evolution_discard_suggestion_text(item_id)
         messagebox.showinfo("Descartar propuesta", result, parent=self)
         self.refresh_state_view()
+
+    def _analyze_image_file(self):
+        path = filedialog.askopenfilename(
+            parent=self,
+            title="Elegir imagen",
+            filetypes=[
+                ("Imágenes", "*.png *.jpg *.jpeg *.gif *.bmp *.webp"),
+                ("Todos los archivos", "*.*"),
+            ],
+        )
+        if not path:
+            return
+        question = simpledialog.askstring("Analizar imagen", "Pregunta opcional sobre la imagen:", parent=self)
+        try:
+            result = analyze_image_text(path, str(question or "").strip())
+        except Exception as exc:
+            messagebox.showwarning("Imagen", f"No pude analizar la imagen: {exc}", parent=self)
+            return
+        messagebox.showinfo("Análisis de imagen", result, parent=self)
+
+    def _show_vision_status(self):
+        messagebox.showinfo("Visión", vision_status_text(), parent=self)
 
     def _build_activity_view(self, parent):
         parent.columnconfigure(0, weight=1)

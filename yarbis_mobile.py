@@ -22,6 +22,7 @@ import memory
 import yarbis_instance
 import voice as yarbis_voice
 import voice_conversation
+import vision
 from secrets_redaction import build_secret_redactor
 from memory import (
     DEFAULT_MOBILE_UI_HTTPS_ENABLED,
@@ -119,6 +120,7 @@ MOBILE_COOKIE_NAME = "yarbis_mobile"
 PIN_HASH_ITERATIONS = 200_000
 MAX_REQUEST_BYTES = 512 * 1024
 MAX_VOICE_REQUEST_BYTES = int(yarbis_voice.MAX_VOICE_AUDIO_BYTES * 1.4) + 4096
+MAX_IMAGE_REQUEST_BYTES = int(20 * 1024 * 1024 * 1.4) + 4096
 MAX_JOBS = 50
 MOBILE_CACHE_TTL_SECONDS = 10.0
 _MOBILE_STATE_CACHE_TTL_SECONDS = 2.0
@@ -1541,6 +1543,24 @@ def _decode_mobile_audio_payload(payload: dict) -> tuple[bytes, str]:
         _payload_text(payload, "audio_b64"),
         mime_type=_payload_text(payload, "mime_type"),
     )
+
+
+def _analyze_mobile_image(payload: dict) -> str:
+    raw_b64 = _payload_text(payload, "image_b64")
+    if not raw_b64:
+        raise MobileUiError("No recibi la imagen.")
+    if raw_b64.strip().lower().startswith("data:") and "," in raw_b64:
+        raw_b64 = raw_b64.split(",", 1)[1]
+    try:
+        raw_image = base64.b64decode(raw_b64)
+    except Exception as exc:
+        raise MobileUiError(f"Imagen invalida: {exc}")
+    if not raw_image:
+        raise MobileUiError("La imagen llego vacia.")
+    try:
+        return vision.analyze_image(raw_image, _payload_text(payload, "question"))
+    except vision.VisionError as exc:
+        raise MobileUiError(str(exc))
 
 
 def _start_mobile_live_voice() -> dict:
@@ -3148,6 +3168,29 @@ function goToInstance(instanceId) {
   window.location.href = target;
 }
 
+async function analyzeImageUpload() {
+  const input = $("imageFileInput");
+  const file = input && input.files && input.files[0];
+  if (!file) { toast("Elige una imagen primero."); return; }
+  const resultEl = $("imageResult");
+  if (resultEl) resultEl.textContent = "Analizando imagen…";
+  try {
+    const dataUrl = await new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result);
+      reader.onerror = () => reject(new Error("No pude leer el archivo."));
+      reader.readAsDataURL(file);
+    });
+    const question = ($("imageQuestion") ? $("imageQuestion").value : "").trim();
+    const data = await api("/api/image/analyze", { image_b64: dataUrl, question });
+    csrfToken = data.csrf || csrfToken;
+    if (resultEl) resultEl.textContent = data.result || "(sin resultado)";
+  } catch (error) {
+    if (resultEl) resultEl.textContent = "";
+    toast(error.message);
+  }
+}
+
 function selectedKokoroVoiceId() {
   const selected = $("kokoroVoiceId") ? $("kokoroVoiceId").value : "";
   if (selected) return selected;
@@ -3440,6 +3483,17 @@ function renderRun() {
           <button data-action="voice-file">Subir audio</button>
           <button class="primary" data-action="send-reply">Enviar y ejecutar</button>
         </div>
+      </div>
+    </section>
+    <section class="section">
+      <h2>Analizar imagen</h2>
+      <div class="form-grid">
+        <input id="imageFileInput" type="file" accept="image/*">
+        <input id="imageQuestion" placeholder="Pregunta opcional sobre la imagen">
+        <div class="actions tight">
+          <button class="primary" data-action="analyze-image">Analizar imagen</button>
+        </div>
+        <pre id="imageResult" class="muted"></pre>
       </div>
     </section>
     <section class="section">
@@ -4255,6 +4309,8 @@ document.addEventListener("click", async (event) => {
       await action("evolution_apply_suggestion", { id: button.dataset.id });
     } else if (name === "evo-discard-suggestion") {
       await action("evolution_discard_suggestion", { id: button.dataset.id });
+    } else if (name === "analyze-image") {
+      await analyzeImageUpload();
     } else if (name === "run-cycle") {
       await action("run_cycle");
     } else if (name === "run-auto") {
@@ -4875,11 +4931,12 @@ class MobileRequestHandler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         try:
-            max_bytes = (
-                MAX_VOICE_REQUEST_BYTES
-                if self.path in {"/api/voice/transcribe", "/api/voice/live/chunk"}
-                else MAX_REQUEST_BYTES
-            )
+            if self.path == "/api/image/analyze":
+                max_bytes = MAX_IMAGE_REQUEST_BYTES
+            elif self.path in {"/api/voice/transcribe", "/api/voice/live/chunk"}:
+                max_bytes = MAX_VOICE_REQUEST_BYTES
+            else:
+                max_bytes = MAX_REQUEST_BYTES
             payload = self._read_json(max_bytes=max_bytes)
         except MobileUiError as exc:
             self._send_json(HTTPStatus.BAD_REQUEST, {"ok": False, "error": str(exc)})
@@ -4913,6 +4970,11 @@ class MobileRequestHandler(BaseHTTPRequestHandler):
                 text = _transcribe_mobile_voice(payload)
                 activity.append_activity("UI movil voz", text)
                 self._send_json(HTTPStatus.OK, {"ok": True, "csrf": session["csrf"], "text": text})
+                return
+            if self.path == "/api/image/analyze":
+                result = _analyze_mobile_image(payload)
+                activity.append_activity("UI movil imagen", result)
+                self._send_json(HTTPStatus.OK, {"ok": True, "csrf": session["csrf"], "result": result})
                 return
             if self.path == "/api/voice/live/start":
                 result = _start_mobile_live_voice()

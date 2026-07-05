@@ -34,6 +34,7 @@ from notifications import (
 )
 from telegram_format import format_telegram_operation_reply
 import voice as yarbis_voice
+import vision
 from power import (
     DEFAULT_SHUTDOWN_DELAY_SECONDS,
     cancel_system_shutdown,
@@ -527,6 +528,36 @@ def _transcribe_telegram_attachment(attachment: dict) -> str:
         suffix=_voice_suffix_for_attachment(attachment),
         settings=load_state(),
     )
+
+
+MAX_TELEGRAM_IMAGE_BYTES = 20 * 1024 * 1024
+
+
+def _photo_attachment_from_message(message: dict) -> dict | None:
+    caption = str(message.get("caption", "")).strip()
+    photos = message.get("photo")
+    if isinstance(photos, list) and photos:
+        largest = photos[-1]  # Telegram ordena de menor a mayor resolucion
+        if isinstance(largest, dict) and str(largest.get("file_id", "")).strip():
+            return {"file_id": str(largest["file_id"]).strip(), "caption": caption}
+    document = message.get("document")
+    if isinstance(document, dict):
+        mime = str(document.get("mime_type", "")).strip().lower()
+        if mime.startswith("image/") and str(document.get("file_id", "")).strip():
+            return {"file_id": str(document["file_id"]).strip(), "caption": caption}
+    return None
+
+
+def _analyze_telegram_photo(attachment: dict) -> str:
+    caption = str(attachment.get("caption", "")).strip()
+    raw_image = download_telegram_file(
+        str(attachment.get("file_id", "")).strip(),
+        max_bytes=MAX_TELEGRAM_IMAGE_BYTES,
+    )
+    analysis = vision.analyze_image(raw_image, caption)
+    if caption:
+        return f"{caption}\n\n(Adjunte una imagen. Analisis de vision de la imagen: {analysis})"
+    return f"Te envie una imagen. Analisis de vision: {analysis}. Responde de forma util."
 
 
 def _voice_power_confirmation_blocked(text: str) -> bool:
@@ -1624,22 +1655,35 @@ def process_telegram_update(update: dict) -> str:
 
     if not text:
         voice_attachment = _voice_attachment_from_message(message)
-        if voice_attachment is None:
-            reply = "Por ahora solo puedo procesar mensajes de texto o notas de voz."
-            if binding_notice:
-                reply = f"{binding_notice}\n\n{reply}"
-            send_telegram_message(reply, chat_id=chat_id)
-            return "Telegram: mensaje no textual ignorado."
-        voice_input = True
-        try:
-            _send_telegram_thinking_action(chat_id)
-            text = _transcribe_telegram_attachment(voice_attachment)
-        except Exception as exc:
-            reply = f"No pude entender esa nota de voz: {redact_secrets(exc)}"
-            if binding_notice:
-                reply = f"{binding_notice}\n\n{reply}"
-            send_telegram_message(reply, chat_id=chat_id)
-            return "Telegram: voz no procesada."
+        if voice_attachment is not None:
+            voice_input = True
+            try:
+                _send_telegram_thinking_action(chat_id)
+                text = _transcribe_telegram_attachment(voice_attachment)
+            except Exception as exc:
+                reply = f"No pude entender esa nota de voz: {redact_secrets(exc)}"
+                if binding_notice:
+                    reply = f"{binding_notice}\n\n{reply}"
+                send_telegram_message(reply, chat_id=chat_id)
+                return "Telegram: voz no procesada."
+        else:
+            photo_attachment = _photo_attachment_from_message(message)
+            if photo_attachment is not None:
+                try:
+                    _send_telegram_thinking_action(chat_id)
+                    text = _analyze_telegram_photo(photo_attachment)
+                except Exception as exc:
+                    reply = f"No pude analizar esa imagen: {redact_secrets(exc)}"
+                    if binding_notice:
+                        reply = f"{binding_notice}\n\n{reply}"
+                    send_telegram_message(reply, chat_id=chat_id)
+                    return "Telegram: imagen no procesada."
+            else:
+                reply = "Por ahora solo puedo procesar mensajes de texto, notas de voz o imagenes."
+                if binding_notice:
+                    reply = f"{binding_notice}\n\n{reply}"
+                send_telegram_message(reply, chat_id=chat_id)
+                return "Telegram: mensaje no textual ignorado."
 
     stop_intent = _stop_intent_for_message(text)
     power_intent = _power_intent_for_message(text)

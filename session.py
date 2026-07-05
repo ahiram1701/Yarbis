@@ -115,6 +115,9 @@ from tools import (
     evolution_list_suggestions,
     evolution_apply_suggestion,
     evolution_discard_suggestion,
+    analyze_image,
+    vision_status,
+    vision_set_model,
 )
 from service_manager import format_readiness_status, readiness_status
 
@@ -1652,6 +1655,21 @@ def evolution_apply_suggestion_text(suggestion_id: str) -> str:
 def evolution_discard_suggestion_text(suggestion_id: str) -> str:
     with SESSION_LOCK:
         return evolution_discard_suggestion(suggestion_id)
+
+
+def analyze_image_text(path: str, question: str = "") -> str:
+    with SESSION_LOCK:
+        return analyze_image(path, question)
+
+
+def vision_status_text() -> str:
+    with SESSION_LOCK:
+        return vision_status()
+
+
+def vision_set_model_text(model: str) -> str:
+    with SESSION_LOCK:
+        return vision_set_model(model)
 
 
 def coding_workflow_status_text(include_diff: bool = False) -> str:
