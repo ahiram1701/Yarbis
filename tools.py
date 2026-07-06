@@ -4853,6 +4853,39 @@ def _find_social_publication(state: dict, publication_id: str) -> dict | None:
     return matches[0] if len(matches) == 1 else None
 
 
+def _find_media_inbox_entry(state: dict, media_id: str) -> dict | None:
+    cleaned = str(media_id).strip().lower()
+    if not cleaned:
+        return None
+    entries = state.get("social", {}).get("media_inbox", [])
+    for entry in entries:
+        if str(entry.get("id", "")).lower() == cleaned:
+            return entry
+    matches = [
+        entry for entry in entries
+        if str(entry.get("id", "")).lower().startswith(cleaned)
+    ]
+    return matches[0] if len(matches) == 1 else None
+
+
+def _apply_media_source(target: dict, entry: dict) -> None:
+    """Rellena media_path/media_type/alt_text de un draft o publicacion a partir
+    de una entrada de media_inbox, y recuerda el telegram_file_id en metadata."""
+    path = str(entry.get("path", "")).strip()
+    if path and not str(target.get("media_path", "")).strip():
+        target["media_path"] = path
+    if not str(target.get("media_type", "")).strip():
+        target["media_type"] = str(entry.get("media_type", "image")).strip().lower() or "image"
+    if not str(target.get("alt_text", "")).strip() and str(entry.get("alt_text", "")).strip():
+        target["alt_text"] = str(entry.get("alt_text", "")).strip()
+    file_id = str(entry.get("telegram_file_id", "")).strip()
+    if file_id:
+        metadata = target.setdefault("metadata", {})
+        if isinstance(metadata, dict):
+            metadata["telegram_file_id"] = file_id
+            metadata["media_id"] = str(entry.get("id", "")).strip()
+
+
 def _body_with_hashtags(publication: dict) -> str:
     body = str(publication.get("body", "")).strip()
     tags = []
@@ -4933,13 +4966,21 @@ def social_accounts_overview() -> str:
     accounts = social.get("accounts", [])
     drafts = social.get("drafts", [])
     pending = social.get("pending_publications", [])
+    media_inbox = social.get("media_inbox", [])
 
     lines = [
         "Redes sociales:",
         f"Cuentas conectadas: {len(accounts)}",
         f"Drafts: {len(drafts)}",
         f"Publicaciones pendientes: {len(pending)}",
+        f"Imagenes recientes (de Telegram, listas para publicar): {len(media_inbox)}",
     ]
+    if media_inbox:
+        lines.append("Imagenes recientes:")
+        for entry in reversed(media_inbox[-5:]):
+            caption = str(entry.get("caption", "")).strip()
+            suffix = f": {caption[:60]}" if caption else ""
+            lines.append(f"- [{entry['id']}] {entry.get('received_at', '')}{suffix}")
     if accounts:
         lines.append("Cuentas:")
         for account in accounts:
@@ -5086,6 +5127,7 @@ def save_social_draft(
     alt_text: str = "",
     hashtags: str = "",
     scheduled_for: str = "",
+    media_id: str = "",
 ) -> str:
     """
     Guarda un draft de contenido para redes sociales.
@@ -5102,6 +5144,8 @@ def save_social_draft(
         alt_text (str): Texto alternativo.
         hashtags (str): Hashtags separados por coma, punto y coma o salto de linea.
         scheduled_for (str): Fecha/hora deseada en texto ISO o natural.
+        media_id (str): Id (media-xxx) de una imagen recibida por Telegram (ver
+            list_recent_media). Si se indica, adjunta esa imagen a la publicacion.
 
     Returns:
         str: Confirmacion del draft guardado.
@@ -5109,8 +5153,6 @@ def save_social_draft(
     cleaned_platform = str(platform).strip().lower()
     if cleaned_platform not in VALID_SOCIAL_PLATFORMS:
         return "Plataforma social invalida. Usa facebook_page, facebook_personal, instagram o linkedin."
-    if not str(body).strip() and not str(link_url).strip() and not str(media_url).strip() and not str(media_path).strip():
-        return "El draft necesita copy, link o media."
 
     draft = {
         "id": _new_id("draft"),
@@ -5129,8 +5171,48 @@ def save_social_draft(
         "scheduled_for": str(scheduled_for).strip(),
         "metadata": {},
     }
+    if str(media_id).strip():
+        entry = _find_media_inbox_entry(load_state(), media_id)
+        if not entry:
+            return f"No encontre una imagen reciente con id o prefijo: {media_id}"
+        _apply_media_source(draft, entry)
+
+    if not draft["body"] and not draft["link_url"] and not draft["media_url"] and not draft["media_path"]:
+        return "El draft necesita copy, link o media."
+
     state_transaction("save_social_draft", lambda state: state.setdefault("social", {}).setdefault("drafts", []).append(draft))
     return f"Draft social guardado con id {draft['id']}: {draft['title']} ({draft['platform']})"
+
+
+def list_recent_media(limit: int = 10) -> str:
+    """
+    Lista las imagenes recientes recibidas por Telegram, disponibles para publicar
+    en redes sociales. Usa el id (media-xxx) como media_id en save_social_draft o
+    prepare_social_publication.
+
+    Args:
+        limit (int): Maximo de imagenes a mostrar.
+
+    Returns:
+        str: Lista de imagenes recientes con su id, fecha y caption.
+    """
+    state = load_state()
+    media_inbox = state.get("social", {}).get("media_inbox", [])
+    if not media_inbox:
+        return "No hay imagenes recientes. Envia una foto por Telegram para poder publicarla."
+    try:
+        normalized_limit = max(1, min(15, int(limit)))
+    except (TypeError, ValueError):
+        normalized_limit = 10
+    lines = ["Imagenes recientes (usa el id como media_id para publicar):"]
+    for entry in reversed(media_inbox[-normalized_limit:]):
+        caption = str(entry.get("caption", "")).strip()
+        suffix = f" - {caption[:80]}" if caption else ""
+        lines.append(
+            f"[{entry['id']}] {entry.get('media_type', 'image')} "
+            f"{entry.get('received_at', '')}{suffix}"
+        )
+    return "\n".join(lines)
 
 
 def list_social_drafts(status: str = "all", limit: int = 10) -> str:
@@ -5211,6 +5293,7 @@ def prepare_social_publication(
     alt_text: str = "",
     hashtags: str = "",
     scheduled_for: str = "",
+    media_id: str = "",
 ) -> str:
     """
     Prepara una publicacion social y deja una confirmacion pendiente.
@@ -5228,6 +5311,9 @@ def prepare_social_publication(
         alt_text (str): Texto alternativo.
         hashtags (str): Hashtags separados por coma, punto y coma o salto de linea.
         scheduled_for (str): Fecha/hora deseada.
+        media_id (str): Id (media-xxx) de una imagen recibida por Telegram (ver
+            list_recent_media). Si se indica, adjunta esa imagen a la publicacion;
+            para Instagram/Facebook Pagina la imagen se sirve al publicar.
 
     Returns:
         str: Preview y frase exacta de confirmacion.
@@ -5295,6 +5381,12 @@ def prepare_social_publication(
         "metadata": {"confirmation_required": True},
     }
 
+    if str(media_id).strip():
+        entry = _find_media_inbox_entry(state, media_id)
+        if not entry:
+            return f"No encontre una imagen reciente con id o prefijo: {media_id}"
+        _apply_media_source(publication, entry)
+
     if not _body_with_hashtags(publication) and not publication["link_url"] and not publication["media_url"] and not publication["media_path"]:
         return "La publicacion necesita copy, link o media."
 
@@ -5325,6 +5417,9 @@ def _open_assisted_publication(publication: dict, copy_to_clipboard: bool, open_
     if open_browser:
         lines.append(open_system_target_impl(share_url))
     lines.append(f"URL asistida: {share_url}")
+    media_path = str(publication.get("media_path", "")).strip()
+    if media_path:
+        lines.append(f"Imagen para adjuntar a mano: {media_path}")
     return "\n".join(lines)
 
 
@@ -5376,6 +5471,21 @@ def confirm_social_publication(publication_id: str, confirmation: str) -> str:
     token_ref = str(account.get("token_ref", "")).strip()
     if not token_ref:
         return "La cuenta destino no tiene credencial guardada."
+
+    # Instagram/Facebook Pagina necesitan una URL publica de la imagen. Si la
+    # publicacion viene de una foto de Telegram (metadata.telegram_file_id) y no
+    # trae media_url, regeneramos una URL fresca de Telegram justo antes de
+    # publicar (caduca en ~1h; Meta la descarga del lado servidor).
+    if platform in {"instagram", "facebook_page"} and not str(publication.get("media_url", "")).strip():
+        telegram_file_id = str(publication.get("metadata", {}).get("telegram_file_id", "")).strip()
+        if telegram_file_id:
+            try:
+                from notifications import telegram_file_public_url
+
+                publication["media_url"] = telegram_file_public_url(telegram_file_id)
+            except Exception:
+                pass
+
     try:
         token = load_secret(token_ref)
         publish_result = publish_publication(account, token, publication, _social_settings(state))

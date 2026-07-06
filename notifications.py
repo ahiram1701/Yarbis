@@ -449,11 +449,14 @@ def telegram_api_request(
     return response
 
 
-def download_telegram_file(
-    file_id: str,
-    settings: dict | None = None,
-    max_bytes: int = MAX_VOICE_AUDIO_BYTES,
-) -> bytes:
+def telegram_file_public_url(file_id: str, settings: dict | None = None) -> str:
+    """Devuelve una URL publica (temporal, ~1h) del archivo de Telegram.
+
+    Hace getFile y arma `{api_base}/file/bot{token}/{file_path}`. La URL es
+    descargable por servidores externos (p.ej. Meta al publicar en IG/FB), pero
+    caduca, por lo que conviene regenerarla justo antes de publicar. Incluye el
+    bot token, asi que no debe persistirse en estado.
+    """
     config = get_telegram_settings(settings)
     if not config["bot_token"]:
         raise ValueError("Falta configurar el bot token de Telegram.")
@@ -469,8 +472,19 @@ def download_telegram_file(
     file_path = str(result.get("file_path", "")).strip()
     if not file_path:
         raise RuntimeError("Telegram no devolvio la ruta del archivo.")
+    return f"{config['api_base']}/file/bot{config['bot_token']}/{file_path}"
 
-    file_url = f"{config['api_base']}/file/bot{config['bot_token']}/{file_path}"
+
+def download_telegram_file(
+    file_id: str,
+    settings: dict | None = None,
+    max_bytes: int = MAX_VOICE_AUDIO_BYTES,
+) -> bytes:
+    config = get_telegram_settings(settings)
+    if not config["bot_token"]:
+        raise ValueError("Falta configurar el bot token de Telegram.")
+
+    file_url = telegram_file_public_url(file_id, settings=settings)
     redaction_state = {
         "notifications": {
             "telegram": {

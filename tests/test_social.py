@@ -5,6 +5,7 @@ from unittest.mock import patch
 import agent
 import credential_store
 import memory
+import notifications
 import secrets_redaction
 import social_publishing
 import tools
@@ -156,6 +157,101 @@ class SocialFeatureTestCase(unittest.TestCase):
         self.assertIn("bloqueada", blocked)
         self.assertIn("Publicacion social completada", published)
         self.assertEqual(http_mock.call_count, 1)
+        self.assertEqual(state_after["social"]["history"][0]["status"], "published")
+
+    def test_list_recent_media_lists_registered_images(self):
+        state_path = TEST_RUNTIME_DIR / f"social_media_list_{id(self)}.json"
+        with patch.object(memory, "STATE_FILE", state_path):
+            state = memory.default_state()
+            state["social"]["media_inbox"].append({
+                "id": "media-xyz",
+                "path": "C:/x/a.jpg",
+                "telegram_file_id": "fid",
+                "source": "telegram",
+                "caption": "un gato",
+                "media_type": "image",
+                "received_at": "2026-07-06T00:00:00+00:00",
+            })
+            memory.save_state(state)
+            out = tools.list_recent_media()
+
+        self.assertIn("media-xyz", out)
+        self.assertIn("un gato", out)
+
+    def test_save_social_draft_with_media_id_attaches_local_path(self):
+        state_path = TEST_RUNTIME_DIR / f"social_draft_media_{id(self)}.json"
+        with patch.object(memory, "STATE_FILE", state_path):
+            state = memory.default_state()
+            state["social"]["media_inbox"].append({
+                "id": "media-d1",
+                "path": "C:/x/pic.jpg",
+                "telegram_file_id": "fidd",
+                "source": "telegram",
+                "media_type": "image",
+                "received_at": "2026-07-06T00:00:00+00:00",
+            })
+            memory.save_state(state)
+            result = tools.save_social_draft(
+                title="T", platform="instagram", body="Hola", media_id="media-d1"
+            )
+            state_after = memory.load_state()
+
+        self.assertIn("Draft social guardado", result)
+        draft = state_after["social"]["drafts"][0]
+        self.assertEqual(draft["media_path"], "C:/x/pic.jpg")
+        self.assertEqual(draft["media_type"], "image")
+        self.assertEqual(draft["metadata"].get("telegram_file_id"), "fidd")
+
+    def test_confirm_instagram_uses_fresh_telegram_url_from_media(self):
+        state_path = TEST_RUNTIME_DIR / f"social_ig_media_state_{id(self)}.json"
+        credential_dir = TEST_RUNTIME_DIR / f"credentials_ig_{id(self)}"
+        with patch.object(memory, "STATE_FILE", state_path):
+            with patch.object(credential_store, "CREDENTIALS_DIR", credential_dir):
+                token_ref = credential_store.save_secret("ig-token", kind="social")
+                state = memory.default_state()
+                state["social"]["accounts"].append({
+                    "id": "acct-ig",
+                    "platform": "instagram",
+                    "account_type": "instagram_professional",
+                    "display_name": "IG",
+                    "external_id": "ig-1",
+                    "token_ref": token_ref,
+                })
+                state["social"]["media_inbox"].append({
+                    "id": "media-abc",
+                    "path": str(TEST_RUNTIME_DIR / "img.jpg"),
+                    "telegram_file_id": "tg-file-1",
+                    "source": "telegram",
+                    "media_type": "image",
+                    "received_at": "2026-07-06T00:00:00+00:00",
+                })
+                memory.save_state(state)
+                prepared = tools.prepare_social_publication(
+                    platform="instagram",
+                    target_account_id="acct-ig",
+                    title="Foto",
+                    body="Mira esto",
+                    media_id="media-abc",
+                )
+                publication_id = prepared.split("[", 1)[1].split("]", 1)[0]
+                responses = [
+                    {"id": "cont-1"},
+                    {"status_code": "FINISHED"},
+                    {"id": "ig-post-9"},
+                ]
+                with patch.object(
+                    notifications, "telegram_file_public_url", return_value="https://fresh.telegram/url.jpg"
+                ) as url_mock:
+                    with patch("social_publishing._http_json", side_effect=responses) as http_mock:
+                        published = tools.confirm_social_publication(
+                            publication_id, f"PUBLICAR {publication_id}"
+                        )
+                state_after = memory.load_state()
+
+        self.assertIn("Publicacion social completada", published)
+        url_mock.assert_called_once_with("tg-file-1")
+        first_call = http_mock.call_args_list[0]
+        self.assertEqual(first_call.kwargs["data"]["image_url"], "https://fresh.telegram/url.jpg")
         self.assertEqual(state_after["social"]["history"][0]["status"], "published")
 
     def test_facebook_personal_confirmation_opens_assisted_flow_without_post(self):

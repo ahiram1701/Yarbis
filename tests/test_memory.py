@@ -14,6 +14,29 @@ TEST_RUNTIME_DIR = Path.cwd() / "tests_runtime"
 
 
 class MemoryTestCase(unittest.TestCase):
+    def test_normalize_social_media_inbox_caps_and_coerces(self):
+        entries = [
+            {"id": f"media-{i}", "path": f"C:/x/{i}.jpg", "telegram_file_id": f"fid{i}"}
+            for i in range(20)
+        ]
+        entries.append({"garbage": True})  # invalido -> descartado
+        entries.append({"telegram_file_id": "only-fid"})  # sin path pero con file_id -> valido
+        normalized = memory.normalize_state({"social": {"media_inbox": entries}})
+        inbox = normalized["social"]["media_inbox"]
+        self.assertEqual(len(inbox), memory.MAX_SOCIAL_MEDIA_INBOX)
+        # Conserva las mas recientes (las ultimas de la lista de entrada).
+        self.assertEqual(inbox[-1].get("telegram_file_id"), "only-fid")
+        first = inbox[0]
+        self.assertEqual(
+            sorted(first.keys()),
+            ["alt_text", "caption", "chat_id", "id", "media_type", "path", "received_at", "source", "telegram_file_id"],
+        )
+        self.assertEqual(first["media_type"], "image")
+        self.assertEqual(first["source"], "telegram")
+
+    def test_default_state_has_empty_media_inbox(self):
+        self.assertEqual(memory.default_state()["social"]["media_inbox"], [])
+
     def _memory_protection_paths(self, name: str):
         base = TEST_RUNTIME_DIR / "memory_protection" / f"{name}-{uuid4().hex[:8]}"
         base.mkdir(parents=True, exist_ok=True)

@@ -5,6 +5,7 @@ import time
 import re
 import uuid
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Callable
 
 import activity
@@ -14,6 +15,7 @@ from memory import (
     DEFAULT_OLLAMA_CLOUD_HOST,
     DEFAULT_OPENROUTER_API_KEY_ENV_VAR,
     DEFAULT_OPENROUTER_HOST,
+    MAX_SOCIAL_MEDIA_INBOX,
     MODEL_PROVIDER_OLLAMA,
     MODEL_PROVIDER_OPENROUTER,
     load_state,
@@ -531,6 +533,70 @@ def _transcribe_telegram_attachment(attachment: dict) -> str:
 
 
 MAX_TELEGRAM_IMAGE_BYTES = 20 * 1024 * 1024
+IMAGE_RUNTIME_DIR = yarbis_instance.runtime_dir() / "social_media"
+
+
+def _image_extension(raw_bytes: bytes) -> str:
+    if raw_bytes[:8].startswith(b"\x89PNG\r\n\x1a\n"):
+        return ".png"
+    if raw_bytes[:3] == b"GIF":
+        return ".gif"
+    if raw_bytes[:4] == b"RIFF" and raw_bytes[8:12] == b"WEBP":
+        return ".webp"
+    return ".jpg"
+
+
+def _persist_incoming_image(
+    raw_bytes: bytes,
+    file_id: str,
+    caption: str,
+    chat_id: str,
+    alt_text: str = "",
+) -> dict | None:
+    """Guarda la imagen recibida por Telegram y la registra en state.social.media_inbox.
+
+    Devuelve la entrada creada (con su id) o None si algo falla; nunca lanza, para
+    no romper la respuesta de vision.
+    """
+    try:
+        IMAGE_RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
+        media_id = f"media-{uuid.uuid4().hex[:12]}"
+        path = IMAGE_RUNTIME_DIR / f"{media_id}{_image_extension(raw_bytes)}"
+        path.write_bytes(raw_bytes)
+        entry = {
+            "id": media_id,
+            "path": str(path),
+            "telegram_file_id": str(file_id or "").strip(),
+            "source": "telegram",
+            "chat_id": str(chat_id or "").strip(),
+            "caption": str(caption or "").strip()[:500],
+            "media_type": "image",
+            "alt_text": str(alt_text or "").strip()[:500],
+            "received_at": datetime.now(timezone.utc).isoformat(),
+        }
+        pruned_paths: list[str] = []
+
+        def mutate(state):
+            social = state.setdefault("social", {})
+            inbox = social.setdefault("media_inbox", [])
+            inbox.append(entry)
+            overflow = len(inbox) - MAX_SOCIAL_MEDIA_INBOX
+            if overflow > 0:
+                for old in inbox[:overflow]:
+                    old_path = str(old.get("path", "")).strip()
+                    if old_path:
+                        pruned_paths.append(old_path)
+                del inbox[:overflow]
+
+        state_transaction("register_media_inbox", mutate)
+        for old_path in pruned_paths:
+            with contextlib.suppress(Exception):
+                old_file = Path(old_path)
+                if old_file.exists():
+                    old_file.unlink()
+        return entry
+    except Exception:
+        return None
 
 
 def _photo_attachment_from_message(message: dict) -> dict | None:
@@ -548,16 +614,21 @@ def _photo_attachment_from_message(message: dict) -> dict | None:
     return None
 
 
-def _analyze_telegram_photo(attachment: dict) -> str:
+def _analyze_telegram_photo(attachment: dict, chat_id: str = "") -> str:
     caption = str(attachment.get("caption", "")).strip()
-    raw_image = download_telegram_file(
-        str(attachment.get("file_id", "")).strip(),
-        max_bytes=MAX_TELEGRAM_IMAGE_BYTES,
-    )
+    file_id = str(attachment.get("file_id", "")).strip()
+    raw_image = download_telegram_file(file_id, max_bytes=MAX_TELEGRAM_IMAGE_BYTES)
     analysis = vision.analyze_image(raw_image, caption)
+    entry = _persist_incoming_image(raw_image, file_id, caption, chat_id, alt_text=analysis)
+    media_hint = ""
+    if entry:
+        media_hint = (
+            f"\n\n[Guarde la imagen como media {entry['id']}; puedes publicarla en redes "
+            f"con ese id (prepare_social_publication media_id={entry['id']}).]"
+        )
     if caption:
-        return f"{caption}\n\n(Adjunte una imagen. Analisis de vision de la imagen: {analysis})"
-    return f"Te envie una imagen. Analisis de vision: {analysis}. Responde de forma util."
+        return f"{caption}\n\n(Adjunte una imagen. Analisis de vision de la imagen: {analysis}){media_hint}"
+    return f"Te envie una imagen. Analisis de vision: {analysis}. Responde de forma util.{media_hint}"
 
 
 # --- Album de fotos (varias imagenes en un mismo envio) ---------------------
@@ -604,10 +675,21 @@ def _process_photo_group(group: dict) -> None:
     ]
     analysis = vision.analyze_images(images, caption)
     count = len(images)
+    media_ids = []
+    for raw_image, file_id in zip(images, file_ids):
+        entry = _persist_incoming_image(raw_image, file_id, caption, chat_id, alt_text=analysis)
+        if entry:
+            media_ids.append(entry["id"])
+    media_hint = ""
+    if media_ids:
+        media_hint = (
+            f"\n\n[Guarde las imagenes como media {', '.join(media_ids)}; puedes publicar "
+            f"cualquiera en redes indicando su id (prepare_social_publication media_id=...).]"
+        )
     if caption:
-        text = f"{caption}\n\n(Adjunte {count} imagenes. Analisis de vision combinado: {analysis})"
+        text = f"{caption}\n\n(Adjunte {count} imagenes. Analisis de vision combinado: {analysis}){media_hint}"
     else:
-        text = f"Te envie {count} imagenes. Analisis de vision combinado: {analysis}. Responde de forma util."
+        text = f"Te envie {count} imagenes. Analisis de vision combinado: {analysis}. Responde de forma util.{media_hint}"
     reply = _submit_user_reply_from_telegram(text, chat_id)
     send_telegram_message(_telegram_reply_for_delivery("", reply), chat_id=chat_id)
 
@@ -1755,7 +1837,7 @@ def process_telegram_update(update: dict) -> str:
                     return "Telegram: foto de album recibida (agrupando)."
                 try:
                     _send_telegram_thinking_action(chat_id)
-                    text = _analyze_telegram_photo(photo_attachment)
+                    text = _analyze_telegram_photo(photo_attachment, chat_id)
                 except Exception as exc:
                     reply = f"No pude analizar esa imagen: {redact_secrets(exc)}"
                     if binding_notice:

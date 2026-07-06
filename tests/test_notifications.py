@@ -180,6 +180,24 @@ class NotificationsTestCase(unittest.TestCase):
             },
         )
 
+    def test_telegram_file_public_url_builds_download_url(self):
+        with patch.dict(
+            os.environ,
+            {"YARBIS_TELEGRAM_BOT_TOKEN": "bot-123"},
+            clear=False,
+        ):
+            with patch.object(
+                notifications,
+                "telegram_api_request",
+                return_value={"ok": True, "result": {"file_path": "photos/file_9.jpg"}},
+            ) as telegram_mock:
+                url = notifications.telegram_file_public_url("FID")
+
+        telegram_mock.assert_called_once()
+        self.assertEqual(telegram_mock.call_args.args[0], "getFile")
+        self.assertEqual(telegram_mock.call_args.args[1], {"file_id": "FID"})
+        self.assertEqual(url, "https://api.telegram.org/file/botbot-123/photos/file_9.jpg")
+
     def test_send_telegram_message_labels_long_chunks(self):
         long_text = "a" * (notifications.MAX_TELEGRAM_MESSAGE_CHARS + 120)
 

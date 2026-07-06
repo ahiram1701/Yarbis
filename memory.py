@@ -234,6 +234,7 @@ VALID_SOCIAL_ACCOUNT_TYPES = {
 VALID_SOCIAL_DRAFT_STATUS = {"draft", "pending", "published", "failed", "archived"}
 VALID_SOCIAL_PUBLICATION_STATUS = {"pending_confirmation", "published", "failed", "assisted_opened"}
 MAX_SOCIAL_ITEMS = 80
+MAX_SOCIAL_MEDIA_INBOX = 15
 MAX_SOCIAL_TEXT_CHARS = 8_000
 MAX_SOCIAL_METADATA_CHARS = 2_000
 DEFAULT_CODING_MODE = "propose_first"
@@ -552,6 +553,7 @@ def default_state():
             "drafts": [],
             "pending_publications": [],
             "history": [],
+            "media_inbox": [],
         },
     }
 
@@ -2485,6 +2487,29 @@ def _normalize_social_publication(publication):
     }
 
 
+def _normalize_social_media_entry(entry):
+    if not isinstance(entry, dict):
+        return None
+    path = _coerce_text(entry.get("path", ""), 500).strip()
+    file_id = _coerce_text(entry.get("telegram_file_id", ""), 300).strip()
+    if not path and not file_id:
+        return None
+    entry_id = _coerce_text(entry.get("id") or _fallback_id("media", path or file_id), 64).strip()
+    if not entry_id:
+        return None
+    return {
+        "id": entry_id,
+        "path": path,
+        "telegram_file_id": file_id,
+        "source": _coerce_text(entry.get("source", "telegram"), 40).strip().lower() or "telegram",
+        "chat_id": _coerce_text(entry.get("chat_id", ""), 64).strip(),
+        "caption": _coerce_text(entry.get("caption", ""), 500).strip(),
+        "media_type": _coerce_text(entry.get("media_type", "image"), 40).strip().lower() or "image",
+        "alt_text": _coerce_text(entry.get("alt_text", ""), 500).strip(),
+        "received_at": _coerce_text(entry.get("received_at", ""), 80).strip(),
+    }
+
+
 def _normalize_social(social):
     defaults = default_state()["social"]
     if not isinstance(social, dict):
@@ -2522,12 +2547,21 @@ def _normalize_social(social):
             if len(history) >= MAX_SOCIAL_ITEMS:
                 break
 
+    media_inbox = []
+    for entry in social.get("media_inbox", []):
+        normalized_entry = _normalize_social_media_entry(entry)
+        if normalized_entry:
+            media_inbox.append(normalized_entry)
+    # Conservar solo las mas recientes (las ultimas de la lista).
+    media_inbox = media_inbox[-MAX_SOCIAL_MEDIA_INBOX:]
+
     return {
         "settings": _normalize_social_settings(social.get("settings", defaults["settings"])),
         "accounts": accounts,
         "drafts": drafts,
         "pending_publications": pending_publications,
         "history": history,
+        "media_inbox": media_inbox,
     }
 
 

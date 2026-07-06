@@ -9,6 +9,45 @@ TEST_RUNTIME_DIR = Path.cwd() / "tests_runtime"
 
 
 class TelegramInboxTestCase(unittest.TestCase):
+    def test_persist_incoming_image_saves_and_registers(self):
+        state_path = TEST_RUNTIME_DIR / "telegram_media_state.json"
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+        img_dir = TEST_RUNTIME_DIR / "telegram_media_dir"
+        with patch.object(memory, "STATE_FILE", state_path):
+            memory.save_state(memory.default_state())
+            with patch.object(telegram_inbox, "IMAGE_RUNTIME_DIR", img_dir):
+                entry = telegram_inbox._persist_incoming_image(
+                    b"\xff\xd8jpegbytes", "fid-1", "una foto", "123", alt_text="un gato"
+                )
+            state = memory.load_state()
+
+        self.assertIsNotNone(entry)
+        self.assertTrue(Path(entry["path"]).exists())
+        inbox = state["social"]["media_inbox"]
+        self.assertEqual(len(inbox), 1)
+        self.assertEqual(inbox[0]["id"], entry["id"])
+        self.assertEqual(inbox[0]["telegram_file_id"], "fid-1")
+        self.assertEqual(inbox[0]["alt_text"], "un gato")
+
+    def test_analyze_telegram_photo_includes_media_hint(self):
+        state_path = TEST_RUNTIME_DIR / "telegram_photo_hint_state.json"
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+        img_dir = TEST_RUNTIME_DIR / "telegram_photo_hint_dir"
+        with patch.object(memory, "STATE_FILE", state_path):
+            memory.save_state(memory.default_state())
+            with patch.object(telegram_inbox, "IMAGE_RUNTIME_DIR", img_dir):
+                with patch.object(telegram_inbox, "download_telegram_file", return_value=b"\xff\xd8jpeg"):
+                    with patch.object(telegram_inbox.vision, "analyze_image", return_value="un perro"):
+                        text = telegram_inbox._analyze_telegram_photo(
+                            {"file_id": "fid-2", "caption": "mira"}, "123"
+                        )
+            state = memory.load_state()
+
+        self.assertIn("un perro", text)
+        self.assertIn("media ", text)
+        self.assertIn("prepare_social_publication", text)
+        self.assertEqual(len(state["social"]["media_inbox"]), 1)
+
     def test_dispatch_coding_commands(self):
         with patch.object(
             telegram_inbox,
