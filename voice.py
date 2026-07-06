@@ -1,9 +1,11 @@
 import base64
 import contextlib
 import math
+import re
 import tempfile
 import threading
 import time
+import unicodedata
 import wave
 from pathlib import Path
 
@@ -91,6 +93,45 @@ _WHISPER_MODELS = {}
 _WHISPER_TRANSCRIBE_LOCK = threading.Lock()
 _TTS_LOCK = threading.RLock()
 _TTS_ENGINE = None
+
+# Simbolos ascii de markdown que el TTS pronuncia ("asterisco", "numeral", etc.).
+_TTS_MARKDOWN_CHARS = re.compile(r"[*_`~#>|=]+")
+_TTS_LIST_MARKER = re.compile(r"(?m)^[ \t]*[-•·]\s+")
+
+
+def _clean_text_for_tts(text: str) -> str:
+    """Prepara texto para voz: quita emojis y simbolos que el TTS leeria en voz
+    alta (edge-tts/SAPI pronuncian "asterisco", "numeral" o nombres de emoji).
+
+    Conserva letras, numeros, acentos/n~ y puntuacion normal. Se aplica en todas
+    las rutas de sintesis (Telegram, movil, escritorio, voz en vivo).
+    """
+    rendered = str(text or "")
+    if not rendered:
+        return ""
+    rendered = rendered.replace("```", " ")
+    out = []
+    for ch in rendered:
+        if ch in "\n\t":
+            out.append(ch)
+            continue
+        category = unicodedata.category(ch)
+        # So=simbolo/emoji, Sk=simbolo modificador, Cf=formato (ZWJ, VS16),
+        # Co=uso privado, Cs=surrogates, Cc=control.
+        if category in ("So", "Sk", "Cf", "Co", "Cs", "Cc"):
+            continue
+        code = ord(ch)
+        # Bloques de emoji/pictogramas suplementarios y banderas.
+        if 0x1F000 <= code <= 0x1FAFF or 0x1F1E6 <= code <= 0x1F1FF or 0x2600 <= code <= 0x27BF:
+            continue
+        out.append(ch)
+    rendered = "".join(out)
+    rendered = _TTS_LIST_MARKER.sub("", rendered)
+    rendered = _TTS_MARKDOWN_CHARS.sub(" ", rendered)
+    rendered = re.sub(r"[ \t]{2,}", " ", rendered)
+    rendered = re.sub(r" *\n *", "\n", rendered)
+    rendered = re.sub(r"\n{3,}", "\n\n", rendered)
+    return rendered.strip()
 
 
 class VoiceError(RuntimeError):
@@ -566,7 +607,7 @@ def _wav_duration_seconds(path: Path) -> float:
 def speak_text(text: str, settings: dict | None = None, cancellable: bool = True) -> None:
     global _TTS_ENGINE
     voice_settings = ensure_voice_enabled(settings)
-    cleaned_text = str(text or "").strip()
+    cleaned_text = _clean_text_for_tts(text)
     if not cleaned_text:
         raise VoiceError("No hay texto para leer.")
     if _settings_tts_provider(voice_settings) == "edge":
@@ -774,7 +815,7 @@ def _ffmpeg_executable() -> str:
 
 def synthesize_speech_wav_file(text: str, settings: dict | None = None) -> Path:
     voice_settings = ensure_voice_enabled(settings)
-    cleaned_text = str(text or "").strip()
+    cleaned_text = _clean_text_for_tts(text)
     if not cleaned_text:
         raise VoiceError("No hay texto para convertir a voz.")
     return _synthesize_wav_file(cleaned_text, voice_settings)
@@ -784,7 +825,7 @@ def synthesize_speech_file(text: str, settings: dict | None = None) -> Path:
     import subprocess
 
     voice_settings = ensure_voice_enabled(settings)
-    cleaned_text = str(text or "").strip()
+    cleaned_text = _clean_text_for_tts(text)
     if not cleaned_text:
         raise VoiceError("No hay texto para convertir a voz.")
 

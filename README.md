@@ -483,7 +483,14 @@ Superficies disponibles:
   la UI web pide audio WAV porque iOS no reproduce OGG/Opus de forma consistente.
   Para voz en vivo en iPhone, abre la UI desde el enlace HTTPS de Tailscale; Safari bloquea
   el microfono en la URL HTTP. Si no aparece `secure_url`, revisa que `HTTPS Certificates`
-  este habilitado en `Tailscale Admin` -> `DNS`.
+  este habilitado en `Tailscale Admin` -> `DNS`. Si Tailscale Serve ya esta tomado por
+  otro servicio (apunta a otro `127.0.0.1:puerto`), la UI movil muestra el diagnostico y un
+  boton `Re-apuntar HTTPS a esta instancia` en `Config` -> `UI movil` para dueñar el enlace
+  HTTPS del tailnet y poder usar el microfono del iPhone.
+- Zona horaria: en `Config` -> `Perfil` puedes fijar tu zona (IANA, ej. `America/Mexico_City`);
+  la UI movil la autodetecta del navegador la primera vez. Yarbis la usa para interpretar hoy,
+  manana y horarios. Tambien por lenguaje natural: "usa la zona horaria America/Mexico_City".
+  Los emojis y simbolos de markdown ya no se leen en voz alta (se limpian antes del TTS).
 - La app de escritorio tiene `Dictar` en el compositor, `Voz` para elegir motor, voz neural (edge)
   o voz del sistema, velocidad y modo Telegram, `Voz neural`, `Probar voz`,
   `Leer ultimo resultado` y `Detener voz`.

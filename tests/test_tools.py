@@ -27,6 +27,22 @@ class ToolsTestCase(unittest.TestCase):
         if self.external_dir.exists() and self.external_dir.name.startswith("yarbis-tools-"):
             shutil.rmtree(self.external_dir, ignore_errors=True)
 
+    def test_set_timezone_valid_saves_and_invalid_rejected(self):
+        with patch.object(memory, "STATE_FILE", self.state_path):
+            memory.save_state(memory.default_state())
+            ok = tools.set_timezone("America/Mexico_City")
+            self.assertIn("America/Mexico_City", ok)
+            self.assertEqual(memory.load_state()["profile"]["timezone"], "America/Mexico_City")
+
+            bad = tools.set_timezone("Nowhere/Fake")
+            self.assertIn("invalida", bad.lower())
+            # No cambia la zona valida previa.
+            self.assertEqual(memory.load_state()["profile"]["timezone"], "America/Mexico_City")
+
+            cleared = tools.set_timezone("")
+            self.assertIn("sistema", cleared.lower())
+            self.assertEqual(memory.load_state()["profile"]["timezone"], "")
+
     def test_read_text_file_returns_large_content_complete(self):
         file_path = self.runtime_dir / "large.txt"
         content = "a" * (tools.MAX_READ_BYTES + 25)

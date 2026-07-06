@@ -109,6 +109,7 @@ from tools import (
     get_note,
     open_assisted_social_post,
     set_plan,
+    set_timezone,
     update_internet_settings,
     update_task_status,
 )
@@ -671,7 +672,7 @@ def _known_yarbis_mobile_serve_targets() -> set[str]:
     return targets
 
 
-def _configure_tailscale_https(port: int, settings: dict) -> dict:
+def _configure_tailscale_https(port: int, settings: dict, override: bool = False) -> dict:
     dns_name = detect_tailscale_dns_name()
     if not dns_name:
         raise MobileUiError("Tailscale no expone MagicDNS para generar una URL HTTPS.")
@@ -692,9 +693,15 @@ def _configure_tailscale_https(port: int, settings: dict) -> dict:
     status = _tailscale_serve_status()
     known_yarbis_targets = _known_yarbis_mobile_serve_targets()
     allowed_targets = {target, previous_target, *known_yarbis_targets}
-    if status and not _serve_status_mentions_target(status, allowed_targets):
+    # Si Serve ya tiene una config que no reconocemos como de Yarbis, no la
+    # pisamos salvo que el usuario lo confirme explicitamente (override), para
+    # re-apuntar el root del tailnet a ESTA instancia (necesario en iPhone).
+    if status and not _serve_status_mentions_target(status, allowed_targets) and not override:
+        foreign = sorted(_serve_proxy_targets_from_status(status) - allowed_targets)
+        detail = f" (apunta a {', '.join(foreign)})" if foreign else ""
         raise MobileUiError(
-            "Tailscale Serve ya tiene una configuracion activa que no parece ser de Yarbis; no la sobrescribi."
+            "Tailscale Serve ya tiene una configuracion activa que no parece ser de Yarbis"
+            f"{detail}; confirma re-apuntarlo a esta instancia para sobrescribirla."
         )
 
     completed = _run_tailscale_command(["serve", "--bg", "--yes", target], timeout_seconds=10.0)
@@ -710,7 +717,7 @@ def _configure_tailscale_https(port: int, settings: dict) -> dict:
     return {"target": target, "url": f"https://{dns_name}/"}
 
 
-def claim_mobile_https_for_current_instance() -> str:
+def claim_mobile_https_for_current_instance(override: bool = False) -> str:
     settings = get_mobile_ui_settings()
     if not bool(settings.get("enabled")):
         raise ValueError("Activa la UI movil antes de usar HTTPS aqui.")
@@ -729,7 +736,7 @@ def claim_mobile_https_for_current_instance() -> str:
         settings = get_mobile_ui_settings()
 
     try:
-        result = _configure_tailscale_https(port, settings)
+        result = _configure_tailscale_https(port, settings, override=bool(override))
     except MobileUiError as exc:
         _set_mobile_https_status(str(exc).strip())
         raise
@@ -792,6 +799,13 @@ def public_mobile_ui_status(settings: dict | None = None) -> dict:
     serve_points_to_known_other_instance = bool(
         (serve_current_targets - {expected_serve_target}) & known_yarbis_targets
     )
+    # Serve tiene targets locales, ninguno es el nuestro ni de otra instancia
+    # conocida de Yarbis: apunta a algo ajeno (bloquea el HTTPS del iPhone).
+    serve_points_to_foreign_target = bool(
+        serve_current_targets
+        and not serve_matches_expected_target
+        and not serve_points_to_known_other_instance
+    )
     blocking_https_error = bool(
         https_last_error
         and not serve_matches_expected_target
@@ -820,6 +834,8 @@ def public_mobile_ui_status(settings: dict | None = None) -> dict:
         https_pending_reason = "tailscale_dns_missing"
     elif not tailscale_https_supported:
         https_pending_reason = "tailscale_https_cert_missing"
+    elif serve_points_to_foreign_target:
+        https_pending_reason = "serve_foreign_target"
     elif blocking_https_error:
         https_pending_reason = "https_error"
     elif not https_ready:
@@ -841,6 +857,8 @@ def public_mobile_ui_status(settings: dict | None = None) -> dict:
         "tailscale_https_supported": tailscale_https_supported,
         "tailscale_serve_matches_target": serve_matches_expected_target,
         "tailscale_serve_current_targets": sorted(serve_current_targets),
+        "tailscale_serve_points_to_foreign_target": serve_points_to_foreign_target,
+        "tailscale_expected_serve_target": expected_serve_target,
         "local_url": f"http://127.0.0.1:{port}",
         "tailscale_ip": tailscale_ip,
         "tailscale_url": f"http://{tailscale_ip}:{port}" if tailscale_ip else "",
@@ -1655,6 +1673,8 @@ def _execute_action(action: str, payload: dict | None = None) -> dict:
             preferences=_payload_text(payload, "preferences"),
             constraints=_payload_text(payload, "constraints"),
         )}
+    if action == "set_timezone":
+        return {"result": set_timezone(_payload_text(payload, "timezone"))}
     if action == "save_note":
         return {"result": save_note_text(
             title=_payload_text(payload, "title"),
@@ -1892,7 +1912,9 @@ def _execute_action(action: str, payload: dict | None = None) -> dict:
             https_enabled=bool(payload.get("https_enabled", DEFAULT_MOBILE_UI_HTTPS_ENABLED)),
         )}
     if action == "mobile_https_claim":
-        return {"result": claim_mobile_https_for_current_instance()}
+        return {"result": claim_mobile_https_for_current_instance(
+            override=bool((payload or {}).get("override")),
+        )}
     if action == "voice_settings":
         tts_provider = _payload_text(payload, "tts_provider", "edge") or "edge"
         return {"result": yarbis_voice.update_voice_settings_text(
@@ -2497,6 +2519,21 @@ details.advanced .form-grid { margin-top: 4px; }
 <script>
 let csrfToken = "";
 let appState = null;
+let _timezoneAutoDetected = false;
+async function maybeAutoDetectTimezone() {
+  if (_timezoneAutoDetected) return;
+  const profile = appState && appState.profile;
+  if (!profile || typeof profile.timezone === "undefined") return;
+  _timezoneAutoDetected = true;
+  if (profile.timezone) return;
+  let tz = "";
+  try { tz = Intl.DateTimeFormat().resolvedOptions().timeZone || ""; } catch (e) { tz = ""; }
+  if (!tz) return;
+  try {
+    await action("set_timezone", { timezone: tz });
+    if (appState.profile) appState.profile.timezone = tz;
+  } catch (e) { /* silencioso */ }
+}
 const validTabs = new Set(["home", "run", "context", "visual", "settings", "activity"]);
 let currentTab = validTabs.has(window.location.hash.replace("#", "")) ? window.location.hash.replace("#", "") : "home";
 let refreshInFlight = false;
@@ -2836,10 +2873,13 @@ function liveRecordingBlockReason() {
   const expectedSecureUrl = mobile.tailscale_https_url || "";
   if (!window.isSecureContext) {
     if (secureUrl) return `Abre Yarbis desde el enlace HTTPS para usar el microfono: ${secureUrl}`;
-    if (mobile.https_last_error) return `HTTPS de Tailscale no esta listo: ${mobile.https_last_error}`;
+    if (mobile.https_pending_reason === "serve_foreign_target") {
+      return "El HTTPS de Tailscale apunta a otro servicio. En Ajustes > UI movil pulsa \"Re-apuntar HTTPS a esta instancia\" y luego abre el enlace HTTPS en el iPhone.";
+    }
     if (mobile.https_pending_reason === "tailscale_https_cert_missing") {
       return "Activa HTTPS Certificates en Tailscale Admin > DNS para usar el microfono en iPhone.";
     }
+    if (mobile.https_last_error) return `HTTPS de Tailscale no esta listo: ${mobile.https_last_error}`;
     if (expectedSecureUrl) return `El enlace HTTPS de Tailscale todavia no esta listo: ${expectedSecureUrl}`;
     return "Abre Yarbis desde el enlace HTTPS de Tailscale para usar el microfono.";
   }
@@ -3377,6 +3417,7 @@ function mergeState(nextState) {
       }
     }
   };
+  maybeAutoDetectTimezone();
 }
 
 function statePath(view = "") {
@@ -3614,6 +3655,7 @@ function renderContext() {
         <div><label>Rol</label><input id="profileRole" value="${escapeHtml(profile.role || "")}"></div>
         <div><label>Preferencias</label><textarea id="profilePrefs">${escapeHtml((profile.preferences || []).join("\n"))}</textarea></div>
         <div><label>Restricciones</label><textarea id="profileConstraints">${escapeHtml((profile.constraints || []).join("\n"))}</textarea></div>
+        <div><label>Zona horaria (IANA, ej. America/Mexico_City)</label><input id="profileTimezone" value="${escapeHtml(profile.timezone || "")}" placeholder="vacio = zona del sistema"></div>
         <button data-action="save-profile">Guardar perfil</button>
       </div>
     </section>
@@ -4048,10 +4090,14 @@ function renderSettings() {
   const voice = appState.voice || {};
   const live = voice.live_conversation || {};
   const activeUrls = mobile.active_urls || [];
+  const serveTargets = (mobile.tailscale_serve_current_targets || []).join(", ");
+  const foreignServe = mobile.https_pending_reason === "serve_foreign_target";
   const mobileUrlText = [
-    mobile.secure_url || activeUrls[0] || mobile.tailscale_url || mobile.local_url || "",
-    mobile.secure_url ? "HTTPS activa en esta instancia." : "",
-    mobile.tailscale_https_url && !mobile.secure_url ? `HTTPS disponible, pero apunta a otra instancia o aun esta pendiente: ${mobile.tailscale_https_url}` : "",
+    mobile.secure_url ? `Enlace iPhone (Safari): ${mobile.secure_url}` : (activeUrls[0] || mobile.tailscale_url || mobile.local_url || ""),
+    mobile.secure_url ? "HTTPS activa en esta instancia. Abre ese enlace en el iPhone para el microfono." : "",
+    mobile.tailscale_dns_name ? `Tailscale DNS: ${mobile.tailscale_dns_name} | certificado HTTPS: ${mobile.tailscale_https_supported ? "OK" : "falta (Admin > DNS > HTTPS Certificates)"}` : "",
+    foreignServe ? `Tailscale Serve apunta a ${serveTargets || "otro puerto"} y NO a esta UI (${mobile.tailscale_expected_serve_target || ("http://127.0.0.1:" + (mobile.port || ""))}). Pulsa "Re-apuntar HTTPS a esta instancia".` : "",
+    mobile.tailscale_https_url && !mobile.secure_url && !foreignServe ? `HTTPS disponible, pero apunta a otra instancia o aun esta pendiente: ${mobile.tailscale_https_url}` : "",
     mobile.https_pending_reason === "tailscale_https_cert_missing" ? "Activa HTTPS Certificates en Tailscale Admin > DNS." : "",
     mobile.https_last_error ? `HTTPS iPhone: ${mobile.https_last_error}` : "",
     mobile.last_bind_error || ""
@@ -4142,6 +4188,7 @@ function renderSettings() {
         <div class="panel"><pre>${escapeHtml(mobileUrlText)}</pre></div>
         <button data-action="save-mobile">Guardar UI movil</button>
         <button data-action="claim-mobile-https">Usar HTTPS aqui</button>
+        ${foreignServe ? `<button data-action="claim-mobile-https-override" class="danger">Re-apuntar HTTPS a esta instancia</button>` : ""}
       </div>
     </section>
     <section class="section">
@@ -4437,6 +4484,7 @@ document.addEventListener("click", async (event) => {
         preferences: $("profilePrefs").value,
         constraints: $("profileConstraints").value
       });
+      if ($("profileTimezone")) await action("set_timezone", { timezone: $("profileTimezone").value });
     } else if (name === "save-note") {
       await action("save_note", { title: $("noteTitle").value, category: $("noteCategory").value, content: $("noteContent").value });
     } else if (name === "add-task") {
@@ -4624,6 +4672,10 @@ document.addEventListener("click", async (event) => {
         job_timeout_seconds: $("mobileJobTimeout").value,
         pin: $("mobilePin").value
       });
+    } else if (name === "claim-mobile-https-override") {
+      if (await askConfirm("Re-apuntar HTTPS", "Tailscale Serve apunta a otro servicio. ¿Re-apuntar el HTTPS del tailnet a esta instancia de Yarbis?")) {
+        await action("mobile_https_claim", { override: true });
+      }
     } else if (name === "claim-mobile-https") {
       await action("mobile_https_claim");
     } else if (name === "save-communication") {

@@ -113,6 +113,7 @@ from tools import (
     update_memory_protection_settings,
     update_project_visual_board,
     update_profile,
+    set_timezone,
     update_task_status,
     verify_memory_backups,
     web_search,
@@ -259,8 +260,24 @@ def _format_utc_offset(moment: datetime) -> str:
     return f"UTC{sign}{hours:02d}:{minutes:02d}"
 
 
-def _format_local_temporal_context(now: datetime | None = None) -> str:
-    local_now = (now or datetime.now()).astimezone()
+def _resolve_user_timezone(timezone_str: str):
+    cleaned = str(timezone_str or "").strip()
+    if not cleaned:
+        return None
+    try:
+        from zoneinfo import ZoneInfo
+
+        return ZoneInfo(cleaned)
+    except Exception:
+        return None
+
+
+def _format_local_temporal_context(now: datetime | None = None, timezone_str: str = "") -> str:
+    tz = _resolve_user_timezone(timezone_str)
+    if tz is not None:
+        local_now = (now or datetime.now(tz=tz)).astimezone(tz)
+    else:
+        local_now = (now or datetime.now()).astimezone()
     weekday = _SPANISH_WEEKDAYS[local_now.weekday()]
     utc_now = local_now.astimezone(timezone.utc)
     tz_name = local_now.tzname()
@@ -752,6 +769,7 @@ _client_lock = threading.RLock()
 tool_definitions = [
     agent_overview,
     update_profile,
+    set_timezone,
     update_internet_settings,
     request_user_input,
     save_note,
@@ -850,6 +868,7 @@ tool_definitions = [
 available_functions = {
     "agent_overview": agent_overview,
     "update_profile": update_profile,
+    "set_timezone": set_timezone,
     "update_internet_settings": update_internet_settings,
     "request_user_input": request_user_input,
     "save_note": save_note,
@@ -948,6 +967,7 @@ available_functions = {
 PROACTIVE_SAFE_TOOL_NAMES = {
     "agent_overview",
     "update_profile",
+    "set_timezone",
     "request_user_input",
     "save_note",
     "list_notes",
@@ -1010,6 +1030,7 @@ PROACTIVE_SAFE_TOOL_NAMES = {
 
 ACTION_PROOF_TOOL_NAMES = {
     "update_profile",
+    "set_timezone",
     "update_internet_settings",
     "update_memory_protection_settings",
     "request_user_input",
@@ -1571,7 +1592,8 @@ def build_messages(state):
             "Pendiente de autoanalisis. Usa `self` para refrescar identidad, "
             "codigo fuente, sistema operativo y hardware."
         )
-    temporal_context = _format_local_temporal_context()
+    user_timezone = str(state.get("profile", {}).get("timezone", "")).strip()
+    temporal_context = _format_local_temporal_context(timezone_str=user_timezone)
     learned_directives = _render_learned_directives(state)
 
     second_system = (

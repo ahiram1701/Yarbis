@@ -331,6 +331,7 @@ def default_state():
             "role": "",
             "preferences": [],
             "constraints": [],
+            "timezone": "",
         },
         "notes": [],
         "tasks": [],
@@ -1049,6 +1050,21 @@ def _normalize_idea_project(project):
     }
 
 
+def _normalize_timezone(value) -> str:
+    """Valida una zona horaria IANA (p.ej. 'America/Mexico_City'). Devuelve la
+    cadena si es valida; '' si es invalida o vacia (usar la del sistema)."""
+    cleaned = _coerce_text(value, 64).strip()
+    if not cleaned:
+        return ""
+    try:
+        from zoneinfo import ZoneInfo
+
+        ZoneInfo(cleaned)
+    except Exception:
+        return ""
+    return cleaned
+
+
 def _normalize_profile(profile):
     if not isinstance(profile, dict):
         profile = {}
@@ -1066,6 +1082,7 @@ def _normalize_profile(profile):
             item_limit=MAX_PROFILE_ITEMS,
             char_limit=MAX_PROFILE_ITEM_CHARS,
         ),
+        "timezone": _normalize_timezone(profile.get("timezone", "")),
     }
 
 

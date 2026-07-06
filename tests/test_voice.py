@@ -243,3 +243,29 @@ class VoiceEdgeTtsTestCase(unittest.TestCase):
         self.assertEqual(v["edge_rate"], 40)
         self.assertEqual(v["edge_pitch"], -15)
         self.assertEqual(v["edge_volume"], 30)
+
+
+class VoiceTextCleanTestCase(unittest.TestCase):
+    def test_clean_text_for_tts_strips_emoji_and_markdown(self):
+        import voice
+
+        out = voice._clean_text_for_tts("¡Listo ✅! Revisa **esto** #importante \U0001F680")
+        self.assertNotIn("*", out)
+        self.assertNotIn("#", out)
+        self.assertNotIn("✅", out)
+        self.assertNotIn("\U0001F680", out)
+        self.assertIn("Listo", out)
+        self.assertIn("esto", out)
+        self.assertIn("importante", out)
+
+    def test_clean_text_for_tts_keeps_accents_and_punctuation(self):
+        import voice
+
+        out = voice._clean_text_for_tts("¿Cómo estás, niño? ¡Bien!")
+        self.assertEqual(out, "¿Cómo estás, niño? ¡Bien!")
+
+    def test_clean_text_for_tts_removes_list_markers(self):
+        import voice
+
+        out = voice._clean_text_for_tts("- uno\n- dos")
+        self.assertEqual(out, "uno\ndos")

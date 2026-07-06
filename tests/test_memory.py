@@ -37,6 +37,19 @@ class MemoryTestCase(unittest.TestCase):
     def test_default_state_has_empty_media_inbox(self):
         self.assertEqual(memory.default_state()["social"]["media_inbox"], [])
 
+    def test_normalize_timezone_validates_iana(self):
+        self.assertEqual(memory._normalize_timezone("America/Mexico_City"), "America/Mexico_City")
+        self.assertEqual(memory._normalize_timezone("Europe/Madrid"), "Europe/Madrid")
+        self.assertEqual(memory._normalize_timezone("Nowhere/Fake"), "")
+        self.assertEqual(memory._normalize_timezone(""), "")
+
+    def test_profile_normalize_keeps_valid_timezone_and_drops_invalid(self):
+        self.assertEqual(memory.default_state()["profile"]["timezone"], "")
+        valid = memory.normalize_state({"profile": {"timezone": "America/Mexico_City"}})
+        self.assertEqual(valid["profile"]["timezone"], "America/Mexico_City")
+        invalid = memory.normalize_state({"profile": {"timezone": "Fake/Zone"}})
+        self.assertEqual(invalid["profile"]["timezone"], "")
+
     def _memory_protection_paths(self, name: str):
         base = TEST_RUNTIME_DIR / "memory_protection" / f"{name}-{uuid4().hex[:8]}"
         base.mkdir(parents=True, exist_ok=True)

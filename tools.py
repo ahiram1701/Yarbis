@@ -4458,6 +4458,52 @@ def update_profile(
     )
 
 
+def set_timezone(timezone: str = "") -> str:
+    """
+    Configura la zona horaria del usuario para que Yarbis interprete bien hoy,
+    manana, ayer, horarios y la hora actual. Formato IANA (p.ej. America/Mexico_City).
+
+    Args:
+        timezone (str): Zona IANA (America/Mexico_City, Europe/Madrid, etc.).
+            Vacio o CLEAR para volver a la zona del sistema.
+
+    Returns:
+        str: Confirmacion con la hora local resultante.
+    """
+    raw = str(timezone).strip()
+    if not raw or raw == CLEAR_VALUE:
+        cleaned = ""
+    else:
+        try:
+            from zoneinfo import ZoneInfo
+
+            ZoneInfo(raw)
+            cleaned = raw
+        except Exception:
+            return (
+                f"Zona horaria invalida: {raw}. Usa formato IANA como "
+                "America/Mexico_City, Europe/Madrid o America/Argentina/Buenos_Aires."
+            )
+
+    def mutate(state):
+        state["profile"]["timezone"] = cleaned
+
+    state_transaction("set_timezone", mutate)
+
+    if cleaned:
+        from zoneinfo import ZoneInfo
+
+        now_local = datetime.now(ZoneInfo(cleaned))
+        zona = cleaned
+    else:
+        now_local = datetime.now().astimezone()
+        zona = f"sistema ({now_local.tzname()})"
+    return (
+        f"Zona horaria configurada: {zona}.\n"
+        f"Hora local ahora: {now_local.strftime('%Y-%m-%d %H:%M')}."
+    )
+
+
 def request_user_input(question: str, reason: str = "", missing_fields: str = "") -> str:
     """
     Registra una pregunta pendiente para que el usuario complete informacion faltante.

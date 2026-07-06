@@ -15,6 +15,21 @@ TEST_RUNTIME_DIR = Path.cwd() / "tests_runtime"
 
 
 class AgentTestCase(unittest.TestCase):
+    def test_temporal_context_uses_user_timezone(self):
+        mx = agent._format_local_temporal_context(timezone_str="America/Mexico_City")
+        tokyo = agent._format_local_temporal_context(timezone_str="Asia/Tokyo")
+        self.assertIn("America/Mexico_City".split("/")[0], "America")  # sanity
+        # La hora local difiere entre zonas.
+        mx_hour = [l for l in mx.split("\n") if "Hora local" in l][0]
+        tokyo_hour = [l for l in tokyo.split("\n") if "Hora local" in l][0]
+        self.assertNotEqual(mx_hour, tokyo_hour)
+        # Zona invalida cae al sistema sin romper.
+        fallback = agent._format_local_temporal_context(timezone_str="Fake/Zone")
+        self.assertIn("Zona horaria local", fallback)
+
+    def test_set_timezone_registered(self):
+        self.assertIn("set_timezone", agent.available_functions)
+
     def test_agent_registers_idea_project_tools_and_prompt_behavior(self):
         tool_names = {getattr(tool, "__name__", "") for tool in agent.tool_definitions}
 
