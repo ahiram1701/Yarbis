@@ -392,6 +392,7 @@ def start_mobile_session(settings: dict | None = None) -> dict:
         "spoken_turn_id": "",
         "awaiting_command": False,
         "armed_until": 0.0,
+        "wake_detected": False,
         "created_at": _utc_now_text(),
         "updated_at": _utc_now_text(),
         "updated_monotonic": time.time(),
@@ -490,9 +491,11 @@ def append_mobile_audio_chunk(
             session["detail"] = f"Te escuché ('{transcript}'), pero di '{wake_phrase}' para empezar."
             session["awaiting_command"] = False
             session["armed_until"] = 0.0
+            session["wake_detected"] = False
             return dict(session)
         session["state"] = STATE_THINKING
         session["detail"] = "Yarbis está preparando una respuesta."
+        session["wake_detected"] = True
 
     turn_transcript = transcript if activation_detected else f"{wake_phrase} {transcript}"
     result = process_voice_turn(

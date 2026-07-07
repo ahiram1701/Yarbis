@@ -313,3 +313,19 @@ class VoiceConversationLiveImprovementsTestCase(unittest.TestCase):
                 session["id"], b"b", mime_type="audio/webm", settings=settings, runner=runner)
         self.assertEqual(second["state"], voice_conversation.STATE_WAKE_LISTENING)
         self.assertEqual(runner.call_count, 1)
+
+
+class VoiceConversationCueSignalsTestCase(unittest.TestCase):
+    def test_mobile_chunk_reports_wake_detected_flag(self):
+        settings = {"voice": {"enabled": True, "live_conversation": {"wake_phrase": "Yarbis", "continuous": False}}}
+        session = voice_conversation.start_mobile_session(settings)
+        runner = Mock(return_value="Yarbis:\nHecho.")
+        with patch.object(voice_conversation, "transcribe_live_audio_bytes", return_value="Yarbis dame algo"):
+            accepted = voice_conversation.append_mobile_audio_chunk(
+                session["id"], b"a", mime_type="audio/webm", settings=settings, runner=runner)
+        self.assertTrue(accepted["wake_detected"])
+        # Sin la palabra de activacion (y sin ventana continua) -> wake_detected False.
+        with patch.object(voice_conversation, "transcribe_live_audio_bytes", return_value="hola que tal"):
+            rejected = voice_conversation.append_mobile_audio_chunk(
+                session["id"], b"b", mime_type="audio/webm", settings=settings, runner=runner)
+        self.assertFalse(rejected["wake_detected"])

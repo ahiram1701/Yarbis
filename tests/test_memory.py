@@ -41,10 +41,12 @@ class MemoryTestCase(unittest.TestCase):
         lc = memory.default_state()["voice"]["live_conversation"]
         self.assertTrue(lc["continuous"])
         self.assertEqual(lc["hold_seconds"], memory.DEFAULT_VOICE_LIVE_HOLD_SECONDS)
-        norm = memory.normalize_state({"voice": {"live_conversation": {"continuous": False, "hold_seconds": 999}}})
+        self.assertTrue(lc["cues"])
+        norm = memory.normalize_state({"voice": {"live_conversation": {"continuous": False, "hold_seconds": 999, "cues": False}}})
         lc2 = norm["voice"]["live_conversation"]
         self.assertFalse(lc2["continuous"])
         self.assertEqual(lc2["hold_seconds"], memory.MAX_VOICE_LIVE_HOLD_SECONDS)
+        self.assertFalse(lc2["cues"])
 
     def test_normalize_timezone_validates_iana(self):
         self.assertEqual(memory._normalize_timezone("America/Mexico_City"), "America/Mexico_City")

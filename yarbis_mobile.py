@@ -1973,6 +1973,7 @@ def _execute_action(action: str, payload: dict | None = None) -> dict:
             live_max_turn_seconds=payload.get("live_max_turn_seconds"),
             live_continuous=bool(payload.get("live_continuous", True)),
             live_hold_seconds=payload.get("live_hold_seconds"),
+            live_cues=bool(payload.get("live_cues", True)),
             live_auto_speak=bool(payload.get("live_auto_speak", True)),
             live_barge_in=bool(payload.get("live_barge_in", True)),
         )}
@@ -2652,6 +2653,44 @@ function teardownLiveVoiceAnalyser() {
   liveVoiceAudioCtx = null;
   liveVoiceVadBuffer = null;
 }
+
+let liveCueCtx = null;
+function liveCuesEnabled() {
+  const live = (appState && appState.voice && appState.voice.live_conversation) || {};
+  return live.cues !== false;
+}
+async function ensureCueCtx() {
+  try {
+    const Ctx = window.AudioContext || window.webkitAudioContext;
+    if (!Ctx) return null;
+    if (!liveCueCtx || liveCueCtx.state === "closed") liveCueCtx = new Ctx();
+    if (liveCueCtx.state === "suspended") { try { await liveCueCtx.resume(); } catch (_e) {} }
+    return liveCueCtx;
+  } catch (_e) { return null; }
+}
+async function playLiveVoiceCue(kind) {
+  if (!liveCuesEnabled()) return;
+  const ctx = await ensureCueCtx();
+  if (!ctx) return;
+  const t0 = ctx.currentTime;
+  const beep = (freq, start, dur, peak) => {
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.type = "sine";
+    osc.frequency.value = freq;
+    const at = t0 + start;
+    gain.gain.setValueAtTime(0.0001, at);
+    gain.gain.exponentialRampToValueAtTime(peak || 0.08, at + 0.015);
+    gain.gain.exponentialRampToValueAtTime(0.0001, at + dur);
+    osc.connect(gain); gain.connect(ctx.destination);
+    osc.start(at); osc.stop(at + dur + 0.03);
+  };
+  if (kind === "wake") { beep(660, 0, 0.10, 0.09); beep(990, 0.10, 0.15, 0.09); }
+  else if (kind === "captured") { beep(520, 0, 0.07, 0.045); }
+  else if (kind === "nope") { beep(400, 0, 0.12, 0.05); beep(300, 0.12, 0.16, 0.05); }
+  else if (kind === "start") { beep(587, 0, 0.10, 0.08); beep(880, 0.10, 0.15, 0.08); }
+  else if (kind === "stop") { beep(500, 0, 0.10, 0.06); beep(360, 0.11, 0.16, 0.06); }
+}
 const $ = (id) => document.getElementById(id);
 
 function escapeHtml(value) {
@@ -3164,6 +3203,7 @@ async function startLiveVoice() {
     liveVoiceLastSpokenTurnId = "";
     liveVoiceLastSpokenText = "";
     startLiveVoiceSegment();
+    await playLiveVoiceCue("start");
     toast("Conversación en vivo activa");
     renderCurrent();
   } catch (error) {
@@ -3209,6 +3249,7 @@ async function startLiveVoiceSegment() {
       return;
     }
     liveVoiceBusy = true;
+    playLiveVoiceCue("captured");
     try {
       const blob = audioBlobFromChunks(chunks, recorder);
       const bytes = new Uint8Array(await blob.arrayBuffer());
@@ -3225,6 +3266,9 @@ async function startLiveVoiceSegment() {
       csrfToken = chunk.csrf || csrfToken;
       const sessionState = chunk.voice_session || {};
       window._lastLiveVoiceSession = sessionState;
+      // Confirmacion de activacion: chime si reconocio, tono bajo si no.
+      if (sessionState.wake_detected) playLiveVoiceCue("wake");
+      else playLiveVoiceCue("nope");
       const spoken = liveVoiceSpeechText(sessionState);
       if (spoken) await speakLiveVoiceText(spoken);
     } catch (error) {
@@ -3307,6 +3351,7 @@ function stopLiveVoiceTracks() {
 
 async function stopLiveVoice() {
   const sessionId = liveVoiceSessionId;
+  playLiveVoiceCue("stop");
   stopLiveVoiceTracks();
   liveVoiceSessionId = "";
   liveVoiceLastSpokenTurnId = "";
@@ -3489,6 +3534,7 @@ async function saveVoiceSettings(providerOverride = null, edgeVoiceOverride = nu
     live_max_turn_seconds: $("liveMaxTurnSeconds") ? $("liveMaxTurnSeconds").value : 45,
     live_continuous: $("liveContinuous") ? $("liveContinuous").checked : true,
     live_hold_seconds: $("liveHoldSeconds") ? $("liveHoldSeconds").value : 12,
+    live_cues: $("liveCues") ? $("liveCues").checked : true,
     live_auto_speak: $("liveAutoSpeak") ? $("liveAutoSpeak").checked : true,
     live_barge_in: $("liveBargeIn") ? $("liveBargeIn").checked : true
   });
@@ -4429,6 +4475,7 @@ function renderSettings() {
             <div><label>Turno max segundos</label><input id="liveMaxTurnSeconds" type="number" min="3" max="300" value="${escapeHtml(live.max_turn_seconds || 45)}"></div>
             <label><input id="liveContinuous" type="checkbox" ${live.continuous === false ? "" : "checked"}> Conversacion continua (no repetir la activacion)</label>
             <div><label>Ventana continua (segundos)</label><input id="liveHoldSeconds" type="number" min="3" max="120" value="${escapeHtml(live.hold_seconds || 12)}"></div>
+            <label><input id="liveCues" type="checkbox" ${live.cues === false ? "" : "checked"}> Sonidos de confirmacion (activacion, capté, etc.)</label>
             <label><input id="liveAutoSpeak" type="checkbox" ${live.auto_speak === false ? "" : "checked"}> Responder con voz automaticamente</label>
             <label><input id="liveBargeIn" type="checkbox" ${live.barge_in === false ? "" : "checked"}> Permitir interrupcion</label>
           </div>

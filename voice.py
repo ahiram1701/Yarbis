@@ -691,6 +691,7 @@ def update_voice_settings_text(
     live_max_turn_seconds=None,
     live_continuous: bool | None = None,
     live_hold_seconds=None,
+    live_cues: bool | None = None,
     live_auto_speak: bool | None = None,
     live_barge_in: bool | None = None,
 ) -> str:
@@ -792,6 +793,8 @@ def update_voice_settings_text(
             live["continuous"] = bool(live_continuous)
         if live_hold_seconds is not None:
             live["hold_seconds"] = _optional_int(live_hold_seconds, int(current_live.get("hold_seconds", 12)))
+        if live_cues is not None:
+            live["cues"] = bool(live_cues)
         if live_auto_speak is not None:
             live["auto_speak"] = bool(live_auto_speak)
         if live_barge_in is not None:

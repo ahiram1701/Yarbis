@@ -1143,6 +1143,11 @@ class YarbisMobileTestCase(unittest.TestCase):
         for needle in ("ensureLiveVoiceAnalyser", "selftest-live-voice", "liveContinuous", "selfTestLiveVoice"):
             self.assertIn(needle, html)
 
+    def test_html_includes_live_voice_cue_sounds(self):
+        html = yarbis_mobile._html_page()
+        for needle in ("playLiveVoiceCue", "liveCues", "wake_detected"):
+            self.assertIn(needle, html)
+
     def test_public_mobile_status_treats_known_other_instance_as_pending_not_error(self):
         settings = {
             "enabled": True,
