@@ -2426,7 +2426,7 @@ def _normalize_social_settings(settings):
     return {
         "meta_graph_version": meta_graph_version,
         "linkedin_version": linkedin_version,
-        "require_confirmation": True,
+        "require_confirmation": bool(settings.get("require_confirmation", defaults["require_confirmation"])),
     }
 
 

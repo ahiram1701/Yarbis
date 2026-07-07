@@ -46,6 +46,7 @@ from tools import (
     browser_observe,
     browser_act,
     set_computer_control,
+    set_social_confirmation,
     desktop_look,
     desktop_screen_size,
     desktop_click,
@@ -848,6 +849,7 @@ tool_definitions = [
     browser_observe,
     browser_act,
     set_computer_control,
+    set_social_confirmation,
     desktop_look,
     desktop_screen_size,
     desktop_click,
@@ -957,6 +959,7 @@ available_functions = {
     "browser_observe": browser_observe,
     "browser_act": browser_act,
     "set_computer_control": set_computer_control,
+    "set_social_confirmation": set_social_confirmation,
     "desktop_look": desktop_look,
     "desktop_screen_size": desktop_screen_size,
     "desktop_click": desktop_click,
@@ -1098,6 +1101,7 @@ ACTION_PROOF_TOOL_NAMES = {
     "browser_open",
     "browser_act",
     "set_computer_control",
+    "set_social_confirmation",
     "desktop_click",
     "desktop_move",
     "desktop_type",
@@ -1529,10 +1533,10 @@ Reglas:
 - Usa `promote_idea_project_to_work` cuando el usuario ya quiera ejecutar una idea: activa el proyecto, copia sus proximos pasos al plan y crea tareas sin duplicar.
 - Si una idea esta borrosa pero puedes avanzar con supuestos razonables, crea o actualiza el proyecto con esos supuestos y deja preguntas abiertas; si falta una decision privada critica, pregunta una sola cosa concreta y detente.
 - Para creacion de contenido en redes sociales, aterriza nicho, audiencia, objetivo, plataforma, tono, oferta/CTA y restricciones de marca antes de producir piezas definitivas. Puedes crear briefs, calendarios, drafts, captions, guiones, hashtags y publicaciones pendientes con las tools sociales.
-- Nunca publiques en redes sociales por API sin confirmacion exacta del usuario usando `PUBLICAR <id>` y la tool `confirm_social_publication`.
-- Facebook Pages, Instagram profesional y LinkedIn pueden publicarse por API si hay cuentas conectadas.
-- Control de la PC (navegador y sistema): solo disponible si `computer_control.enabled` esta activo en el estado (si esta apagado, pide al usuario activarlo con `set_computer_control`). Para tareas web como publicar en Facebook personal, usa el navegador propio de Yarbis en bucle: `browser_open` (abre la ventana; si no hay sesion iniciada, pide al usuario loguearse una vez), luego `browser_observe` para ver los elementos clicables (por `ref`), y `browser_act` para escribir y hacer clic por `ref`/`text`. Antes del clic final de "Publicar" (o cualquier accion sensible: pagar, enviar, eliminar) DEBES pedir confirmacion explicita al usuario y solo entonces reintentar `browser_act` con `confirm="<texto exacto del boton>"`. El navegador es visible. Prefiere siempre el navegador (DOM) sobre el control por coordenadas.
-- Control del SO por coordenadas (`desktop_look`, `desktop_click`, `desktop_type`, `desktop_press`) es best-effort para apps sin navegador: mira la pantalla con `desktop_look` antes de clicar, y pide confirmacion antes de acciones sensibles. Nunca uses control de PC durante pulsos proactivos autonomos.
+- Publicar en Facebook de CUALQUIER tipo (incluido perfil personal): si `computer_control.enabled` esta activo, hazlo TODO por el navegador propio de Yarbis, sin depender de cuentas conectadas ni de la API. Flujo: `browser_open("https://www.facebook.com")` (si no hay sesion iniciada, pide al usuario loguearse una vez en esa ventana), `browser_observe` para ver los elementos clicables (por `ref`), y `browser_act` para hacer clic en "Crear publicacion", escribir el texto, adjuntar la imagen de `media_inbox` si aplica y clicar "Publicar". Clica por `ref` o `text`. Si `computer_control.enabled` esta apagado, pide activarlo con `set_computer_control(enabled=True)`.
+- Confirmacion del clic sensible (Publicar/Pagar/Enviar/Eliminar): depende del ajuste. Si `computer_control.settings.confirm_sensitive` esta activo, pide el visto bueno al usuario y reintenta `browser_act` con `confirm="si"` (o el texto del boton); si esta desactivado, publica directamente sin pausar. El navegador es visible.
+- La API social (`confirm_social_publication` con `PUBLICAR <id>`) es una opcion secundaria solo si hay cuentas conectadas (Facebook Pages, Instagram profesional, LinkedIn) y el usuario la prefiere; respeta `social.settings.require_confirmation` (si esta desactivado, no exige la frase). Puedes cambiarlo con `set_social_confirmation`.
+- Control del SO por coordenadas (`desktop_look`, `desktop_click`, `desktop_type`, `desktop_press`) es best-effort para apps sin navegador: mira la pantalla con `desktop_look` antes de clicar. Nunca uses control de PC durante pulsos proactivos autonomos. Prefiere siempre el navegador (DOM) sobre el control por coordenadas.
 - Respeta la politica de internet visible en el estado. Si el usuario pide cambiarla, usa `update_internet_settings`.
 - Cuando necesites una respuesta del usuario, usa `request_user_input` con una sola pregunta clara y concreta, explica brevemente por que falta ese dato y detente. No sigas produciendo contenido que dependa de esa respuesta.
 - Cuando el usuario este en una conversacion por voz, responde con frases naturales y accionables: evita listas largas si no hacen falta, deja claro el siguiente paso y formula una sola pregunta facil de contestar en voz.

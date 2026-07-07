@@ -26,7 +26,7 @@ import yarbis_bus
 import memory as memory_store
 import voice as yarbis_voice
 import voice_conversation
-from tools import set_computer_control
+from tools import set_computer_control, set_social_confirmation
 from memory import (
     DEFAULT_OLLAMA_MODEL,
     DEFAULT_OLLAMA_TIMEOUT_SECONDS,
@@ -1490,6 +1490,8 @@ class YarbisDesktop(tk.Tk):
                 {"text": "Estado", "command": self._show_computer_control_status},
                 {"text": "Activar", "command": lambda: self._set_computer_control_enabled(True), "style": "Accent.TButton"},
                 {"text": "Desactivar", "command": lambda: self._set_computer_control_enabled(False)},
+                {"text": "Publicar sin confirmar", "command": lambda: self._set_publish_confirmation(False)},
+                {"text": "Pedir confirmación", "command": lambda: self._set_publish_confirmation(True)},
             ),
         )
         self._build_service_group(right)
@@ -1549,6 +1551,23 @@ class YarbisDesktop(tk.Tk):
             messagebox.showwarning("Control de la PC", f"No pude cambiar el estado: {exc}", parent=self)
             return
         messagebox.showinfo("Control de la PC", message, parent=self)
+        self.refresh_state_view()
+
+    def _set_publish_confirmation(self, require: bool):
+        if not require and not messagebox.askyesno(
+            "Publicaciones",
+            "Yarbis publicara (navegador y API) SIN pedir confirmacion. "
+            "Podria publicar algo por error. ¿Continuar?",
+            parent=self,
+        ):
+            return
+        try:
+            m1 = set_computer_control(confirm_sensitive=bool(require))
+            m2 = set_social_confirmation(enabled=bool(require))
+        except Exception as exc:
+            messagebox.showwarning("Publicaciones", f"No pude cambiar la confirmacion: {exc}", parent=self)
+            return
+        messagebox.showinfo("Publicaciones", f"{m1}\n{m2}", parent=self)
         self.refresh_state_view()
 
     def _set_evolution_interval(self):

@@ -50,7 +50,8 @@ class SocialFeatureTestCase(unittest.TestCase):
             }
         })
 
-        self.assertTrue(normalized["social"]["settings"]["require_confirmation"])
+        # require_confirmation ahora es configurable (antes estaba hardcodeado a True).
+        self.assertFalse(normalized["social"]["settings"]["require_confirmation"])
         self.assertEqual(normalized["social"]["accounts"][0]["platform"], "linkedin")
         self.assertEqual(normalized["social"]["drafts"][0]["hashtags"], ["yarbis", "ia"])
         self.assertEqual(
@@ -122,6 +123,35 @@ class SocialFeatureTestCase(unittest.TestCase):
         self.assertNotIn("page-token", str(state["social"]))
         self.assertTrue(any(account["platform"] == "facebook_personal" for account in state["social"]["accounts"]))
         self.assertTrue(any(account["platform"] == "instagram" for account in state["social"]["accounts"]))
+
+    def test_set_social_confirmation_and_publish_without_phrase_when_disabled(self):
+        state_path = TEST_RUNTIME_DIR / f"social_noconfirm_state_{id(self)}.json"
+        credential_dir = TEST_RUNTIME_DIR / f"credentials_noconfirm_{id(self)}"
+        with patch.object(memory, "STATE_FILE", state_path):
+            with patch.object(credential_store, "CREDENTIALS_DIR", credential_dir):
+                token_ref = credential_store.save_secret("page-token", kind="social")
+                state = memory.default_state()
+                state["social"]["accounts"].append({
+                    "id": "acct-page",
+                    "platform": "facebook_page",
+                    "account_type": "facebook_page",
+                    "display_name": "Page",
+                    "external_id": "page-1",
+                    "token_ref": token_ref,
+                })
+                memory.save_state(state)
+                self.assertIn("desactivada", tools.set_social_confirmation(False).lower())
+                self.assertFalse(memory.load_state()["social"]["settings"]["require_confirmation"])
+                prepared = tools.prepare_social_publication(
+                    platform="facebook_page", target_account_id="acct-page", title="Post", body="Hola",
+                )
+                publication_id = prepared.split("[", 1)[1].split("]", 1)[0]
+                with patch("social_publishing._http_json", return_value={"id": "page-1_1"}) as http_mock:
+                    published = tools.confirm_social_publication(publication_id, "")
+                state_after = memory.load_state()
+        self.assertIn("Publicacion social completada", published)
+        self.assertEqual(http_mock.call_count, 1)
+        self.assertEqual(state_after["social"]["history"][0]["status"], "published")
 
     def test_confirm_social_publication_requires_exact_phrase_before_posting(self):
         state_path = TEST_RUNTIME_DIR / f"social_publish_state_{id(self)}.json"

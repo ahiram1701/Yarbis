@@ -22,6 +22,25 @@ _SENSITIVE_CLICK = re.compile(
     r"aceptar\s+y\s+pagar)\b",
     re.IGNORECASE,
 )
+# Afirmativos que valen como confirmacion del usuario para una accion sensible.
+_AFFIRMATIVE_CONFIRM = {
+    "si", "sí", "yes", "ok", "okay", "confirmo", "confirmar", "confirmado",
+    "publicar", "publica", "publicalo", "adelante", "hazlo", "dale", "procede", "aprobado",
+}
+
+
+def _confirm_satisfies(confirm_text: str, label: str) -> bool:
+    """Confirmacion robusta: acepta un afirmativo o una coincidencia laxa con el
+    texto del boton (evita el bloqueo permanente por match exacto fragil)."""
+    ct = str(confirm_text or "").strip().lower()
+    if not ct:
+        return False
+    if ct in _AFFIRMATIVE_CONFIRM:
+        return True
+    lab = str(label or "").strip().lower()
+    if not lab:
+        return True  # el usuario dio una confirmacion y no conocemos el label
+    return ct == lab or ct in lab or lab in ct
 
 
 def _persistent_profile_dir() -> Path:
@@ -477,7 +496,12 @@ def observe_browser(screenshot: bool = False, settings: dict | None = None, work
                 browser.close()
 
 
-def act_on_live_page(actions_json: str = "", confirm: str = "", workspace_root: Path | None = None) -> str:
+def act_on_live_page(
+    actions_json: str = "",
+    confirm: str = "",
+    confirm_sensitive: bool = True,
+    workspace_root: Path | None = None,
+) -> str:
     workspace_root = workspace_root or Path.cwd()
     actions = _normalize_actions(actions_json)
     if not actions:
@@ -502,11 +526,11 @@ def act_on_live_page(actions_json: str = "", confirm: str = "", workspace_root: 
                                 label = (locator.inner_text(timeout=2000) or "").strip()
                             except Exception:
                                 label = str(action.get("text", "")).strip()
-                            if _SENSITIVE_CLICK.search(label) and confirm_text.lower() != label.lower():
+                            if confirm_sensitive and _SENSITIVE_CLICK.search(label) and not _confirm_satisfies(confirm_text, label):
                                 return (
                                     f"BLOQUEADO por seguridad: '{label or desc}' parece una accion sensible "
-                                    "(publicar/pagar/enviar/eliminar). Pide confirmacion al usuario y reintenta el "
-                                    f'click con confirm="{label}".'
+                                    "(publicar/pagar/enviar/eliminar). Pide el visto bueno al usuario y reintenta el "
+                                    f'click con confirm="{label}" (o confirm="si").'
                                 )
                             locator.click()
                             lines.append(f"{index}. click {desc} ({label[:40]})")

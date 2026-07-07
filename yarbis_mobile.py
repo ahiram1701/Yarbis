@@ -109,6 +109,7 @@ from tools import (
     get_note,
     open_assisted_social_post,
     set_computer_control,
+    set_social_confirmation,
     set_plan,
     set_timezone,
     update_internet_settings,
@@ -1488,6 +1489,7 @@ def _public_settings_state(state: dict) -> dict:
         "notifications": _public_notifications(state.get("notifications", {})),
         "voice": state.get("voice", {}),
         "computer_control": state.get("computer_control", {}),
+        "social_require_confirmation": bool(state.get("social", {}).get("settings", {}).get("require_confirmation", True)),
         "social": social,
         "social_accounts_text": _mobile_social_accounts_text(state),
         "social_drafts_text": f"Drafts: {social.get('drafts_count', 0)}",
@@ -1721,6 +1723,8 @@ def _execute_action(action: str, payload: dict | None = None) -> dict:
             os_control=bool(payload.get("os_control", True)),
             confirm_sensitive=bool(payload.get("confirm_sensitive", True)),
         )}
+    if action == "social_confirmation":
+        return {"result": set_social_confirmation(enabled=bool(payload.get("enabled", True)))}
     if action == "save_note":
         return {"result": save_note_text(
             title=_payload_text(payload, "title"),
@@ -4404,7 +4408,9 @@ function renderSettings() {
         <div class="muted">Permite que Yarbis maneje el navegador (y el sistema) para tareas como publicar en Facebook. Apagado por defecto. Las acciones sensibles (Publicar, Pagar, Enviar) piden confirmacion.</div>
         <label><input id="ccEnabled" type="checkbox" ${cc.enabled ? "checked" : ""}> Activar control de la PC</label>
         <label><input id="ccOsControl" type="checkbox" ${ccs.os_control === false ? "" : "checked"}> Permitir control del sistema (mouse/teclado)</label>
-        <label><input id="ccConfirmSensitive" type="checkbox" ${ccs.confirm_sensitive === false ? "" : "checked"}> Confirmar antes de acciones sensibles</label>
+        <label><input id="ccConfirmSensitive" type="checkbox" ${ccs.confirm_sensitive === false ? "" : "checked"}> Confirmar antes de acciones sensibles (Publicar, Pagar, Enviar)</label>
+        <label><input id="ccSocialConfirm" type="checkbox" ${appState.social_require_confirmation === false ? "" : "checked"}> Pedir confirmacion antes de publicar por API (PUBLICAR id)</label>
+        <div class="muted">Apaga estas casillas para que Yarbis publique en Facebook (incluido perfil personal) sin pausar a confirmar.</div>
         <div><label>Navegador</label><select id="ccBrowserChannel"><option value="msedge">Edge</option><option value="chrome">Chrome</option><option value="brave">Brave</option></select></div>
         <button data-action="save-computer-control">Guardar control de PC</button>
       </div>
@@ -4910,6 +4916,7 @@ document.addEventListener("click", async (event) => {
         confirm_sensitive: $("ccConfirmSensitive").checked,
         browser_channel: $("ccBrowserChannel").value
       });
+      if ($("ccSocialConfirm")) await action("social_confirmation", { enabled: $("ccSocialConfirm").checked });
     } else if (name === "save-mobile") {
       await action("mobile_ui", {
         enabled: $("mobileEnabled").checked,

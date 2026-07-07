@@ -49,6 +49,26 @@ class ComputerControlTestCase(unittest.TestCase):
                 allowed = tools.desktop_click(1, 1, label="Publicar", confirm="Publicar")
             self.assertEqual(allowed, "ok")
 
+    def test_browser_act_passes_confirm_sensitive_from_state(self):
+        captured = {}
+
+        def fake_act(**kwargs):
+            captured.update(kwargs)
+            return "ok"
+
+        with patch.object(memory, "STATE_FILE", self._state_path()):
+            memory.save_state(memory.default_state())
+            tools.set_computer_control(enabled=True, confirm_sensitive=False)
+            with patch.object(tools, "act_on_live_page", side_effect=fake_act):
+                tools.browser_act('[{"action":"click","text":"Publicar"}]')
+        self.assertFalse(captured["confirm_sensitive"])
+
+    def test_confirm_satisfies_robust(self):
+        self.assertTrue(browser_automation._confirm_satisfies("si", "Publicar"))
+        self.assertTrue(browser_automation._confirm_satisfies("Publicar", "Publicar "))
+        self.assertFalse(browser_automation._confirm_satisfies("", "Publicar"))
+        self.assertFalse(browser_automation._confirm_satisfies("cancelar", "Publicar"))
+
     def test_sensitive_regex_matches_expected(self):
         for label in ("Publicar", "Pagar ahora", "Eliminar", "Compartir", "Enviar"):
             self.assertTrue(browser_automation._SENSITIVE_CLICK.search(label), label)

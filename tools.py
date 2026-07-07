@@ -12,6 +12,7 @@ from uuid import uuid4
 
 from atomic_io import atomic_replace
 from browser_automation import (
+    _confirm_satisfies,
     act_on_live_page,
     observe_browser,
     open_persistent_browser,
@@ -2982,6 +2983,27 @@ def set_computer_control(
     )
 
 
+def set_social_confirmation(enabled: bool = True) -> str:
+    """
+    Activa o desactiva la confirmacion obligatoria (PUBLICAR <id>) antes de publicar
+    en redes por API. Con enabled=False, confirm_social_publication publica sin exigir
+    la frase. No afecta la seguridad del control de PC (esa usa confirm_sensitive).
+
+    Args:
+        enabled (bool): True exige confirmacion; False publica sin confirmar.
+
+    Returns:
+        str: Estado resultante.
+    """
+    def mutate(state):
+        settings = state.setdefault("social", {}).setdefault("settings", {})
+        settings["require_confirmation"] = bool(enabled)
+
+    state_transaction("set_social_confirmation", mutate)
+    value = load_state().get("social", {}).get("settings", {}).get("require_confirmation", True)
+    return f"Confirmacion antes de publicar en redes (API): {'activada' if value else 'desactivada'}."
+
+
 def browser_open(url: str = "", channel: str = "") -> str:
     """
     Abre (o enfoca) el navegador propio de Yarbis, con ventana visible y sesion
@@ -3045,8 +3067,14 @@ def browser_act(actions_json: str = "", confirm: str = "") -> str:
     gate = _require_computer_control()
     if gate:
         return gate
+    confirm_sensitive = bool(_computer_control_state().get("settings", {}).get("confirm_sensitive", True))
     try:
-        return act_on_live_page(actions_json=actions_json, confirm=confirm, workspace_root=WORKSPACE_ROOT)
+        return act_on_live_page(
+            actions_json=actions_json,
+            confirm=confirm,
+            confirm_sensitive=confirm_sensitive,
+            workspace_root=WORKSPACE_ROOT,
+        )
     except Exception as exc:
         return f"No pude actuar en la pagina: {exc}"
 
@@ -3107,11 +3135,11 @@ def desktop_click(x: int, y: int, button: str = "left", clicks: int = 1, label: 
     if (
         _computer_control_state().get("settings", {}).get("confirm_sensitive", True)
         and computer_control.label_is_sensitive(lbl)
-        and str(confirm).strip().lower() != lbl.lower()
+        and not _confirm_satisfies(confirm, lbl)
     ):
         return (
             f"BLOQUEADO por seguridad: '{lbl}' parece una accion sensible. "
-            f'Pide confirmacion al usuario y reintenta con confirm="{lbl}".'
+            f'Pide el visto bueno al usuario y reintenta con confirm="{lbl}" (o confirm="si").'
         )
     try:
         return computer_control.click(x, y, button, clicks)
@@ -5727,11 +5755,13 @@ def confirm_social_publication(publication_id: str, confirmation: str) -> str:
     if not publication:
         return f"No encontre una publicacion social pendiente con id o prefijo: {publication_id}"
 
+    require_confirmation = bool(state.get("social", {}).get("settings", {}).get("require_confirmation", True))
     required = f"PUBLICAR {publication['id']}"
-    if str(confirmation).strip() != required:
+    if require_confirmation and str(confirmation).strip() != required:
         return (
             "Publicacion bloqueada por seguridad.\n"
-            f"Para confirmar, responde exactamente: {required}"
+            f"Para confirmar, responde exactamente: {required}\n"
+            "(O desactiva la confirmacion social con set_social_confirmation(False) / desde la UI.)"
         )
 
     platform = str(publication.get("platform", "")).strip().lower()
