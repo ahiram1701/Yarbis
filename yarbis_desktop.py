@@ -26,6 +26,7 @@ import yarbis_bus
 import memory as memory_store
 import voice as yarbis_voice
 import voice_conversation
+from tools import set_computer_control
 from memory import (
     DEFAULT_OLLAMA_MODEL,
     DEFAULT_OLLAMA_TIMEOUT_SECONDS,
@@ -1482,6 +1483,15 @@ class YarbisDesktop(tk.Tk):
                 {"text": "Modelo de visión", "command": self._show_vision_status},
             ),
         )
+        self._build_action_group(
+            left,
+            "Control de la PC",
+            (
+                {"text": "Estado", "command": self._show_computer_control_status},
+                {"text": "Activar", "command": lambda: self._set_computer_control_enabled(True), "style": "Accent.TButton"},
+                {"text": "Desactivar", "command": lambda: self._set_computer_control_enabled(False)},
+            ),
+        )
         self._build_service_group(right)
         self._build_action_group(
             right,
@@ -1508,6 +1518,37 @@ class YarbisDesktop(tk.Tk):
             messagebox.showwarning("Autoevolución", f"No pude cambiar el estado: {exc}", parent=self)
             return
         messagebox.showinfo("Autoevolución", message, parent=self)
+        self.refresh_state_view()
+
+    def _show_computer_control_status(self):
+        try:
+            cc = memory_store.load_state().get("computer_control", {})
+            s = cc.get("settings", {})
+            text = (
+                f"Control de la PC: {'activado' if cc.get('enabled') else 'desactivado'}.\n"
+                f"Navegador: {s.get('browser_channel', 'msedge')}\n"
+                f"Control del sistema (mouse/teclado): {'si' if s.get('os_control', True) else 'no'}\n"
+                f"Confirmar acciones sensibles: {'si' if s.get('confirm_sensitive', True) else 'no'}"
+            )
+        except Exception as exc:
+            messagebox.showwarning("Control de la PC", f"No pude leer el estado: {exc}", parent=self)
+            return
+        messagebox.showinfo("Control de la PC", text, parent=self)
+
+    def _set_computer_control_enabled(self, enabled: bool):
+        if enabled and not messagebox.askyesno(
+            "Control de la PC",
+            "Vas a permitir que Yarbis maneje el navegador y el sistema (mouse/teclado). "
+            "Las acciones sensibles (Publicar, Pagar, Enviar) pediran confirmacion. ¿Activar?",
+            parent=self,
+        ):
+            return
+        try:
+            message = set_computer_control(enabled=bool(enabled))
+        except Exception as exc:
+            messagebox.showwarning("Control de la PC", f"No pude cambiar el estado: {exc}", parent=self)
+            return
+        messagebox.showinfo("Control de la PC", message, parent=self)
         self.refresh_state_view()
 
     def _set_evolution_interval(self):

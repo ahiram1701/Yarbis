@@ -1148,6 +1148,22 @@ class YarbisMobileTestCase(unittest.TestCase):
         for needle in ("playLiveVoiceCue", "liveCues", "wake_detected"):
             self.assertIn(needle, html)
 
+    def test_computer_control_action_and_html(self):
+        html = yarbis_mobile._html_page()
+        for needle in ("Control de la PC", "ccEnabled", "save-computer-control"):
+            self.assertIn(needle, html)
+        state_path = TEST_RUNTIME_DIR / f"cc_ui_{id(self)}.json"
+        with patch.object(memory, "STATE_FILE", state_path):
+            memory.save_state(memory.default_state())
+            result = yarbis_mobile._execute_action("computer_control", {
+                "enabled": True, "os_control": False, "confirm_sensitive": True, "browser_channel": "chrome",
+            })
+            state = memory.load_state()["computer_control"]
+        self.assertIn("activado", result["result"].lower())
+        self.assertTrue(state["enabled"])
+        self.assertFalse(state["settings"]["os_control"])
+        self.assertEqual(state["settings"]["browser_channel"], "chrome")
+
     def test_public_mobile_status_treats_known_other_instance_as_pending_not_error(self):
         settings = {
             "enabled": True,

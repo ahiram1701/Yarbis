@@ -108,6 +108,7 @@ from tools import (
     delete_note,
     get_note,
     open_assisted_social_post,
+    set_computer_control,
     set_plan,
     set_timezone,
     update_internet_settings,
@@ -1486,6 +1487,7 @@ def _public_settings_state(state: dict) -> dict:
         "local_context": state.get("local_context", {}),
         "notifications": _public_notifications(state.get("notifications", {})),
         "voice": state.get("voice", {}),
+        "computer_control": state.get("computer_control", {}),
         "social": social,
         "social_accounts_text": _mobile_social_accounts_text(state),
         "social_drafts_text": f"Drafts: {social.get('drafts_count', 0)}",
@@ -1712,6 +1714,13 @@ def _execute_action(action: str, payload: dict | None = None) -> dict:
         )}
     if action == "set_timezone":
         return {"result": set_timezone(_payload_text(payload, "timezone"))}
+    if action == "computer_control":
+        return {"result": set_computer_control(
+            enabled=bool(payload.get("enabled", False)),
+            browser_channel=_payload_text(payload, "browser_channel"),
+            os_control=bool(payload.get("os_control", True)),
+            confirm_sensitive=bool(payload.get("confirm_sensitive", True)),
+        )}
     if action == "save_note":
         return {"result": save_note_text(
             title=_payload_text(payload, "title"),
@@ -4299,6 +4308,8 @@ function renderSettings() {
   const communication = appState.communication || ((appState.conversation || {}).communication || {});
   const voice = appState.voice || {};
   const live = voice.live_conversation || {};
+  const cc = appState.computer_control || {};
+  const ccs = cc.settings || {};
   const activeUrls = mobile.active_urls || [];
   const serveTargets = (mobile.tailscale_serve_current_targets || []).join(", ");
   const foreignServe = mobile.https_pending_reason === "serve_foreign_target";
@@ -4385,6 +4396,17 @@ function renderSettings() {
         <div><label>Fallbacks</label><textarea id="modelFallbacks">${escapeHtml((active.fallback_models || []).join("\n"))}</textarea></div>
         <div><label>Nueva API key</label><input id="modelApiKey" type="password" placeholder="${active.api_key_configured ? "guardada" : "sin configurar"}"></div>
         <button data-action="save-model">Guardar modelo</button>
+      </div>
+    </section>
+    <section class="section">
+      <h2>Control de la PC</h2>
+      <div class="setting-group form-grid wide">
+        <div class="muted">Permite que Yarbis maneje el navegador (y el sistema) para tareas como publicar en Facebook. Apagado por defecto. Las acciones sensibles (Publicar, Pagar, Enviar) piden confirmacion.</div>
+        <label><input id="ccEnabled" type="checkbox" ${cc.enabled ? "checked" : ""}> Activar control de la PC</label>
+        <label><input id="ccOsControl" type="checkbox" ${ccs.os_control === false ? "" : "checked"}> Permitir control del sistema (mouse/teclado)</label>
+        <label><input id="ccConfirmSensitive" type="checkbox" ${ccs.confirm_sensitive === false ? "" : "checked"}> Confirmar antes de acciones sensibles</label>
+        <div><label>Navegador</label><select id="ccBrowserChannel"><option value="msedge">Edge</option><option value="chrome">Chrome</option><option value="brave">Brave</option></select></div>
+        <button data-action="save-computer-control">Guardar control de PC</button>
       </div>
     </section>
     <section class="section">
@@ -4591,6 +4613,8 @@ function renderSettings() {
   if (telegramVoiceMode) telegramVoiceMode.value = voice.telegram_reply_mode || "auto";
   const ntfyPriority = $("ntfyPriority");
   if (ntfyPriority) ntfyPriority.value = ntfy.priority || "";
+  const ccBrowserChannel = $("ccBrowserChannel");
+  if (ccBrowserChannel) ccBrowserChannel.value = ((appState.computer_control || {}).settings || {}).browser_channel || "msedge";
 }
 
 function renderActivity() {
@@ -4878,6 +4902,13 @@ document.addEventListener("click", async (event) => {
         timeout_seconds: $("modelTimeout").value,
         fallback_models: $("modelFallbacks").value,
         api_key: $("modelApiKey").value
+      });
+    } else if (name === "save-computer-control") {
+      await action("computer_control", {
+        enabled: $("ccEnabled").checked,
+        os_control: $("ccOsControl").checked,
+        confirm_sensitive: $("ccConfirmSensitive").checked,
+        browser_channel: $("ccBrowserChannel").value
       });
     } else if (name === "save-mobile") {
       await action("mobile_ui", {
