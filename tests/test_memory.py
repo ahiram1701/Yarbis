@@ -37,6 +37,15 @@ class MemoryTestCase(unittest.TestCase):
     def test_default_state_has_empty_media_inbox(self):
         self.assertEqual(memory.default_state()["social"]["media_inbox"], [])
 
+    def test_live_conversation_continuous_hold_defaults_and_clamp(self):
+        lc = memory.default_state()["voice"]["live_conversation"]
+        self.assertTrue(lc["continuous"])
+        self.assertEqual(lc["hold_seconds"], memory.DEFAULT_VOICE_LIVE_HOLD_SECONDS)
+        norm = memory.normalize_state({"voice": {"live_conversation": {"continuous": False, "hold_seconds": 999}}})
+        lc2 = norm["voice"]["live_conversation"]
+        self.assertFalse(lc2["continuous"])
+        self.assertEqual(lc2["hold_seconds"], memory.MAX_VOICE_LIVE_HOLD_SECONDS)
+
     def test_normalize_timezone_validates_iana(self):
         self.assertEqual(memory._normalize_timezone("America/Mexico_City"), "America/Mexico_City")
         self.assertEqual(memory._normalize_timezone("Europe/Madrid"), "Europe/Madrid")

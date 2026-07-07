@@ -165,6 +165,10 @@ DEFAULT_VOICE_LIVE_WAKE_STT_MODEL = "tiny"
 DEFAULT_VOICE_LIVE_TURN_STT_MODEL = ""
 DEFAULT_VOICE_LIVE_SILENCE_MS = 900
 DEFAULT_VOICE_LIVE_MAX_TURN_SECONDS = 45
+DEFAULT_VOICE_LIVE_CONTINUOUS = True
+DEFAULT_VOICE_LIVE_HOLD_SECONDS = 12
+MIN_VOICE_LIVE_HOLD_SECONDS = 3
+MAX_VOICE_LIVE_HOLD_SECONDS = 120
 VALID_VOICE_TTS_PROVIDERS = {"system", "edge"}
 VALID_VOICE_TELEGRAM_REPLY_MODES = {"off", "auto", "always"}
 VALID_VOICE_STT_COMPUTE_TYPES = {"default", "int8", "int8_float16", "int16", "float16", "float32"}
@@ -539,6 +543,8 @@ def default_state():
                 "turn_stt_model": DEFAULT_VOICE_LIVE_TURN_STT_MODEL,
                 "silence_ms": DEFAULT_VOICE_LIVE_SILENCE_MS,
                 "max_turn_seconds": DEFAULT_VOICE_LIVE_MAX_TURN_SECONDS,
+                "continuous": DEFAULT_VOICE_LIVE_CONTINUOUS,
+                "hold_seconds": DEFAULT_VOICE_LIVE_HOLD_SECONDS,
                 "auto_speak": True,
                 "barge_in": True,
                 "save_audio_debug": False,
@@ -2282,6 +2288,15 @@ def _normalize_voice_settings(voice):
         min(MAX_VOICE_LIVE_MAX_TURN_SECONDS, live_max_turn_seconds),
     )
 
+    try:
+        live_hold_seconds = int(live.get("hold_seconds", live_defaults["hold_seconds"]))
+    except (TypeError, ValueError):
+        live_hold_seconds = live_defaults["hold_seconds"]
+    live_hold_seconds = max(
+        MIN_VOICE_LIVE_HOLD_SECONDS,
+        min(MAX_VOICE_LIVE_HOLD_SECONDS, live_hold_seconds),
+    )
+
     live_conversation = {
         "enabled": bool(live.get("enabled", live_defaults["enabled"])),
         "wake_phrase": _coerce_text(
@@ -2299,6 +2314,8 @@ def _normalize_voice_settings(voice):
         ).strip()[:MAX_VOICE_LIVE_STT_MODEL_CHARS],
         "silence_ms": live_silence_ms,
         "max_turn_seconds": live_max_turn_seconds,
+        "continuous": bool(live.get("continuous", live_defaults["continuous"])),
+        "hold_seconds": live_hold_seconds,
         "auto_speak": bool(live.get("auto_speak", live_defaults["auto_speak"])),
         "barge_in": bool(live.get("barge_in", live_defaults["barge_in"])),
         "save_audio_debug": bool(live.get("save_audio_debug", live_defaults["save_audio_debug"])),

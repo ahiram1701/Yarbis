@@ -689,6 +689,8 @@ def update_voice_settings_text(
     live_wake_phrase: str | None = None,
     live_silence_ms=None,
     live_max_turn_seconds=None,
+    live_continuous: bool | None = None,
+    live_hold_seconds=None,
     live_auto_speak: bool | None = None,
     live_barge_in: bool | None = None,
 ) -> str:
@@ -786,6 +788,10 @@ def update_voice_settings_text(
         live["wake_phrase"] = next_live_wake_phrase
         live["silence_ms"] = next_live_silence_ms
         live["max_turn_seconds"] = next_live_max_turn_seconds
+        if live_continuous is not None:
+            live["continuous"] = bool(live_continuous)
+        if live_hold_seconds is not None:
+            live["hold_seconds"] = _optional_int(live_hold_seconds, int(current_live.get("hold_seconds", 12)))
         if live_auto_speak is not None:
             live["auto_speak"] = bool(live_auto_speak)
         if live_barge_in is not None:

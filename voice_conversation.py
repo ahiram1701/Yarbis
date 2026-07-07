@@ -37,6 +37,8 @@ _YARBIS_WAKE_ALIAS_GROUP = {
     "yarvis",
     "yerbis",
     "yervis",
+    "jervis",
+    "jerbis",
     "iarbis",
     "iarvis",
     "garbis",
@@ -45,6 +47,15 @@ _YARBIS_WAKE_ALIAS_GROUP = {
     "gervis",
     "yardis",
     "yarbiz",
+    "yarbi",
+    "jarbi",
+    "llarbis",
+    "charbis",
+    "sharbis",
+    "yarbys",
+    "yarpis",
+    "yarbus",
+    "arbis",
 }
 _WAKE_ALIASES = {alias: set(_YARBIS_WAKE_ALIAS_GROUP) for alias in _YARBIS_WAKE_ALIAS_GROUP}
 
@@ -172,7 +183,9 @@ def transcribe_live_audio_file(path, *, settings: dict | None = None, wake: bool
 
 def transcribe_live_audio_bytes(raw_audio: bytes, *, mime_type: str = "", settings: dict | None = None) -> str:
     live = live_voice_settings(settings)
-    model = str(live.get("turn_stt_model") or live.get("wake_stt_model") or "")
+    # Para el turno usamos el modelo del turno o el principal (base), NO el de
+    # wake ("tiny"): "tiny" oye "Yarbis" como "Jervis" y nunca detecta la activacion.
+    model = str(live.get("turn_stt_model") or live.get("stt_model") or "")
     return yarbis_voice.transcribe_audio_bytes(
         raw_audio,
         mime_type=mime_type,
@@ -215,10 +228,40 @@ def process_voice_turn(
     if speaker is None:
         speaker = yarbis_voice.speak_text
 
-    result = runner(cleaned_turn, emit_notifications=False, blocking=True)
+    def _speak_safe(text: str) -> None:
+        if speak and text and live.get("auto_speak", True):
+            try:
+                speaker(text, settings=current_settings, cancellable=True)
+            except Exception:
+                pass
+
+    try:
+        result = runner(cleaned_turn, emit_notifications=False, blocking=True)
+    except Exception as exc:
+        # Nunca fallar en silencio: sesion ocupada o error -> estado claro + voz.
+        busy = type(exc).__name__ == "SessionOperationBusy"
+        message = (
+            "Estoy ocupada en otra tarea, dame unos segundos y repitelo."
+            if busy
+            else "Tuve un problema procesando tu voz, intentalo de nuevo."
+        )
+        _speak_safe(message)
+        return {
+            "state": STATE_WAKE_LISTENING,
+            "transcript": cleaned_turn,
+            "reply": "",
+            "spoken_text": message,
+            "awaiting_command": False,
+            "busy": busy,
+            "error": not busy,
+            "source": source,
+        }
+
     spoken_text = conversation_ux.spoken_reply_text(result)
-    if speak and spoken_text and live.get("auto_speak", True):
-        speaker(spoken_text, settings=current_settings, cancellable=True)
+    if not spoken_text and str(result or "").strip():
+        # Hubo respuesta pero quedo vacia tras limpiar: habla una version corta.
+        spoken_text = str(result).strip()[:400]
+    _speak_safe(spoken_text)
     return {
         "state": STATE_SPEAKING if spoken_text else STATE_WAKE_LISTENING,
         "transcript": cleaned_turn,
@@ -290,8 +333,8 @@ def run_desktop_live_conversation(
                 runner=runner,
                 speaker=speaker,
             )
-            if last_result.get("awaiting_command"):
-                armed_until = time.monotonic() + _ARMED_COMMAND_SECONDS
+            if last_result.get("awaiting_command") or bool(live.get("continuous", True)):
+                armed_until = time.monotonic() + float(live.get("hold_seconds", _ARMED_COMMAND_SECONDS))
             else:
                 armed_until = 0.0
             update(
@@ -427,6 +470,8 @@ def append_mobile_audio_chunk(
 
     live = live_voice_settings(current_settings)
     wake_phrase = str(live.get("wake_phrase", "Yarbis")).strip() or "Yarbis"
+    continuous = bool(live.get("continuous", True))
+    hold_seconds = float(live.get("hold_seconds", _ARMED_COMMAND_SECONDS))
     activation_detected = wake_phrase_detected(transcript, wake_phrase)
     with _MOBILE_LOCK:
         session = _MOBILE_SESSIONS.get(key)
@@ -437,10 +482,12 @@ def append_mobile_audio_chunk(
         session["spoken_turn_id"] = ""
         session["updated_at"] = _utc_now_text()
         session["updated_monotonic"] = time.time()
-        already_armed = bool(session.get("awaiting_command")) and time.time() < float(session.get("armed_until", 0.0))
+        # En modo continua (o dentro de la ventana tras una respuesta) no exigimos
+        # repetir la palabra de activacion.
+        already_armed = time.time() < float(session.get("armed_until", 0.0))
         if not activation_detected and not already_armed:
             session["state"] = STATE_WAKE_LISTENING
-            session["detail"] = f"Escuché voz, pero no la frase '{wake_phrase}'."
+            session["detail"] = f"Te escuché ('{transcript}'), pero di '{wake_phrase}' para empezar."
             session["awaiting_command"] = False
             session["armed_until"] = 0.0
             return dict(session)
@@ -472,7 +519,12 @@ def append_mobile_audio_chunk(
         session["spoken_text"] = spoken_text
         session["spoken_turn_id"] = uuid.uuid4().hex if spoken_text else ""
         session["awaiting_command"] = bool(result.get("awaiting_command"))
-        session["armed_until"] = time.time() + _ARMED_COMMAND_SECONDS if result.get("awaiting_command") else 0.0
+        # Mantener la ventana abierta si esperamos comando o si es modo continua,
+        # para seguir la charla sin repetir la palabra de activacion.
+        if result.get("awaiting_command") or continuous:
+            session["armed_until"] = time.time() + hold_seconds
+        else:
+            session["armed_until"] = 0.0
         session["updated_at"] = _utc_now_text()
         session["updated_monotonic"] = time.time()
         return dict(session)

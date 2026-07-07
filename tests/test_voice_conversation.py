@@ -258,3 +258,58 @@ class VoiceConversationTestCase(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class VoiceConversationLiveImprovementsTestCase(unittest.TestCase):
+    def test_detects_jervis_misheard_wake(self):
+        # El modelo mal transcribe "Yarbis" como "Jervis"; debe detectarse.
+        self.assertTrue(voice_conversation.wake_phrase_detected("Jervis que hora es", "Yarbis"))
+        self.assertTrue(voice_conversation.wake_phrase_detected("¡Jervis, que hora es!", "Yarbis"))
+
+    def test_process_voice_turn_handles_busy_session_gracefully(self):
+        class SessionOperationBusy(Exception):
+            pass
+
+        def runner(*_a, **_k):
+            raise SessionOperationBusy("ocupada")
+
+        speaker = Mock()
+        result = voice_conversation.process_voice_turn(
+            "Yarbis dame el status",
+            settings={"enabled": True, "live_conversation": {"wake_phrase": "Yarbis", "auto_speak": True}},
+            runner=runner,
+            speaker=speaker,
+        )
+        self.assertTrue(result.get("busy"))
+        self.assertIn("ocupada", result["spoken_text"].lower())
+        speaker.assert_called_once()
+
+    def test_mobile_continuous_allows_followup_without_wake(self):
+        settings = {"voice": {"enabled": True, "live_conversation": {
+            "wake_phrase": "Yarbis", "continuous": True, "hold_seconds": 60}}}
+        session = voice_conversation.start_mobile_session(settings)
+        runner = Mock(return_value="Yarbis:\nHecho.")
+        with patch.object(voice_conversation, "transcribe_live_audio_bytes", return_value="Yarbis suma contexto"):
+            first = voice_conversation.append_mobile_audio_chunk(
+                session["id"], b"a", mime_type="audio/webm", settings=settings, runner=runner)
+        self.assertEqual(first["state"], voice_conversation.STATE_SPEAKING)
+        with patch.object(voice_conversation, "transcribe_live_audio_bytes", return_value="que hora es"):
+            second = voice_conversation.append_mobile_audio_chunk(
+                session["id"], b"b", mime_type="audio/webm", settings=settings, runner=runner)
+        self.assertEqual(second["state"], voice_conversation.STATE_SPEAKING)
+        self.assertEqual(runner.call_count, 2)
+
+    def test_mobile_non_continuous_requires_wake_each_time(self):
+        settings = {"voice": {"enabled": True, "live_conversation": {
+            "wake_phrase": "Yarbis", "continuous": False, "hold_seconds": 60}}}
+        session = voice_conversation.start_mobile_session(settings)
+        runner = Mock(return_value="Yarbis:\nHecho.")
+        with patch.object(voice_conversation, "transcribe_live_audio_bytes", return_value="Yarbis suma contexto"):
+            first = voice_conversation.append_mobile_audio_chunk(
+                session["id"], b"a", mime_type="audio/webm", settings=settings, runner=runner)
+        self.assertEqual(first["state"], voice_conversation.STATE_SPEAKING)
+        with patch.object(voice_conversation, "transcribe_live_audio_bytes", return_value="que hora es"):
+            second = voice_conversation.append_mobile_audio_chunk(
+                session["id"], b"b", mime_type="audio/webm", settings=settings, runner=runner)
+        self.assertEqual(second["state"], voice_conversation.STATE_WAKE_LISTENING)
+        self.assertEqual(runner.call_count, 1)

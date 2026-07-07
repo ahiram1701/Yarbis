@@ -1124,6 +1124,25 @@ class YarbisMobileTestCase(unittest.TestCase):
             yarbis_mobile._execute_action("mobile_https_claim", {"override": True})
         self.assertTrue(captured["override"])
 
+    def test_live_voice_selftest_reports_wake_detection(self):
+        state_path = TEST_RUNTIME_DIR / f"live_selftest_{id(self)}.json"
+        with patch.object(memory, "STATE_FILE", state_path):
+            memory.save_state(memory.default_state())
+            with patch.object(yarbis_mobile, "_decode_mobile_audio_payload", return_value=(b"audio", ".webm")):
+                with patch.object(yarbis_mobile.voice_conversation, "transcribe_live_audio_bytes", return_value="Yarbis que hora es"):
+                    ok = yarbis_mobile._selftest_mobile_live_voice({"audio_b64": "x", "mime_type": "audio/webm"})
+                with patch.object(yarbis_mobile.voice_conversation, "transcribe_live_audio_bytes", return_value="que hora es"):
+                    no_wake = yarbis_mobile._selftest_mobile_live_voice({"audio_b64": "x", "mime_type": "audio/webm"})
+        self.assertTrue(ok["wake_detected"])
+        self.assertIn("Yarbis que hora es", ok["transcript"])
+        self.assertFalse(no_wake["wake_detected"])
+        self.assertIn("activación", no_wake["message"].lower())
+
+    def test_html_includes_live_voice_vad_and_selftest(self):
+        html = yarbis_mobile._html_page()
+        for needle in ("ensureLiveVoiceAnalyser", "selftest-live-voice", "liveContinuous", "selfTestLiveVoice"):
+            self.assertIn(needle, html)
+
     def test_public_mobile_status_treats_known_other_instance_as_pending_not_error(self):
         settings = {
             "enabled": True,

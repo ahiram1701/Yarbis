@@ -1614,6 +1614,43 @@ def _stop_mobile_live_voice(payload: dict) -> dict:
     return {"voice_session": session}
 
 
+def _selftest_mobile_live_voice(payload: dict) -> dict:
+    """Diagnostico: transcribe un clip corto y reporta cada etapa (mic->STT->wake)
+    para que el usuario vea si la voz en vivo funcionara. El cliente reproduce el
+    mensaje para verificar tambien la reproduccion (TTS)."""
+    raw_audio, _suffix = _decode_mobile_audio_payload(payload)
+    state = load_state()
+    live = state.get("voice", {}).get("live_conversation", {})
+    wake_phrase = str(live.get("wake_phrase", "Yarbis")).strip() or "Yarbis"
+    try:
+        transcript = voice_conversation.transcribe_live_audio_bytes(
+            raw_audio, mime_type=_payload_text(payload, "mime_type"), settings=state,
+        )
+    except Exception as exc:
+        return {
+            "ok_stt": False,
+            "transcript": "",
+            "wake_detected": False,
+            "message": f"No pude transcribir el audio: {exc}. Revisa el microfono o el modelo de voz.",
+        }
+    detected = voice_conversation.wake_phrase_detected(transcript, wake_phrase)
+    if not transcript.strip():
+        message = "No detecté voz clara. Habla mas cerca del microfono y reintenta."
+    elif detected:
+        message = f"Perfecto. Te escuché: {transcript}. Detecté la activación, la conversación en vivo funcionará."
+    else:
+        message = (
+            f"Te escuché: {transcript}. Pero no reconocí la palabra de activación '{wake_phrase}'. "
+            "Prueba diciendo 'Yarbis' claro al inicio."
+        )
+    return {
+        "ok_stt": bool(transcript.strip()),
+        "transcript": transcript,
+        "wake_detected": detected,
+        "message": message,
+    }
+
+
 def _public_voice_payload(*, include_downloadable: bool = False, refresh_catalog: bool = False) -> dict:
     try:
         voices = yarbis_voice.list_tts_voices(
@@ -1934,6 +1971,8 @@ def _execute_action(action: str, payload: dict | None = None) -> dict:
             live_wake_phrase=_payload_text(payload, "live_wake_phrase"),
             live_silence_ms=payload.get("live_silence_ms"),
             live_max_turn_seconds=payload.get("live_max_turn_seconds"),
+            live_continuous=bool(payload.get("live_continuous", True)),
+            live_hold_seconds=payload.get("live_hold_seconds"),
             live_auto_speak=bool(payload.get("live_auto_speak", True)),
             live_barge_in=bool(payload.get("live_barge_in", True)),
         )}
@@ -2569,6 +2608,50 @@ const LIVE_VOICE_RESTART_DELAY_MS = 120;
 const LIVE_VOICE_RETRY_DELAY_MS = 900;
 const LIVE_VOICE_POST_SPEECH_PAUSE_MS = 650;
 const LIVE_VOICE_SPEECH_WATCHDOG_MS = 22000;
+const LIVE_VOICE_SILENCE_RMS = 0.014;
+const LIVE_VOICE_MIN_SPEECH_MS = 300;
+const LIVE_VOICE_MAX_WAIT_MS = 9000;
+const LIVE_VOICE_VAD_POLL_MS = 80;
+let liveVoiceAudioCtx = null;
+let liveVoiceAnalyser = null;
+let liveVoiceSourceNode = null;
+let liveVoiceVadBuffer = null;
+
+async function ensureLiveVoiceAnalyser() {
+  try {
+    if (liveVoiceAnalyser && liveVoiceAudioCtx && liveVoiceAudioCtx.state !== "closed") return true;
+    const Ctx = window.AudioContext || window.webkitAudioContext;
+    if (!Ctx || !liveVoiceStream) return false;
+    liveVoiceAudioCtx = new Ctx();
+    if (liveVoiceAudioCtx.state === "suspended") { try { await liveVoiceAudioCtx.resume(); } catch (_e) {} }
+    liveVoiceSourceNode = liveVoiceAudioCtx.createMediaStreamSource(liveVoiceStream);
+    liveVoiceAnalyser = liveVoiceAudioCtx.createAnalyser();
+    liveVoiceAnalyser.fftSize = 2048;
+    liveVoiceVadBuffer = new Float32Array(liveVoiceAnalyser.fftSize);
+    liveVoiceSourceNode.connect(liveVoiceAnalyser);
+    return true;
+  } catch (_error) {
+    liveVoiceAnalyser = null;
+    return false;
+  }
+}
+
+function liveVoiceRms() {
+  if (!liveVoiceAnalyser || !liveVoiceVadBuffer) return 0;
+  liveVoiceAnalyser.getFloatTimeDomainData(liveVoiceVadBuffer);
+  let sum = 0;
+  for (let i = 0; i < liveVoiceVadBuffer.length; i++) sum += liveVoiceVadBuffer[i] * liveVoiceVadBuffer[i];
+  return Math.sqrt(sum / liveVoiceVadBuffer.length);
+}
+
+function teardownLiveVoiceAnalyser() {
+  try { if (liveVoiceSourceNode) liveVoiceSourceNode.disconnect(); } catch (_e) {}
+  try { if (liveVoiceAudioCtx && liveVoiceAudioCtx.state !== "closed") liveVoiceAudioCtx.close(); } catch (_e) {}
+  liveVoiceSourceNode = null;
+  liveVoiceAnalyser = null;
+  liveVoiceAudioCtx = null;
+  liveVoiceVadBuffer = null;
+}
 const $ = (id) => document.getElementById(id);
 
 function escapeHtml(value) {
@@ -3043,6 +3126,7 @@ function liveVoiceStreamReady() {
 
 function stopLiveVoiceStreamOnly() {
   if (liveVoiceStream) {
+    teardownLiveVoiceAnalyser();
     liveVoiceStream.getTracks().forEach(track => track.stop());
     liveVoiceStream = null;
   }
@@ -3110,6 +3194,7 @@ async function startLiveVoiceSegment() {
     return;
   }
   const chunks = [];
+  const segment = { hadSpeech: false };
   liveVoiceRecorder = recorder;
   recorder.ondataavailable = (event) => {
     if (event.data && event.data.size > 0) chunks.push(event.data);
@@ -3118,7 +3203,8 @@ async function startLiveVoiceSegment() {
     window.clearTimeout(liveVoiceSegmentTimer);
     if (liveVoiceRecorder === recorder) liveVoiceRecorder = null;
     if (!liveVoiceSessionId || liveVoiceSessionId !== segmentSessionId || liveVoiceStopping) return;
-    if (!chunks.length) {
+    // Con VAD, si no hubo voz no enviamos nada (evita procesar ruido/silencio).
+    if (!chunks.length || (liveVoiceAnalyser && !segment.hadSpeech)) {
       scheduleLiveVoiceSegment();
       return;
     }
@@ -3158,9 +3244,42 @@ async function startLiveVoiceSegment() {
     scheduleLiveVoiceSegment(LIVE_VOICE_RETRY_DELAY_MS);
     return;
   }
-  liveVoiceSegmentTimer = window.setTimeout(() => {
-    if (recorder.state === "recording") recorder.stop();
-  }, LIVE_VOICE_SEGMENT_MS);
+  const live = (appState && appState.voice && appState.voice.live_conversation) || {};
+  const silenceMs = Math.max(300, Number(live.silence_ms) || 900);
+  const maxTurnMs = Math.min(60000, (Number(live.max_turn_seconds) || 45) * 1000);
+  const vadReady = await ensureLiveVoiceAnalyser();
+  if (!vadReady) {
+    // Sin Web Audio: modo por tiempo fijo (comportamiento anterior).
+    liveVoiceSegmentTimer = window.setTimeout(() => {
+      if (recorder.state === "recording") recorder.stop();
+    }, LIVE_VOICE_SEGMENT_MS);
+    return;
+  }
+  const startedAt = performance.now();
+  let speechStartedAt = 0;
+  let lastLoudAt = 0;
+  const pollVad = () => {
+    if (liveVoiceRecorder !== recorder || recorder.state !== "recording") return;
+    const now = performance.now();
+    const rms = liveVoiceRms();
+    if (rms >= LIVE_VOICE_SILENCE_RMS) {
+      if (!speechStartedAt) speechStartedAt = now;
+      lastLoudAt = now;
+      segment.hadSpeech = true;
+    }
+    const elapsed = now - startedAt;
+    // Fin del turno: hablaste y luego silencio suficiente.
+    if (speechStartedAt && (now - lastLoudAt) >= silenceMs && (now - speechStartedAt) >= LIVE_VOICE_MIN_SPEECH_MS) {
+      recorder.stop();
+      return;
+    }
+    // Tope de duracion del turno.
+    if (elapsed >= maxTurnMs) { recorder.stop(); return; }
+    // Nunca hablaste: reinicia el segmento sin enviar.
+    if (!speechStartedAt && elapsed >= LIVE_VOICE_MAX_WAIT_MS) { recorder.stop(); return; }
+    liveVoiceSegmentTimer = window.setTimeout(pollVad, LIVE_VOICE_VAD_POLL_MS);
+  };
+  liveVoiceSegmentTimer = window.setTimeout(pollVad, LIVE_VOICE_VAD_POLL_MS);
 }
 
 function scheduleLiveVoiceSegment(delayMs = LIVE_VOICE_RESTART_DELAY_MS) {
@@ -3182,6 +3301,7 @@ function stopLiveVoiceTracks() {
     try { liveVoiceRecorder.stop(); } catch (_error) {}
   }
   liveVoiceRecorder = null;
+  teardownLiveVoiceAnalyser();
   stopLiveVoiceStreamOnly();
 }
 
@@ -3211,6 +3331,42 @@ async function stopLiveVoice() {
 async function toggleLiveVoice() {
   if (liveVoiceSessionId) await stopLiveVoice();
   else await startLiveVoice();
+}
+
+async function selfTestLiveVoice() {
+  const blocked = liveRecordingBlockReason();
+  if (blocked) { toast(blocked); return; }
+  let stream = null;
+  let recorder = null;
+  try {
+    await unlockMobileSpeechOutput();
+    stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    toast("Grabando 4s... di: Yarbis, hola");
+    recorder = new MediaRecorder(stream, preferredAudioRecorderOptions());
+    const chunks = [];
+    recorder.ondataavailable = (e) => { if (e.data && e.data.size > 0) chunks.push(e.data); };
+    const done = new Promise((resolve) => { recorder.onstop = resolve; });
+    recorder.start();
+    await sleep(4000);
+    if (recorder.state === "recording") recorder.stop();
+    await done;
+    stream.getTracks().forEach(t => t.stop()); stream = null;
+    if (!chunks.length) { toast("No capté audio del microfono. Revisa permisos."); return; }
+    const blob = audioBlobFromChunks(chunks, recorder);
+    const bytes = new Uint8Array(await blob.arrayBuffer());
+    const data = await api("/api/voice/live/selftest", {
+      method: "POST",
+      headers: { "X-CSRF-Token": csrfToken },
+      body: { csrf: csrfToken, audio_b64: bytesToBase64(bytes), mime_type: blob.type || recorder.mimeType || "audio/webm" }
+    });
+    csrfToken = data.csrf || csrfToken;
+    toast(data.message || "Prueba completada.");
+    if (data.message) await speakText(data.message);
+  } catch (error) {
+    toast(`Prueba fallida: ${error.message}`);
+  } finally {
+    if (stream) stream.getTracks().forEach(t => t.stop());
+  }
 }
 
 async function loadVoiceOptions(force = false, includeCatalog = false, refreshCatalog = false) {
@@ -3331,6 +3487,8 @@ async function saveVoiceSettings(providerOverride = null, edgeVoiceOverride = nu
     live_wake_phrase: $("liveWakePhrase") ? $("liveWakePhrase").value : "Yarbis",
     live_silence_ms: $("liveSilenceMs") ? $("liveSilenceMs").value : 900,
     live_max_turn_seconds: $("liveMaxTurnSeconds") ? $("liveMaxTurnSeconds").value : 45,
+    live_continuous: $("liveContinuous") ? $("liveContinuous").checked : true,
+    live_hold_seconds: $("liveHoldSeconds") ? $("liveHoldSeconds").value : 12,
     live_auto_speak: $("liveAutoSpeak") ? $("liveAutoSpeak").checked : true,
     live_barge_in: $("liveBargeIn") ? $("liveBargeIn").checked : true
   });
@@ -3541,6 +3699,9 @@ function renderRun() {
   const liveActive = Boolean(liveVoiceSessionId);
   const liveLabel = liveActive ? "Detener conversacion" : "Conversacion en vivo";
   const liveDetail = liveVoiceSessionText();
+  const liveSession = window._lastLiveVoiceSession || {};
+  const liveHeard = String(liveSession.last_transcript || "").trim();
+  const liveReply = String(liveSession.last_reply || "").trim();
   const timeline = conversation.timeline || [];
   $("run").innerHTML = `
     <section class="hero">
@@ -3564,9 +3725,12 @@ function renderRun() {
       <h2>Voz en vivo</h2>
       <div class="panel">
         <div>${escapeHtml(liveDetail)}</div>
-        <div class="muted">Activacion: ${escapeHtml(voice.wake_phrase || "Yarbis")}</div>
+        ${liveHeard ? `<div class="muted">Escuché: "${escapeHtml(liveHeard)}"</div>` : ""}
+        ${liveReply ? `<div class="muted">Respuesta: ${escapeHtml(liveReply.slice(0, 160))}</div>` : ""}
+        <div class="muted">Activacion: ${escapeHtml(voice.wake_phrase || "Yarbis")} | ${(voice.live_conversation && voice.live_conversation.continuous === false) ? "requiere activacion cada vez" : "conversacion continua"}</div>
         <div class="actions tight">
           <button class="${liveActive ? "danger" : "primary"}" data-action="toggle-live-voice">${liveLabel}</button>
+          <button data-action="selftest-live-voice">Probar voz en vivo</button>
           <button data-action="stop-speaking">Detener habla</button>
         </div>
       </div>
@@ -4261,8 +4425,10 @@ function renderSettings() {
           <div class="form-grid">
             <label><input id="liveVoiceEnabled" type="checkbox" ${live.enabled === false ? "" : "checked"}> Voz en vivo disponible</label>
             <div><label>Frase de activacion</label><input id="liveWakePhrase" value="${escapeHtml(live.wake_phrase || "Yarbis")}"></div>
-            <div><label>Silencio ms</label><input id="liveSilenceMs" type="number" min="250" max="5000" value="${escapeHtml(live.silence_ms || 900)}"></div>
+            <div><label>Silencio ms (fin de turno)</label><input id="liveSilenceMs" type="number" min="250" max="5000" value="${escapeHtml(live.silence_ms || 900)}"></div>
             <div><label>Turno max segundos</label><input id="liveMaxTurnSeconds" type="number" min="3" max="300" value="${escapeHtml(live.max_turn_seconds || 45)}"></div>
+            <label><input id="liveContinuous" type="checkbox" ${live.continuous === false ? "" : "checked"}> Conversacion continua (no repetir la activacion)</label>
+            <div><label>Ventana continua (segundos)</label><input id="liveHoldSeconds" type="number" min="3" max="120" value="${escapeHtml(live.hold_seconds || 12)}"></div>
             <label><input id="liveAutoSpeak" type="checkbox" ${live.auto_speak === false ? "" : "checked"}> Responder con voz automaticamente</label>
             <label><input id="liveBargeIn" type="checkbox" ${live.barge_in === false ? "" : "checked"}> Permitir interrupcion</label>
           </div>
@@ -4469,6 +4635,8 @@ document.addEventListener("click", async (event) => {
       await toggleReplyRecording();
     } else if (name === "toggle-live-voice") {
       await toggleLiveVoice();
+    } else if (name === "selftest-live-voice") {
+      await selfTestLiveVoice();
     } else if (name === "voice-file") {
       const fileInput = $("voiceFileInput");
       if (fileInput) fileInput.click();
@@ -5087,7 +5255,7 @@ class MobileRequestHandler(BaseHTTPRequestHandler):
         try:
             if self.path == "/api/image/analyze":
                 max_bytes = MAX_IMAGE_REQUEST_BYTES
-            elif self.path in {"/api/voice/transcribe", "/api/voice/live/chunk"}:
+            elif self.path in {"/api/voice/transcribe", "/api/voice/live/chunk", "/api/voice/live/selftest"}:
                 max_bytes = MAX_VOICE_REQUEST_BYTES
             else:
                 max_bytes = MAX_REQUEST_BYTES
@@ -5140,6 +5308,10 @@ class MobileRequestHandler(BaseHTTPRequestHandler):
                 return
             if self.path == "/api/voice/live/stop":
                 result = _stop_mobile_live_voice(payload)
+                self._send_json(HTTPStatus.OK, {"ok": True, "csrf": session["csrf"], **result})
+                return
+            if self.path == "/api/voice/live/selftest":
+                result = _selftest_mobile_live_voice(payload)
                 self._send_json(HTTPStatus.OK, {"ok": True, "csrf": session["csrf"], **result})
                 return
             if self.path == "/api/voice/speak":
