@@ -379,6 +379,15 @@ def default_state():
             "max_image_dim": DEFAULT_VISION_MAX_IMAGE_DIM,
             "timeout_seconds": DEFAULT_VISION_TIMEOUT_SECONDS,
         },
+        "computer_control": {
+            "enabled": False,
+            "settings": {
+                "browser_channel": "msedge",
+                "headed": True,
+                "confirm_sensitive": True,
+                "os_control": True,
+            },
+        },
         "memory_protection": {
             "enabled": DEFAULT_MEMORY_PROTECTION_ENABLED,
             "backup_on_every_change": DEFAULT_MEMORY_PROTECTION_BACKUP_ON_EVERY_CHANGE,
@@ -1339,6 +1348,30 @@ def _normalize_vision(vision):
         "model": model,
         "max_image_dim": max_image_dim,
         "timeout_seconds": timeout_seconds,
+    }
+
+
+VALID_BROWSER_CHANNELS = {"msedge", "chrome", "chromium", "brave", "edge"}
+
+
+def _normalize_computer_control(cc):
+    defaults = default_state()["computer_control"]
+    if not isinstance(cc, dict):
+        cc = {}
+    settings = cc.get("settings", {})
+    if not isinstance(settings, dict):
+        settings = {}
+    channel = _coerce_text(settings.get("browser_channel", defaults["settings"]["browser_channel"]), 20).strip().lower()
+    if channel not in VALID_BROWSER_CHANNELS:
+        channel = defaults["settings"]["browser_channel"]
+    return {
+        "enabled": bool(cc.get("enabled", defaults["enabled"])),
+        "settings": {
+            "browser_channel": channel,
+            "headed": bool(settings.get("headed", defaults["settings"]["headed"])),
+            "confirm_sensitive": bool(settings.get("confirm_sensitive", defaults["settings"]["confirm_sensitive"])),
+            "os_control": bool(settings.get("os_control", defaults["settings"]["os_control"])),
+        },
     }
 
 
@@ -2639,6 +2672,7 @@ def normalize_state(state):
     normalized["coding"] = _normalize_coding(state.get("coding", {}))
     normalized["evolution"] = _normalize_evolution(state.get("evolution", {}))
     normalized["vision"] = _normalize_vision(state.get("vision", {}))
+    normalized["computer_control"] = _normalize_computer_control(state.get("computer_control", {}))
     normalized["memory_protection"] = _normalize_memory_protection(state.get("memory_protection", {}))
     normalized["model_provider"] = _normalize_model_provider(state)
     normalized["ollama"] = dict(normalized["model_provider"][MODEL_PROVIDER_OLLAMA])

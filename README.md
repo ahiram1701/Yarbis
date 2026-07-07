@@ -653,6 +653,14 @@ Puedes pedir cambios en lenguaje natural, por ejemplo:
 
 Internamente el agente usa `update_internet_settings`, `web_search`, `fetch_web_page` y, cuando hace falta una sesion real con clicks, formularios o capturas, `browser_automation`.
 
+## Control de la PC (navegador y sistema)
+
+Yarbis puede controlar la PC para tareas como publicar en Facebook personal. Esta apagado por defecto: actívalo con `set_computer_control(enabled=True)` (por lenguaje natural: "activa el control de la PC"). Nunca se usa durante pulsos proactivos autonomos y esta marcado como accion (ACTION_PROOF).
+
+- **Navegador (recomendado, fiable):** `browser_open` abre una ventana propia de Yarbis con perfil persistente (te logueas una vez y guarda la sesion); `browser_observe` lista los elementos clicables por `ref`; `browser_act` hace clic/escribe por `ref` o `text` en la pagina viva. Requiere Edge/Chrome instalado (usa depuracion remota en el puerto 9222).
+- **Sistema operativo (best-effort):** `desktop_look` (captura + vision), `desktop_click`, `desktop_type`, `desktop_press`, `desktop_move` con `pyautogui`, para apps sin navegador.
+- **Seguridad:** las acciones sensibles (Publicar, Pagar, Enviar, Eliminar) se bloquean hasta que el usuario confirma y se reintenta con `confirm="<texto del boton>"`. La ventana del navegador y el mouse son visibles.
+
 ## Proteccion, respaldo y trasplante de memoria
 
 Yarbis protege `state.json` con escrituras atomicas, verificacion JSON posterior y respaldos automaticos redactados en cada cambio. Si `state.json` falta o queda danado, intenta restaurar automaticamente el respaldo valido mas reciente; si no hay ninguno, preserva una copia del archivo danado en `.yarbis_runtime/memory_recovery/` y arranca con defaults seguros.

@@ -30,6 +30,18 @@ class AgentTestCase(unittest.TestCase):
     def test_set_timezone_registered(self):
         self.assertIn("set_timezone", agent.available_functions)
 
+    def test_computer_control_tools_registered_and_gated(self):
+        for name in ("browser_open", "browser_observe", "browser_act", "set_computer_control",
+                     "desktop_look", "desktop_click", "desktop_type", "desktop_press"):
+            self.assertIn(name, agent.available_functions, name)
+        # Los que actuan requieren ACTION_PROOF; los de solo lectura no.
+        self.assertIn("browser_act", agent.ACTION_PROOF_TOOL_NAMES)
+        self.assertIn("desktop_click", agent.ACTION_PROOF_TOOL_NAMES)
+        self.assertNotIn("browser_observe", agent.ACTION_PROOF_TOOL_NAMES)
+        # Nunca disponibles en pulsos proactivos autonomos.
+        for name in ("browser_open", "browser_act", "desktop_click", "desktop_type"):
+            self.assertNotIn(name, agent.PROACTIVE_SAFE_TOOL_NAMES, name)
+
     def test_agent_registers_idea_project_tools_and_prompt_behavior(self):
         tool_names = {getattr(tool, "__name__", "") for tool in agent.tool_definitions}
 

@@ -1,10 +1,67 @@
 import json
+import os
+import re
+import subprocess
+import threading
+import time
 from pathlib import Path
+from urllib import request as _urlrequest
 
 import yarbis_instance
 
 MAX_BROWSER_TEXT_CHARS = 12_000
 DEFAULT_SCREENSHOT_DIR = str(yarbis_instance.runtime_dir() / "browser")
+
+# Sesion interactiva persistente (navegador propio de Yarbis, ventana visible).
+CDP_URL = "http://127.0.0.1:9222"
+_BROWSER_LOCK = threading.RLock()
+# Botones/acciones sensibles: requieren confirmacion explicita antes del click.
+_SENSITIVE_CLICK = re.compile(
+    r"\b(publicar|publish|compartir|share|enviar\s+mensaje|enviar|send|pagar|pay|"
+    r"comprar|buy|order|eliminar|delete|borrar|desactivar|deactivate|confirmar\s+pago|"
+    r"aceptar\s+y\s+pagar)\b",
+    re.IGNORECASE,
+)
+
+
+def _persistent_profile_dir() -> Path:
+    profile = yarbis_instance.runtime_dir() / "browser_profile"
+    profile.mkdir(parents=True, exist_ok=True)
+    return profile
+
+
+def _find_browser_executable(channel: str) -> str:
+    channel = str(channel or "").strip().lower()
+    candidates = {
+        "msedge": [
+            r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
+            r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
+        ],
+        "edge": [
+            r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
+        ],
+        "chrome": [
+            r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+            r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+        ],
+        "brave": [
+            r"C:\Program Files\BraveSoftware\Brave-Browser\Application\brave.exe",
+        ],
+    }
+    for path in candidates.get(channel, []) + candidates["msedge"] + candidates["chrome"]:
+        if Path(path).exists():
+            return path
+    raise RuntimeError(
+        "No encontre un navegador (Edge/Chrome) instalado para abrir con depuracion remota."
+    )
+
+
+def _cdp_reachable() -> bool:
+    try:
+        with _urlrequest.urlopen(f"{CDP_URL}/json/version", timeout=1.5):
+            return True
+    except Exception:
+        return False
 
 
 def _bounded_text(text: str, limit: int = MAX_BROWSER_TEXT_CHARS) -> str:
@@ -274,3 +331,212 @@ def run_browser_automation(
             browser.close()
 
     return "\n".join(lines)
+
+
+def _active_page(browser):
+    contexts = browser.contexts
+    context = contexts[0] if contexts else browser.new_context()
+    pages = context.pages
+    if pages:
+        return pages[-1]
+    return context.new_page()
+
+
+_ENUMERATE_JS = r"""
+() => {
+  const sel = 'a,button,input,textarea,select,[role=button],[role=link],[role=textbox],[contenteditable=""],[contenteditable="true"],[tabindex]';
+  const nodes = Array.from(document.querySelectorAll(sel));
+  const out = [];
+  let ref = 0;
+  for (const el of nodes) {
+    const r = el.getBoundingClientRect();
+    if (r.width < 4 || r.height < 4) continue;
+    const st = window.getComputedStyle(el);
+    if (st.visibility === 'hidden' || st.display === 'none' || Number(st.opacity) === 0) continue;
+    ref++;
+    el.setAttribute('data-yarbis-ref', String(ref));
+    let t = (el.getAttribute('aria-label') || el.innerText || el.value || el.getAttribute('placeholder') || el.getAttribute('title') || '').replace(/\s+/g, ' ').trim().slice(0, 80);
+    out.push({ ref: ref, tag: el.tagName.toLowerCase(), role: el.getAttribute('role') || '', text: t });
+  }
+  return out;
+}
+"""
+
+
+def _enumerate_interactive(page):
+    try:
+        return page.evaluate(_ENUMERATE_JS) or []
+    except Exception:
+        return []
+
+
+def _resolve_locator(page, action):
+    ref = str(action.get("ref", "")).strip()
+    if ref:
+        return page.locator(f'[data-yarbis-ref="{ref}"]'), f"ref {ref}"
+    text = str(action.get("text", "")).strip()
+    if text:
+        return page.get_by_text(text, exact=False).first, f"texto '{text}'"
+    selector = str(action.get("selector", "")).strip()
+    if selector:
+        return page.locator(selector), selector
+    raise ValueError("El click/fill requiere ref, text o selector.")
+
+
+def open_persistent_browser(url: str = "", channel: str = "msedge", workspace_root: Path | None = None) -> str:
+    workspace_root = workspace_root or Path.cwd()
+    with _BROWSER_LOCK:
+        launched = False
+        if not _cdp_reachable():
+            exe = _find_browser_executable(channel)
+            profile = _persistent_profile_dir()
+            args = [
+                exe,
+                "--remote-debugging-port=9222",
+                f"--user-data-dir={profile}",
+                "--no-first-run",
+                "--no-default-browser-check",
+            ]
+            creationflags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0) | getattr(subprocess, "DETACHED_PROCESS", 0)
+            subprocess.Popen(
+                args,
+                close_fds=True,
+                creationflags=creationflags,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            launched = True
+            deadline = time.monotonic() + 20
+            while time.monotonic() < deadline and not _cdp_reachable():
+                time.sleep(0.5)
+            if not _cdp_reachable():
+                raise RuntimeError("No pude iniciar el navegador con depuracion remota.")
+        sync_playwright = _load_playwright()
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.connect_over_cdp(CDP_URL)
+            try:
+                page = _active_page(browser)
+                if str(url).strip():
+                    page.goto(str(url).strip(), wait_until="domcontentloaded")
+                final_url = page.url
+            finally:
+                browser.close()
+    estado = "Navegador de Yarbis abierto (nuevo)" if launched else "Navegador de Yarbis ya estaba abierto"
+    return (
+        f"{estado}. URL: {final_url}. El perfil es persistente (tu login se guarda). "
+        "Usa browser_observe para ver la pagina y browser_act para hacer clic o escribir."
+    )
+
+
+def observe_browser(screenshot: bool = False, settings: dict | None = None, workspace_root: Path | None = None) -> str:
+    workspace_root = workspace_root or Path.cwd()
+    with _BROWSER_LOCK:
+        if not _cdp_reachable():
+            raise RuntimeError("No hay un navegador de Yarbis abierto. Usa browser_open primero.")
+        sync_playwright = _load_playwright()
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.connect_over_cdp(CDP_URL)
+            try:
+                page = _active_page(browser)
+                url = page.url
+                try:
+                    title = page.title()
+                except Exception:
+                    title = ""
+                elements = _enumerate_interactive(page)
+                try:
+                    body = page.locator("body").inner_text(timeout=4000)
+                except Exception:
+                    body = ""
+                lines = [
+                    f"URL: {url}",
+                    f"Titulo: {title}",
+                    f"Elementos interactivos ({len(elements)}, usa el numero como ref):",
+                ]
+                for el in elements[:80]:
+                    label = el.get("text") or "(sin texto)"
+                    role = f"/{el['role']}" if el.get("role") else ""
+                    lines.append(f"  [{el['ref']}] {el['tag']}{role}: {label}")
+                if _normalize_bool(screenshot):
+                    shot = _resolve_output_path("", workspace_root, f"observe-{int(time.time())}.png")
+                    page.screenshot(path=str(shot), full_page=False)
+                    try:
+                        import vision
+
+                        desc = vision.analyze_image(
+                            str(shot),
+                            "Describe brevemente la pantalla y donde estan los botones o campos principales.",
+                            settings,
+                        )
+                        lines.append(f"Vision de la captura:\n{_bounded_text(desc, 2000)}")
+                    except Exception as exc:
+                        lines.append(f"(No pude analizar la captura con vision: {exc})")
+                lines.append("Texto visible:\n" + _bounded_text(body, 4000))
+                return "\n".join(lines)
+            finally:
+                browser.close()
+
+
+def act_on_live_page(actions_json: str = "", confirm: str = "", workspace_root: Path | None = None) -> str:
+    workspace_root = workspace_root or Path.cwd()
+    actions = _normalize_actions(actions_json)
+    if not actions:
+        raise ValueError("Indica actions_json con al menos una accion (click/fill/type/goto/press/scroll).")
+    confirm_text = str(confirm or "").strip()
+    with _BROWSER_LOCK:
+        if not _cdp_reachable():
+            raise RuntimeError("No hay un navegador de Yarbis abierto. Usa browser_open primero.")
+        sync_playwright = _load_playwright()
+        with sync_playwright() as playwright:
+            browser = playwright.chromium.connect_over_cdp(CDP_URL)
+            try:
+                page = _active_page(browser)
+                page.context.set_default_timeout(15000)
+                lines = ["Acciones en la pagina viva:"]
+                for index, action in enumerate(actions, start=1):
+                    name = action["action"]
+                    if name in ("click", "fill", "type"):
+                        locator, desc = _resolve_locator(page, action)
+                        if name == "click":
+                            try:
+                                label = (locator.inner_text(timeout=2000) or "").strip()
+                            except Exception:
+                                label = str(action.get("text", "")).strip()
+                            if _SENSITIVE_CLICK.search(label) and confirm_text.lower() != label.lower():
+                                return (
+                                    f"BLOQUEADO por seguridad: '{label or desc}' parece una accion sensible "
+                                    "(publicar/pagar/enviar/eliminar). Pide confirmacion al usuario y reintenta el "
+                                    f'click con confirm="{label}".'
+                                )
+                            locator.click()
+                            lines.append(f"{index}. click {desc} ({label[:40]})")
+                        else:
+                            value = str(action.get("value", action.get("text_value", "")))
+                            locator.fill(value)
+                            lines.append(f"{index}. escribi en {desc}")
+                    elif name == "goto":
+                        url = str(action.get("url", "")).strip()
+                        if not url:
+                            raise ValueError("goto requiere url.")
+                        page.goto(url, wait_until="domcontentloaded")
+                        lines.append(f"{index}. goto -> {page.url}")
+                    elif name == "press":
+                        key = str(action.get("key", "")).strip()
+                        if not key:
+                            raise ValueError("press requiere key.")
+                        page.keyboard.press(key)
+                        lines.append(f"{index}. press {key}")
+                    elif name == "scroll":
+                        dy = int(action.get("dy", 600))
+                        page.mouse.wheel(0, dy)
+                        lines.append(f"{index}. scroll {dy}")
+                    elif name == "wait":
+                        ms = max(0, min(120000, int(action.get("milliseconds", action.get("ms", 1000)))))
+                        page.wait_for_timeout(ms)
+                        lines.append(f"{index}. wait {ms}ms")
+                    else:
+                        lines.extend(_apply_action(page, action, workspace_root, index))
+                lines.append(f"URL final: {page.url}")
+                return "\n".join(lines)
+            finally:
+                browser.close()

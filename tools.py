@@ -11,7 +11,13 @@ from pathlib import Path
 from uuid import uuid4
 
 from atomic_io import atomic_replace
-from browser_automation import run_browser_automation
+from browser_automation import (
+    act_on_live_page,
+    observe_browser,
+    open_persistent_browser,
+    run_browser_automation,
+)
+import computer_control
 from credential_store import CredentialStoreError, load_secret, save_secret
 from process_utils import no_window_creationflags
 from integrations import (
@@ -2916,6 +2922,242 @@ def browser_automation(
         )
     except Exception as exc:
         return f"No pude completar la automatizacion del navegador: {exc}"
+
+
+def _computer_control_state(state: dict | None = None) -> dict:
+    cc = (state or load_state()).get("computer_control", {})
+    return cc if isinstance(cc, dict) else {}
+
+
+def _require_computer_control(*, need_os: bool = False) -> str:
+    cc = _computer_control_state()
+    if not cc.get("enabled"):
+        return (
+            "El control de la PC esta desactivado. Actívalo con set_computer_control(enabled=True) "
+            "o desde los ajustes antes de usar esta capacidad."
+        )
+    if need_os and not cc.get("settings", {}).get("os_control", True):
+        return "El control del sistema operativo esta desactivado en los ajustes de control de PC."
+    return ""
+
+
+def set_computer_control(
+    enabled: bool | None = None,
+    browser_channel: str = "",
+    os_control: bool | None = None,
+    confirm_sensitive: bool | None = None,
+) -> str:
+    """
+    Activa o ajusta el control de la PC (navegador propio y sistema operativo).
+
+    Args:
+        enabled (bool): Activa/desactiva la capacidad completa (apagada por defecto).
+        browser_channel (str): Canal del navegador: msedge, chrome, brave.
+        os_control (bool): Permitir control del SO (mouse/teclado) ademas del navegador.
+        confirm_sensitive (bool): Exigir confirmacion antes de acciones sensibles (publicar/pagar/eliminar).
+
+    Returns:
+        str: Estado resultante del control de PC.
+    """
+    def mutate(state):
+        cc = state.setdefault("computer_control", {})
+        settings = cc.setdefault("settings", {})
+        if enabled is not None:
+            cc["enabled"] = bool(enabled)
+        if str(browser_channel).strip():
+            settings["browser_channel"] = str(browser_channel).strip().lower()
+        if os_control is not None:
+            settings["os_control"] = bool(os_control)
+        if confirm_sensitive is not None:
+            settings["confirm_sensitive"] = bool(confirm_sensitive)
+
+    state_transaction("set_computer_control", mutate)
+    cc = _computer_control_state()
+    s = cc.get("settings", {})
+    return (
+        f"Control de PC: {'activado' if cc.get('enabled') else 'desactivado'}. "
+        f"Navegador={s.get('browser_channel', 'msedge')}, "
+        f"control SO={'si' if s.get('os_control', True) else 'no'}, "
+        f"confirmar acciones sensibles={'si' if s.get('confirm_sensitive', True) else 'no'}."
+    )
+
+
+def browser_open(url: str = "", channel: str = "") -> str:
+    """
+    Abre (o enfoca) el navegador propio de Yarbis, con ventana visible y sesion
+    persistente (tu login se guarda entre usos). Requiere control de PC activado.
+
+    Args:
+        url (str): URL inicial opcional, por ejemplo https://www.facebook.com.
+        channel (str): Canal del navegador (msedge, chrome, brave); vacio usa el configurado.
+
+    Returns:
+        str: Estado del navegador y la URL actual.
+    """
+    gate = _require_computer_control()
+    if gate:
+        return gate
+    channel = str(channel).strip() or _computer_control_state().get("settings", {}).get("browser_channel", "msedge")
+    try:
+        return open_persistent_browser(url=url, channel=channel, workspace_root=WORKSPACE_ROOT)
+    except Exception as exc:
+        return f"No pude abrir el navegador: {exc}"
+
+
+def browser_observe(screenshot: bool = False) -> str:
+    """
+    Observa la pagina viva del navegador de Yarbis: devuelve la URL, el titulo y
+    una lista numerada de elementos interactivos (usa el numero como `ref` en
+    browser_act). Con screenshot=True analiza una captura con vision.
+
+    Args:
+        screenshot (bool): Si es True, adjunta un analisis visual de la captura.
+
+    Returns:
+        str: Estado de la pagina y elementos clicables.
+    """
+    gate = _require_computer_control()
+    if gate:
+        return gate
+    try:
+        return observe_browser(screenshot=bool(screenshot), settings=load_state(), workspace_root=WORKSPACE_ROOT)
+    except Exception as exc:
+        return f"No pude observar la pagina: {exc}"
+
+
+def browser_act(actions_json: str = "", confirm: str = "") -> str:
+    """
+    Ejecuta acciones sobre la pagina viva del navegador (sin cerrarlo). Cada accion
+    es un objeto JSON: {"action":"click","ref":"5"} o {"action":"click","text":"Crear publicacion"}
+    o {"action":"fill","ref":"3","value":"mi texto"}; tambien goto/press/scroll/wait.
+    Clica preferentemente por `ref` (de browser_observe) o por `text`.
+
+    Las acciones sensibles (publicar/pagar/enviar/eliminar) se BLOQUEAN salvo que
+    pases confirm="<texto exacto del boton>", tras pedir confirmacion al usuario.
+
+    Args:
+        actions_json (str): Lista JSON de acciones.
+        confirm (str): Texto exacto del boton sensible que el usuario autorizo.
+
+    Returns:
+        str: Resultado de las acciones y la URL final.
+    """
+    gate = _require_computer_control()
+    if gate:
+        return gate
+    try:
+        return act_on_live_page(actions_json=actions_json, confirm=confirm, workspace_root=WORKSPACE_ROOT)
+    except Exception as exc:
+        return f"No pude actuar en la pagina: {exc}"
+
+
+def desktop_look(prompt: str = "") -> str:
+    """
+    Captura la pantalla del escritorio y la describe con el modelo de vision, para
+    decidir donde hacer clic. Requiere control de PC + control de SO activados.
+
+    Args:
+        prompt (str): Que quieres saber de la pantalla.
+
+    Returns:
+        str: Descripcion visual de la pantalla.
+    """
+    gate = _require_computer_control(need_os=True)
+    if gate:
+        return gate
+    try:
+        return computer_control.look(prompt, settings=load_state())
+    except Exception as exc:
+        return f"No pude mirar la pantalla: {exc}"
+
+
+def desktop_screen_size() -> str:
+    """Devuelve el tamano de la pantalla (ancho x alto) para calcular coordenadas."""
+    gate = _require_computer_control(need_os=True)
+    if gate:
+        return gate
+    try:
+        width, height = computer_control.screen_size()
+        return f"Pantalla: {width} x {height} pixeles."
+    except Exception as exc:
+        return f"No pude leer el tamano de pantalla: {exc}"
+
+
+def desktop_click(x: int, y: int, button: str = "left", clicks: int = 1, label: str = "", confirm: str = "") -> str:
+    """
+    Hace clic en la coordenada (x, y) del escritorio. Requiere control de PC + SO.
+    Pasa `label` con lo que crees estar clicando; si parece sensible
+    (publicar/pagar/eliminar) se bloquea hasta que pases confirm="<label>".
+
+    Args:
+        x (int): Coordenada X en pixeles.
+        y (int): Coordenada Y en pixeles.
+        button (str): left, right o middle.
+        clicks (int): Numero de clics (1-3).
+        label (str): Descripcion de lo que se clica (para el gate de seguridad).
+        confirm (str): Igual al label si el usuario autorizo una accion sensible.
+
+    Returns:
+        str: Resultado del clic.
+    """
+    gate = _require_computer_control(need_os=True)
+    if gate:
+        return gate
+    lbl = str(label).strip()
+    if (
+        _computer_control_state().get("settings", {}).get("confirm_sensitive", True)
+        and computer_control.label_is_sensitive(lbl)
+        and str(confirm).strip().lower() != lbl.lower()
+    ):
+        return (
+            f"BLOQUEADO por seguridad: '{lbl}' parece una accion sensible. "
+            f'Pide confirmacion al usuario y reintenta con confirm="{lbl}".'
+        )
+    try:
+        return computer_control.click(x, y, button, clicks)
+    except Exception as exc:
+        return f"No pude hacer click: {exc}"
+
+
+def desktop_move(x: int, y: int) -> str:
+    """Mueve el cursor del mouse a (x, y). Requiere control de PC + SO."""
+    gate = _require_computer_control(need_os=True)
+    if gate:
+        return gate
+    try:
+        return computer_control.move_mouse(x, y)
+    except Exception as exc:
+        return f"No pude mover el mouse: {exc}"
+
+
+def desktop_type(text: str = "") -> str:
+    """Escribe texto con el teclado en la app enfocada. Requiere control de PC + SO."""
+    gate = _require_computer_control(need_os=True)
+    if gate:
+        return gate
+    try:
+        return computer_control.type_text(text)
+    except Exception as exc:
+        return f"No pude escribir: {exc}"
+
+
+def desktop_press(keys: str = "") -> str:
+    """
+    Presiona una tecla o combinacion (ej. 'enter' o 'ctrl+v'). Requiere control de PC + SO.
+
+    Args:
+        keys (str): Tecla o combinacion separada por + o espacio.
+
+    Returns:
+        str: Resultado.
+    """
+    gate = _require_computer_control(need_os=True)
+    if gate:
+        return gate
+    try:
+        return computer_control.press_keys(keys)
+    except Exception as exc:
+        return f"No pude presionar teclas: {exc}"
 
 
 def create_calendar_event(

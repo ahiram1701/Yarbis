@@ -42,6 +42,16 @@ from tools import (
     add_task,
     agent_overview,
     browser_automation,
+    browser_open,
+    browser_observe,
+    browser_act,
+    set_computer_control,
+    desktop_look,
+    desktop_screen_size,
+    desktop_click,
+    desktop_move,
+    desktop_type,
+    desktop_press,
     coding_apply_and_validate,
     coding_apply_proposal,
     coding_check_proposal,
@@ -834,6 +844,16 @@ tool_definitions = [
     web_search,
     fetch_web_page,
     browser_automation,
+    browser_open,
+    browser_observe,
+    browser_act,
+    set_computer_control,
+    desktop_look,
+    desktop_screen_size,
+    desktop_click,
+    desktop_move,
+    desktop_type,
+    desktop_press,
     create_calendar_event,
     compose_email,
     open_system_target,
@@ -933,6 +953,16 @@ available_functions = {
     "web_search": web_search,
     "fetch_web_page": fetch_web_page,
     "browser_automation": browser_automation,
+    "browser_open": browser_open,
+    "browser_observe": browser_observe,
+    "browser_act": browser_act,
+    "set_computer_control": set_computer_control,
+    "desktop_look": desktop_look,
+    "desktop_screen_size": desktop_screen_size,
+    "desktop_click": desktop_click,
+    "desktop_move": desktop_move,
+    "desktop_type": desktop_type,
+    "desktop_press": desktop_press,
     "create_calendar_event": create_calendar_event,
     "compose_email": compose_email,
     "open_system_target": open_system_target,
@@ -1065,6 +1095,13 @@ ACTION_PROOF_TOOL_NAMES = {
     "run_project_check",
     "run_system_command",
     "browser_automation",
+    "browser_open",
+    "browser_act",
+    "set_computer_control",
+    "desktop_click",
+    "desktop_move",
+    "desktop_type",
+    "desktop_press",
     "create_calendar_event",
     "compose_email",
     "open_system_target",
@@ -1492,8 +1529,10 @@ Reglas:
 - Usa `promote_idea_project_to_work` cuando el usuario ya quiera ejecutar una idea: activa el proyecto, copia sus proximos pasos al plan y crea tareas sin duplicar.
 - Si una idea esta borrosa pero puedes avanzar con supuestos razonables, crea o actualiza el proyecto con esos supuestos y deja preguntas abiertas; si falta una decision privada critica, pregunta una sola cosa concreta y detente.
 - Para creacion de contenido en redes sociales, aterriza nicho, audiencia, objetivo, plataforma, tono, oferta/CTA y restricciones de marca antes de producir piezas definitivas. Puedes crear briefs, calendarios, drafts, captions, guiones, hashtags y publicaciones pendientes con las tools sociales.
-- Nunca publiques en redes sociales sin confirmacion exacta del usuario usando `PUBLICAR <id>` y la tool `confirm_social_publication`. Para perfil personal de Facebook usa solo flujo asistido con `open_assisted_social_post`; no intentes publicar automaticamente ni simular el click final.
-- Facebook Pages, Instagram profesional y LinkedIn pueden publicarse por API si hay cuentas conectadas. Perfil personal de Facebook no usa Graph API para publicar; prepara el copy, copia al portapapeles y abre Facebook o Share Dialog para que el usuario haga el click final.
+- Nunca publiques en redes sociales por API sin confirmacion exacta del usuario usando `PUBLICAR <id>` y la tool `confirm_social_publication`.
+- Facebook Pages, Instagram profesional y LinkedIn pueden publicarse por API si hay cuentas conectadas.
+- Control de la PC (navegador y sistema): solo disponible si `computer_control.enabled` esta activo en el estado (si esta apagado, pide al usuario activarlo con `set_computer_control`). Para tareas web como publicar en Facebook personal, usa el navegador propio de Yarbis en bucle: `browser_open` (abre la ventana; si no hay sesion iniciada, pide al usuario loguearse una vez), luego `browser_observe` para ver los elementos clicables (por `ref`), y `browser_act` para escribir y hacer clic por `ref`/`text`. Antes del clic final de "Publicar" (o cualquier accion sensible: pagar, enviar, eliminar) DEBES pedir confirmacion explicita al usuario y solo entonces reintentar `browser_act` con `confirm="<texto exacto del boton>"`. El navegador es visible. Prefiere siempre el navegador (DOM) sobre el control por coordenadas.
+- Control del SO por coordenadas (`desktop_look`, `desktop_click`, `desktop_type`, `desktop_press`) es best-effort para apps sin navegador: mira la pantalla con `desktop_look` antes de clicar, y pide confirmacion antes de acciones sensibles. Nunca uses control de PC durante pulsos proactivos autonomos.
 - Respeta la politica de internet visible en el estado. Si el usuario pide cambiarla, usa `update_internet_settings`.
 - Cuando necesites una respuesta del usuario, usa `request_user_input` con una sola pregunta clara y concreta, explica brevemente por que falta ese dato y detente. No sigas produciendo contenido que dependa de esa respuesta.
 - Cuando el usuario este en una conversacion por voz, responde con frases naturales y accionables: evita listas largas si no hacen falta, deja claro el siguiente paso y formula una sola pregunta facil de contestar en voz.
