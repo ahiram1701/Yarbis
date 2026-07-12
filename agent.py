@@ -218,7 +218,7 @@ class YarbisOllamaClient(OllamaClient):
 Client = YarbisOllamaClient
 
 DEFAULT_MODEL = DEFAULT_OLLAMA_MODEL
-DEFAULT_EMPTY_RESPONSE_RETRIES = 1
+DEFAULT_EMPTY_RESPONSE_RETRIES = 2
 DEFAULT_OPENROUTER_HTTP_RETRIES = 1
 DEFAULT_OPENROUTER_RETRY_DELAY_SECONDS = 1.0
 WAITING_FOR_INSTRUCTIONS_QUESTION = "Que instruccion quieres que siga ahora?"
@@ -1838,8 +1838,12 @@ def _handle_chat_error(state, exc: Exception):
     }
 
 
-def _handle_empty_response(state):
-    error_text = "El modelo devolvio una respuesta vacia en este ciclo."
+def _handle_empty_response(state, model_candidates=None):
+    tried_models = ", ".join(model_candidates) if model_candidates else "modelo configurado"
+    error_text = (
+        f"El modelo devolvio una respuesta vacia en este ciclo "
+        f"(modelos intentados: {tried_models})."
+    )
     _print_output(f"\nYarbis:\n{error_text}")
     _record_assistant_message(state, error_text)
     return error_text
@@ -2615,11 +2619,20 @@ def run_one_cycle(max_steps=None, model_override: str | None = None):
         if not final_text:
             if empty_response_retries < EMPTY_RESPONSE_RETRIES:
                 empty_response_retries += 1
+                # Rotar modelos: en el primer retry, intentar con el siguiente modelo fallback
+                if empty_response_retries == 1 and len(model_candidates) > 1:
+                    rotated = model_candidates[1:] + [model_candidates[0]]
+                    model_settings = {**model_settings, "models": rotated}
+                    model_candidates = rotated
+                    print(f"Respuesta vacia del modelo. Reintentando con fallback: {rotated[0]}")
+                else:
+                    print(f"Respuesta vacia del modelo. Reintento {empty_response_retries}/{EMPTY_RESPONSE_RETRIES}.")
                 retry_message = {
                     "role": "user",
                     "content": (
                         "Tu respuesta anterior llego vacia. Responde ahora con una salida util, "
-                        "concreta y final para este ciclo."
+                        "concreta y final para este ciclo. Si ya ejecutaste herramientas, "
+                        "resume los resultados obtenidos y da el siguiente paso."
                     ),
                 }
                 state_transaction(
@@ -2629,7 +2642,7 @@ def run_one_cycle(max_steps=None, model_override: str | None = None):
                 state = load_state()
                 continue
 
-            final_text = _handle_empty_response(state)
+            final_text = _handle_empty_response(state, model_candidates=model_candidates)
             return {
                 "status": "empty",
                 "content": final_text,

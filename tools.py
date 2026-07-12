@@ -6403,14 +6403,12 @@ def vision_status() -> str:
     Returns:
         str: Estado de vision.
     """
-    settings = load_state().get("vision", {})
-    if not isinstance(settings, dict):
-        settings = {}
+    model, max_dim, timeout, _ = vision._vision_settings(load_state())
     return (
         "Vision de Yarbis:\n"
-        f"- Modelo: {settings.get('model', '')}\n"
-        f"- Tamano maximo de imagen: {settings.get('max_image_dim', '')}px\n"
-        f"- Timeout: {settings.get('timeout_seconds', '')}s"
+        f"- Modelo: {model}\n"
+        f"- Tamano maximo de imagen: {max_dim}px\n"
+        f"- Timeout: {timeout}s"
     )
 
 
