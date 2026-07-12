@@ -91,6 +91,58 @@ class MemoryTestCase(unittest.TestCase):
         self.assertEqual(state["coding"]["validation_command"], "")
         self.assertIsNone(state["coding"]["last_validation"]["exit_code"])
 
+    def test_load_state_tolerates_utf8_bom_and_heals(self):
+        # Reproduce el bug: un state.json valido pero con BOM UTF-8 (p.ej. escrito
+        # por PowerShell al trasplantar la memoria) NO debe resetear a defaults.
+        import atomic_io
+
+        state_path = TEST_RUNTIME_DIR / f"memory_bom_state_{uuid4().hex[:8]}.json"
+        lock_path = state_path.with_suffix(".lock")
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+
+        state = memory.default_state()
+        state["goal"] = "mi objetivo personal"
+        state["profile"]["name"] = "Ahiram"
+        state["messages"] = [{"role": "user", "content": "hola"}]
+        # Escribir CON BOM (bytes).
+        raw = ("﻿" + json.dumps(state, ensure_ascii=False)).encode("utf-8")
+        state_path.write_bytes(raw)
+        self.assertTrue(atomic_io.file_has_bom(state_path))
+
+        with patch.object(memory, "STATE_FILE", state_path):
+            with patch.object(memory, "STATE_LOCK_FILE", lock_path):
+                loaded = memory.load_state()
+
+        # No se perdio la memoria.
+        self.assertEqual(loaded["goal"], "mi objetivo personal")
+        self.assertEqual(loaded["profile"]["name"], "Ahiram")
+        self.assertEqual(loaded["messages"], [{"role": "user", "content": "hola"}])
+        # El archivo quedo auto-sanado (sin BOM).
+        self.assertFalse(atomic_io.file_has_bom(state_path))
+
+    def test_load_backup_package_tolerates_bom(self):
+        import memory_backup
+
+        p = TEST_RUNTIME_DIR / f"backup_bom_{uuid4().hex[:8]}.json"
+        pkg = {
+            "format": memory_backup.BACKUP_FORMAT,
+            "schema_version": memory_backup.SCHEMA_VERSION,
+            "state": {"goal": "x"},
+            "created_at": "2026-01-01T00:00:00Z",
+        }
+        p.write_bytes(("﻿" + json.dumps(pkg)).encode("utf-8"))
+        loaded = memory_backup.load_backup_package(p)
+        self.assertEqual(loaded["state"]["goal"], "x")
+
+    def test_read_json_bom_safe_handles_bom_and_plain(self):
+        import atomic_io
+
+        p = TEST_RUNTIME_DIR / f"bomsafe_{uuid4().hex[:8]}.json"
+        p.write_bytes(("﻿" + json.dumps({"a": 1})).encode("utf-8"))
+        self.assertEqual(atomic_io.read_json_bom_safe(p), {"a": 1})
+        p.write_text(json.dumps({"b": 2}), encoding="utf-8")
+        self.assertEqual(atomic_io.read_json_bom_safe(p), {"b": 2})
+
     def test_legacy_default_goal_normalizes_to_empty(self):
         normalized = memory.normalize_state({
             "goal": "Ayudar al usuario de forma autonoma con tareas locales.",

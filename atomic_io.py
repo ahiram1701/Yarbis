@@ -7,12 +7,39 @@ instancias escribiendo el mismo `state.json`/bus/backup a la vez esto se vuelve
 frecuente, así que reintentamos con backoff exponencial + jitter.
 """
 
+import json
 import random
 import time
 from pathlib import Path
 
 DEFAULT_MAX_RETRIES = 5
 _BASE_DELAY_SECONDS = 0.05
+
+_UTF8_BOM = "﻿"
+
+
+def file_has_bom(path: Path) -> bool:
+    """True si el archivo empieza con un BOM UTF-8 (\\xef\\xbb\\xbf)."""
+    try:
+        with open(path, "rb") as handle:
+            return handle.read(3) == b"\xef\xbb\xbf"
+    except OSError:
+        return False
+
+
+def read_text_bom_safe(path: Path) -> str:
+    """Lee texto UTF-8 tolerando un BOM opcional.
+
+    Windows PowerShell (`Out-File`/`Set-Content -Encoding utf8`) escribe UTF-8 CON
+    BOM; leer con `utf-8` estricto rompe (`Unexpected UTF-8 BOM`). `utf-8-sig`
+    descarta el BOM si existe y es no-op si no. Evita falsos "archivo corrupto".
+    """
+    return Path(path).read_text(encoding="utf-8-sig")
+
+
+def read_json_bom_safe(path: Path):
+    """Carga JSON tolerando un BOM UTF-8 opcional al inicio del archivo."""
+    return json.loads(read_text_bom_safe(path))
 
 
 def atomic_replace(tmp_path: Path, target_path: Path, max_retries: int = DEFAULT_MAX_RETRIES) -> None:

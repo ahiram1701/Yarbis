@@ -7,7 +7,7 @@ from pathlib import Path
 from uuid import uuid4
 
 import yarbis_instance
-from atomic_io import atomic_replace
+from atomic_io import atomic_replace, read_json_bom_safe
 
 WORKSPACE_ROOT = Path(__file__).resolve().parent
 BACKUPS_DIR = yarbis_instance.memory_backups_dir()
@@ -117,14 +117,12 @@ def write_json_atomic(
             os.fsync(file.fileno())
 
         if verify:
-            with open(tmp_path, "r", encoding="utf-8") as file:
-                json.load(file)
+            read_json_bom_safe(tmp_path)
 
         atomic_replace(tmp_path, target)
 
         if verify:
-            with open(target, "r", encoding="utf-8") as file:
-                stored = json.load(file)
+            stored = read_json_bom_safe(target)
             if stored != payload:
                 raise MemoryBackupError(f"La verificacion posterior fallo para {target}.")
     except MemoryBackupError:
@@ -279,7 +277,7 @@ def resolve_import_path(
 def load_backup_package(path: Path | str, *, normalizer=None) -> dict:
     backup_path = Path(path)
     try:
-        package = json.loads(backup_path.read_text(encoding="utf-8"))
+        package = read_json_bom_safe(backup_path)
     except FileNotFoundError as exc:
         raise MemoryBackupError(f"No existe el respaldo de memoria: {backup_path}") from exc
     except json.JSONDecodeError as exc:

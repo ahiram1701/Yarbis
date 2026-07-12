@@ -7,6 +7,8 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
+from atomic_io import read_json_bom_safe, read_text_bom_safe
+
 
 WORKSPACE_ROOT = Path(__file__).resolve().parent
 INSTANCES_ROOT = WORKSPACE_ROOT / ".yarbis_instances"
@@ -165,7 +167,7 @@ def _utc_now() -> str:
 
 def _load_registry() -> dict:
     try:
-        payload = json.loads(registry_file().read_text(encoding="utf-8"))
+        payload = read_json_bom_safe(registry_file())
     except (FileNotFoundError, OSError, json.JSONDecodeError):
         payload = {}
     if not isinstance(payload, dict):
@@ -291,7 +293,7 @@ def _pid_is_running(pid: int) -> bool:
 
 def _read_pid(path: Path) -> int:
     try:
-        return int(path.read_text(encoding="utf-8").strip())
+        return int(read_text_bom_safe(path).strip())
     except (FileNotFoundError, OSError, ValueError):
         return 0
 

@@ -10,6 +10,7 @@ from uuid import uuid4
 
 import memory_backup
 import yarbis_instance
+from atomic_io import file_has_bom, read_json_bom_safe
 
 try:
     import msvcrt
@@ -3063,7 +3064,7 @@ def _memory_protection_config_file() -> Path:
 def _load_memory_protection_runtime_config() -> dict:
     config_path = _memory_protection_config_file()
     try:
-        payload = json.loads(config_path.read_text(encoding="utf-8"))
+        payload = read_json_bom_safe(config_path)
     except (OSError, json.JSONDecodeError):
         return default_state()["memory_protection"]
 
@@ -3088,7 +3089,7 @@ def _write_memory_protection_runtime_config(settings: dict) -> None:
     }
     config_path = _memory_protection_config_file()
     try:
-        existing = json.loads(config_path.read_text(encoding="utf-8"))
+        existing = read_json_bom_safe(config_path)
     except (FileNotFoundError, OSError, json.JSONDecodeError):
         existing = None
     if existing == payload:
@@ -3199,8 +3200,12 @@ def _load_state_unlocked():
         )
         return recovered_state or default_state()
 
+    had_bom = file_has_bom(state_path)
     try:
-        with open(state_path, "r", encoding="utf-8") as file:
+        # utf-8-sig tolera un BOM opcional (p.ej. si el estado se trasplanto con
+        # PowerShell, que escribe UTF-8 CON BOM). Antes se usaba utf-8 estricto y
+        # un BOM tumbaba una memoria perfectamente valida -> reset a "como nueva".
+        with open(state_path, "r", encoding="utf-8-sig") as file:
             state = json.load(file)
     except (OSError, json.JSONDecodeError, UnicodeDecodeError) as exc:
         recovered_state = _recover_state_from_backups_unlocked("corrupt", exc)
@@ -3208,6 +3213,12 @@ def _load_state_unlocked():
 
     normalized = normalize_state(state)
     _write_memory_protection_runtime_config(normalized["memory_protection"])
+    if had_bom:
+        # Auto-sanado: reescribir sin BOM para que el archivo quede limpio.
+        try:
+            _write_state_file_atomic(normalized, verify_after_write=False)
+        except Exception:
+            pass
     return normalized
 
 

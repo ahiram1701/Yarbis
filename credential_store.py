@@ -8,6 +8,7 @@ from pathlib import Path
 from uuid import uuid4
 
 import yarbis_instance
+from atomic_io import read_json_bom_safe
 
 WORKSPACE_ROOT = Path(__file__).resolve().parent
 CREDENTIALS_DIR = yarbis_instance.runtime_dir() / "credentials"
@@ -146,7 +147,7 @@ def save_secret(secret: str, kind: str = "social", metadata: dict | None = None)
 def load_secret(ref: str) -> str:
     path = _credential_path(ref)
     try:
-        record = json.loads(path.read_text(encoding="utf-8"))
+        record = read_json_bom_safe(path)
     except FileNotFoundError as exc:
         raise CredentialStoreError(f"No encontre la credencial: {ref}") from exc
     except (OSError, json.JSONDecodeError) as exc:
