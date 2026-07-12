@@ -58,6 +58,7 @@ from memory import (
     state_transaction,
     verify_memory_backups as verify_memory_backups_data,
 )
+import self_changes
 from self_knowledge import get_cached_source_signature, render_self_knowledge_summary
 from social_oauth import SocialOAuthError, connect_social_account
 from social_publishing import SocialPublishError, facebook_assisted_url, publish_publication
@@ -788,6 +789,14 @@ def _write_text_file_impl(path: str, content: str, enforce_coding_guard: bool = 
 
     diff_preview = _render_diff_preview(file_path, previous_content, content)
     operation = "Archivo actualizado" if existed_before else "Archivo creado"
+
+    self_changes.record_change(
+        file_path=file_path,
+        action="write" if existed_before else "create",
+        reason="write_text_file",
+        checkpoint_id=checkpoint_id or "",
+        diff_preview=diff_preview,
+    )
 
     return (
         f"{operation} correctamente en: {_workspace_relative(file_path)}\n"
@@ -1896,6 +1905,26 @@ def coding_apply_proposal(proposal_id: str) -> str:
                 "Puedes restaurar el checkpoint si hace falta."
             )
 
+        if item["operation"] == CODING_FILE_OPERATION_DELETE:
+            proposal_diff = ""
+            proposal_action = "delete"
+        else:
+            proposal_diff = _render_diff_preview_with_labels(
+                item["previous_content"],
+                item["proposed_content"],
+                fromfile=f"a/{item['relative_path'].as_posix()}",
+                tofile=f"b/{item['relative_path'].as_posix()}",
+            )
+            proposal_action = "proposal_applied"
+        self_changes.record_change(
+            file_path=item["target_path"],
+            action=proposal_action,
+            reason=str(proposal.get("title", "")).strip() or "coding_apply_proposal",
+            checkpoint_id=checkpoint_id or "",
+            proposal_id=str(proposal.get("id", proposal_id)),
+            diff_preview=proposal_diff,
+        )
+
         applied.append(
             f"- {operation_text}: {item['relative_path'].as_posix()} (checkpoint {checkpoint_id})"
         )
@@ -2359,11 +2388,96 @@ def restore_checkpoint(checkpoint_id: str) -> str:
     except OSError as exc:
         return f"No pude restaurar el checkpoint {metadata.get('id')}: {exc}"
 
+    self_changes.record_change(
+        file_path=target_path,
+        action="checkpoint_restored",
+        reason=f"restore_checkpoint:{metadata.get('id', checkpoint_id)}",
+        checkpoint_id=str(metadata.get("id", checkpoint_id)),
+    )
+
     return (
         f"{action}\n"
         f"Checkpoint usado: {metadata.get('id')}\n"
         f"Archivo: {metadata.get('target_path')}\n"
         "Siguiente paso recomendado: ejecuta `run_project_tests` para validar el estado restaurado."
+    )
+
+
+def list_self_code_changes(limit: int = 10, include_diff: bool = False) -> str:
+    """
+    Lista los auto-cambios de codigo que Yarbis se ha aplicado a si mismo.
+
+    Es la bitacora de cambios pendientes de versionar en el repositorio git.
+    Cada vez que Yarbis modifica su propio codigo fuente (write_text_file,
+    coding_apply_proposal o restore_checkpoint) queda registrado aqui.
+
+    Args:
+        limit (int): Cuantas entradas recientes mostrar (1-50).
+        include_diff (bool): Si es True, incluye la vista previa del diff de cada cambio.
+
+    Returns:
+        str: Resumen de los auto-cambios registrados.
+    """
+    try:
+        cleaned_limit = max(1, min(int(limit), 50))
+    except (TypeError, ValueError):
+        cleaned_limit = 10
+
+    entries = self_changes.load_changes()
+    if not entries:
+        return (
+            "No hay auto-cambios de codigo registrados.\n"
+            "La bitacora se llena cuando modifico mi propio codigo fuente."
+        )
+
+    total = len(entries)
+    recent = entries[-cleaned_limit:]
+    lines = [
+        f"Auto-cambios de codigo registrados: {total} (mostrando {len(recent)} mas recientes).",
+        "Estos cambios viven solo en esta copia: hay que versionarlos en el repositorio git.",
+        "",
+    ]
+    for entry in recent:
+        stamp = str(entry.get("timestamp", ""))[:19].replace("T", " ")
+        detail = f"- [{stamp} UTC] {entry.get('instance', '?')} | {entry.get('action', '?')} | {entry.get('file', '?')}"
+        reason = str(entry.get("reason", "")).strip()
+        if reason and reason != "write_text_file":
+            detail += f" | {reason}"
+        if entry.get("proposal_id"):
+            detail += f" | propuesta {entry['proposal_id']}"
+        if entry.get("checkpoint_id"):
+            detail += f" | checkpoint {entry['checkpoint_id']}"
+        lines.append(detail)
+        if include_diff and str(entry.get("diff_preview", "")).strip():
+            lines.append(str(entry["diff_preview"]).strip())
+            lines.append("")
+
+    lines.append("")
+    lines.append(
+        "Cuando estos cambios ya esten en git, usa `mark_self_code_changes_versioned` para archivar la bitacora."
+    )
+    return "\n".join(lines)
+
+
+def mark_self_code_changes_versioned(note: str = "") -> str:
+    """
+    Archiva la bitacora de auto-cambios de codigo (ya subidos a git) y la vacia.
+
+    Usalo SOLO despues de confirmar que los cambios listados en
+    list_self_code_changes ya fueron adoptados en el repositorio git.
+
+    Args:
+        note (str): Nota opcional (por ejemplo, el commit donde se versionaron).
+
+    Returns:
+        str: Resultado del archivado.
+    """
+    archived = self_changes.mark_all_versioned(note=note)
+    if archived == 0:
+        return "La bitacora de auto-cambios ya estaba vacia."
+    return (
+        f"Bitacora archivada: {archived} auto-cambio(s) marcados como versionados.\n"
+        "El historial queda en un archivo .yarbis_self_changes.versioned-*.jsonl del workspace."
     )
 
 

@@ -92,6 +92,8 @@ from tools import (
     list_files,
     list_checkpoints,
     list_memory_backups,
+    list_self_code_changes,
+    mark_self_code_changes_versioned,
     list_notes,
     list_project_visual_boards,
     list_tasks,
@@ -839,6 +841,8 @@ tool_definitions = [
     write_text_file,
     list_checkpoints,
     restore_checkpoint,
+    list_self_code_changes,
+    mark_self_code_changes_versioned,
     run_project_tests,
     run_project_check,
     run_system_command,
@@ -949,6 +953,8 @@ available_functions = {
     "write_text_file": write_text_file,
     "list_checkpoints": list_checkpoints,
     "restore_checkpoint": restore_checkpoint,
+    "list_self_code_changes": list_self_code_changes,
+    "mark_self_code_changes_versioned": mark_self_code_changes_versioned,
     "run_project_tests": run_project_tests,
     "run_project_check": run_project_check,
     "run_system_command": run_system_command,
@@ -1051,6 +1057,7 @@ PROACTIVE_SAFE_TOOL_NAMES = {
     "evolution_propose_goal",
     "evolution_propose_memory",
     "evolution_list_suggestions",
+    "list_self_code_changes",
     "analyze_image",
     "vision_status",
     "social_accounts_overview",
@@ -1561,6 +1568,7 @@ Reglas:
 - Usa `run_system_command` para comandos arbitrarios del sistema cuando una tarea lo necesite. Usa `open_system_target`, `compose_email` y `create_calendar_event` para integraciones locales con apps del sistema.
 - Despues de modificar codigo o tests, ejecuta `run_project_tests`; antes de cerrar cambios grandes, usa `run_project_check` para tests Python y build .NET.
 - Si un cambio rompe algo, revisa `list_checkpoints` y usa `restore_checkpoint` para volver al estado anterior.
+- Cada cambio que apliques a tu PROPIO codigo fuente queda registrado automaticamente en una bitacora de auto-cambios. El usuario la revisa con `list_self_code_changes` para versionar esos cambios en git; no viven en el repositorio hasta entonces. Cuando ya esten versionados, se archiva con `mark_self_code_changes_versioned`.
 - Despues de cada accion, evalua el siguiente mejor paso.
 - Si una tarea ya quedo resuelta, dilo claramente y deja evidencia en el estado.
 - Responde en espanol.

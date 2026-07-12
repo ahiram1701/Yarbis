@@ -11,6 +11,8 @@ tests_runtime/
 .yarbis_instances/
 .yarbis_memory_backups/
 .yarbis_runtime/
+.yarbis_self_changes.jsonl
+.yarbis_self_changes.versioned-*.jsonl
 *.egg-info/
 service_host/bin/
 service_host/obj/
