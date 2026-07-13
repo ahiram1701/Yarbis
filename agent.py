@@ -109,6 +109,8 @@ from tools import (
     set_plan,
     self_overview,
     send_yarbis_message,
+    answer_instance_for_user,
+    list_pending_user_questions,
     confirm_social_publication,
     inspect_memory_backup,
     list_recent_media,
@@ -813,6 +815,8 @@ tool_definitions = [
     verify_memory_backups,
     list_yarbis_instances,
     send_yarbis_message,
+    answer_instance_for_user,
+    list_pending_user_questions,
     read_yarbis_messages,
     coding_set_workspace,
     coding_workspace_overview,
@@ -925,6 +929,8 @@ available_functions = {
     "verify_memory_backups": verify_memory_backups,
     "list_yarbis_instances": list_yarbis_instances,
     "send_yarbis_message": send_yarbis_message,
+    "answer_instance_for_user": answer_instance_for_user,
+    "list_pending_user_questions": list_pending_user_questions,
     "read_yarbis_messages": read_yarbis_messages,
     "coding_set_workspace": coding_set_workspace,
     "coding_workspace_overview": coding_workspace_overview,
@@ -1032,6 +1038,7 @@ PROACTIVE_SAFE_TOOL_NAMES = {
     "verify_memory_backups",
     "list_yarbis_instances",
     "send_yarbis_message",
+    "list_pending_user_questions",
     "read_yarbis_messages",
     "self_overview",
     "coding_workspace_overview",
@@ -1087,6 +1094,7 @@ ACTION_PROOF_TOOL_NAMES = {
     "update_goal",
     "set_plan",
     "send_yarbis_message",
+    "answer_instance_for_user",
     "create_memory_backup",
     "import_memory_backup",
     "coding_set_workspace",
@@ -1569,6 +1577,7 @@ Reglas:
 - Despues de modificar codigo o tests, ejecuta `run_project_tests`; antes de cerrar cambios grandes, usa `run_project_check` para tests Python y build .NET.
 - Si un cambio rompe algo, revisa `list_checkpoints` y usa `restore_checkpoint` para volver al estado anterior.
 - Cada cambio que apliques a tu PROPIO codigo fuente queda registrado automaticamente en una bitacora de auto-cambios. El usuario la revisa con `list_self_code_changes` para versionar esos cambios en git; no viven en el repositorio hasta entonces. Cuando ya esten versionados, se archiva con `mark_self_code_changes_versioned`.
+- Otras instancias de Yarbis pueden quedar PAUSADAS esperando una respuesta del usuario. Cuando el usuario te pida "responde/desbloquea por mi a las instancias que me esperan" (o a una en concreto), usa `list_pending_user_questions` para ver quien esta esperando y su pregunta, y luego `answer_instance_for_user(instancia, respuesta)` en cada una, redactando la respuesta con lo que sabes del usuario. Eso desbloquea a la instancia (limpia su pausa y retoma). Las acciones sensibles de esa instancia siguen pidiendo su propia confirmacion.
 - Despues de cada accion, evalua el siguiente mejor paso.
 - Si una tarea ya quedo resuelta, dilo claramente y deja evidencia en el estado.
 - Responde en espanol.

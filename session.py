@@ -2177,25 +2177,30 @@ def submit_user_reply(
     reply_text: str,
     emit_notifications: bool = True,
     blocking: bool = True,
+    attribution: str = "",
+    intercept_commands: bool = True,
 ) -> str:
     with session_operation_lock("Respuesta", blocking=blocking):
         cleaned_reply = str(reply_text).strip()
         if not cleaned_reply:
             raise ValueError("La respuesta no puede quedar vacia.")
 
-        if is_self_analysis_request(cleaned_reply):
+        attribution_label = str(attribution or "").strip()
+
+        if intercept_commands and is_self_analysis_request(cleaned_reply):
             result = run_self_analysis_with_output(emit_notifications=False)
             _mirror_telegram_response("Autoanalisis", result, enabled=emit_notifications)
             return result
 
-        note_result = handle_note_text_request(cleaned_reply)
-        if note_result is not None:
-            _mirror_telegram_response(
-                note_request_label(cleaned_reply) or "Notas",
-                note_result,
-                enabled=emit_notifications,
-            )
-            return note_result
+        if intercept_commands:
+            note_result = handle_note_text_request(cleaned_reply)
+            if note_result is not None:
+                _mirror_telegram_response(
+                    note_request_label(cleaned_reply) or "Notas",
+                    note_result,
+                    enabled=emit_notifications,
+                )
+                return note_result
 
         def mutate(state):
             had_pending_question = has_pending_user_question(state)
@@ -2205,6 +2210,11 @@ def submit_user_reply(
                 state,
                 had_pending_question,
             )
+            if attribution_label:
+                message_content = (
+                    f"[Respondido en tu nombre por la {attribution_label}]\n"
+                    f"{message_content}"
+                )
             state["messages"].append({
                 "role": "user",
                 "content": message_content,

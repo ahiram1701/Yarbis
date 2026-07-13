@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
 
-from atomic_io import atomic_replace
+from atomic_io import atomic_replace, read_json_bom_safe
 from browser_automation import (
     _confirm_satisfies,
     act_on_live_page,
@@ -4859,6 +4859,91 @@ def read_yarbis_messages(limit: int = 20, unread_only: bool = True) -> str:
             f"{content[:600] or '-'}"
         )
     return "\n".join(lines)
+
+
+def list_pending_user_questions() -> str:
+    """
+    Lista las otras instancias de Yarbis que estan PAUSADAS esperando una respuesta del usuario.
+
+    Util cuando el usuario pide "desbloquea/responde por mi a las instancias que me
+    esperan": muestra que instancia esta bloqueada, su pregunta pendiente y si esta
+    activa. Luego usa answer_instance_for_user para desbloquear cada una.
+
+    Returns:
+        str: Instancias con pregunta pendiente (o aviso de que no hay ninguna).
+    """
+    current = yarbis_instance.current_instance_id()
+    lines = []
+    for item in yarbis_instance.list_instances():
+        instance_id = str(item.get("id", "")).strip()
+        if not instance_id or instance_id == current:
+            continue
+        try:
+            state_payload = read_json_bom_safe(Path(item["state_file"]))
+        except (OSError, ValueError, KeyError):
+            continue
+        awaiting = state_payload.get("awaiting_user_input", {})
+        if not isinstance(awaiting, dict) or not awaiting.get("pending"):
+            continue
+        question = str(awaiting.get("question", "")).strip()
+        if not question:
+            continue
+        reason = str(awaiting.get("reason", "")).strip()
+        active = yarbis_bus.instance_is_active(instance_id)
+        detail = f"- {instance_id} ({'activa' if active else 'inactiva'}): {question}"
+        if reason:
+            detail += f" | motivo: {reason}"
+        lines.append(detail)
+
+    if not lines:
+        return "Ninguna otra instancia esta esperando tu respuesta ahora mismo."
+    return (
+        "Instancias esperando tu respuesta:\n"
+        + "\n".join(lines)
+        + "\n\nUsa answer_instance_for_user(instancia, respuesta) para desbloquear cada una."
+    )
+
+
+def answer_instance_for_user(target_instance: str, answer: str) -> str:
+    """
+    Responde EN NOMBRE DEL USUARIO a otra instancia que espera su respuesta, desbloqueandola.
+
+    La instancia destino procesa la respuesta como si la hubiera dado el usuario:
+    limpia su pausa (awaiting_user_input) y retoma. Queda atribuida en su historial.
+
+    Args:
+        target_instance (str): Id de la instancia a desbloquear.
+        answer (str): Respuesta a entregar en nombre del usuario.
+
+    Returns:
+        str: Estado de la entrega y, si estuvo activa, la salida de la instancia al retomar.
+    """
+    cleaned_answer = str(answer).strip()
+    if not cleaned_answer:
+        return "Debes indicar la respuesta a entregar en nombre del usuario."
+    try:
+        result = yarbis_bus.send_user_answer(
+            target_instance,
+            cleaned_answer,
+            wait_for_reply=True,
+            timeout_seconds=120,
+        )
+    except Exception as exc:
+        return f"No pude responder a la instancia: {exc}"
+
+    status = str(result.get("status", "")).strip()
+    status_text = str(result.get("status_text", "")).strip()
+    target = str(result.get("to_instance", target_instance)).strip()
+    message_id = str(result.get("id", "")).strip()
+    if status == yarbis_bus.STATUS_DONE:
+        response = str(result.get("response", "")).strip() or "Sin salida visible."
+        return f"Desbloquee a {target} ({message_id}) con tu respuesta.\n\nRetomo asi:\n{response}"
+    if status == yarbis_bus.STATUS_ERROR:
+        error = str(result.get("error", "")).strip() or "Error desconocido."
+        return f"La instancia {target} ({message_id}) fallo al retomar: {error}"
+    if status_text == "timeout":
+        return f"Respuesta entregada a {target} ({message_id}), pero no confirmo el retome antes del timeout."
+    return f"Respuesta en cola para {target} ({message_id}); la aplicara cuando este activa."
 
 
 def update_profile(

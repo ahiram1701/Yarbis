@@ -14,6 +14,9 @@ from memory import state_transaction
 SCHEMA_VERSION = 1
 KIND_DIRECT = "direct"
 KIND_DIRECT_REPLY = "direct_reply"
+# Respuesta entregada EN NOMBRE DEL USUARIO: desbloquea a la instancia destino
+# (limpia awaiting_user_input via submit_user_reply), no es mensaje agente-a-agente.
+KIND_USER_ANSWER = "user_answer"
 STATUS_QUEUED = "queued"
 STATUS_PROCESSING = "processing"
 STATUS_DONE = "done"
@@ -190,6 +193,45 @@ def send_message(
     return wait_for_response(payload["id"], timeout_seconds=timeout_seconds)
 
 
+def send_user_answer(
+    target_instance: object,
+    answer: object,
+    *,
+    wait_for_reply: bool = True,
+    timeout_seconds: float = 120,
+) -> dict:
+    """Entrega una respuesta EN NOMBRE DEL USUARIO a otra instancia.
+
+    A diferencia de send_message (mensaje agente-a-agente), este mensaje lo
+    procesa el destino via submit_user_reply, de modo que desbloquea su pausa
+    `awaiting_user_input` y la instancia retoma. Lleva `from_instance` para dejar
+    atribucion en el historial del destino.
+    """
+    target = yarbis_instance.normalize_instance_id(target_instance)
+    content = _clean_content(answer)
+    if not content:
+        raise YarbisBusError("La respuesta no puede quedar vacia.")
+    sender = yarbis_instance.current_instance_id()
+    yarbis_instance.ensure_instance_registered(sender)
+
+    payload = _base_message(
+        from_instance=sender,
+        to_instance=target,
+        kind=KIND_USER_ANSWER,
+        content=content,
+    )
+    _write_message(payload)
+    activity.emit_event("yarbis_user_answer_sent", target_instance=target, message_id=payload["id"])
+
+    if not wait_for_reply:
+        return dict(payload)
+    if not instance_is_active(target):
+        queued = dict(payload)
+        queued["status_text"] = "queued"
+        return queued
+    return wait_for_response(payload["id"], timeout_seconds=timeout_seconds)
+
+
 def wait_for_response(message_id: str, timeout_seconds: float = 120) -> dict:
     deadline = time.monotonic() + max(0.0, float(timeout_seconds))
     path = _message_path(message_id)
@@ -332,7 +374,7 @@ def pending_direct_messages(target_instance: object | None = None) -> list[dict]
         message = _read_message(path)
         if not message:
             continue
-        if message.get("kind") != KIND_DIRECT:
+        if message.get("kind") not in {KIND_DIRECT, KIND_USER_ANSWER}:
             continue
         if message.get("status") != STATUS_QUEUED:
             continue
@@ -416,6 +458,22 @@ def _run_message_cycle(message: dict) -> str:
     return output or "Mensaje procesado sin salida visible."
 
 
+def _run_user_answer_cycle(message: dict) -> str:
+    """Procesa una respuesta entregada en nombre del usuario: la aplica via
+    submit_user_reply para desbloquear la pausa `awaiting_user_input` del destino."""
+    from session import submit_user_reply
+
+    sender = str(message.get("from_instance", "")).strip() or "otra instancia"
+    output = submit_user_reply(
+        str(message.get("content", "")),
+        emit_notifications=False,
+        blocking=False,
+        attribution=f"instancia {sender}",
+        intercept_commands=False,
+    )
+    return output or "Respuesta aplicada sin salida visible."
+
+
 def process_pending_messages(limit: int = DEFAULT_PROCESS_LIMIT, runner=None) -> int:
     from session import SessionOperationBusy
 
@@ -425,7 +483,12 @@ def process_pending_messages(limit: int = DEFAULT_PROCESS_LIMIT, runner=None) ->
         if not claimed:
             continue
         try:
-            response = runner(claimed) if callable(runner) else _run_message_cycle(claimed)
+            if callable(runner):
+                response = runner(claimed)
+            elif claimed.get("kind") == KIND_USER_ANSWER:
+                response = _run_user_answer_cycle(claimed)
+            else:
+                response = _run_message_cycle(claimed)
         except SessionOperationBusy:
             _requeue_message(claimed)
             continue
