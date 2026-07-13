@@ -45,6 +45,8 @@ from memory import (
     MAX_VISUAL_BOARD_EDGES,
     MAX_VISUAL_BOARD_NODES,
     MAX_VISUAL_BOARDS_PER_PROJECT,
+    DEFAULT_SELF_INSIGHT_CATEGORY,
+    VALID_SELF_INSIGHT_CATEGORIES,
     VALID_IDEA_PROJECT_KIND,
     VALID_IDEA_PROJECT_STATUS,
     VALID_INTERNET_MODES,
@@ -4736,18 +4738,131 @@ def self_overview(refresh: bool = False) -> str:
     summary = render_self_knowledge_summary(refresh=should_refresh)
     if should_refresh:
         source_signature = get_cached_source_signature()
-        state_transaction(
-            "self_overview",
-            lambda state: state.__setitem__(
-                "self_knowledge",
-                {
-                    "last_analyzed_at": datetime.now(timezone.utc).isoformat(),
-                    "summary": summary,
-                    "source_signature": source_signature,
-                },
-            ),
-        )
-    return summary
+
+        def mutate(state):
+            existing = state.get("self_knowledge", {})
+            insights = existing.get("insights", []) if isinstance(existing, dict) else []
+            state["self_knowledge"] = {
+                "last_analyzed_at": datetime.now(timezone.utc).isoformat(),
+                "summary": summary,
+                "source_signature": source_signature,
+                "insights": insights,
+            }
+
+        state_transaction("self_overview", mutate)
+    insights_block = render_self_insights(load_state())
+    return f"{summary}\n\n{insights_block}" if insights_block else summary
+
+
+def render_self_insights(state: dict | None = None) -> str:
+    """Renderiza el self-model aprendido (insights sobre Yarbis mismo) desde el estado."""
+    sk = (state or load_state()).get("self_knowledge", {})
+    insights = sk.get("insights", []) if isinstance(sk, dict) else []
+    if not insights:
+        return ""
+    lines = ["Autoconocimiento aprendido (lo que he aprendido sobre mi mismo):"]
+    for item in insights:
+        category = str(item.get("category", "leccion"))
+        text = str(item.get("text", "")).strip()
+        short_id = str(item.get("id", ""))
+        lines.append(f"- [{category}] {text} (id: {short_id})")
+    return "\n".join(lines)
+
+
+def record_self_insight(text: str, category: str = "") -> str:
+    """
+    Guarda un aprendizaje SOBRE YARBIS MISMO (self-model actualizable).
+
+    Distinto de save_note (que es contexto sobre el usuario/tareas). Usalo cuando
+    descubras algo estable sobre ti: una fortaleza, un limite recurrente, una
+    estrategia que te funciona o una leccion tras un fallo/correccion.
+
+    Args:
+        text (str): El aprendizaje concreto sobre ti mismo.
+        category (str): fortaleza | limite | estrategia | leccion (default leccion).
+
+    Returns:
+        str: Confirmacion del insight guardado.
+    """
+    cleaned_text = str(text).strip()
+    if not cleaned_text:
+        return "Debes indicar el aprendizaje concreto sobre ti mismo."
+
+    cleaned_category = str(category).strip().lower()
+    if cleaned_category not in VALID_SELF_INSIGHT_CATEGORIES:
+        cleaned_category = DEFAULT_SELF_INSIGHT_CATEGORY
+
+    now = datetime.now(timezone.utc).isoformat()
+    new_id = f"insight-{uuid4().hex[:10]}"
+
+    def mutate(state):
+        sk = state.setdefault("self_knowledge", {})
+        if not isinstance(sk, dict):
+            sk = {}
+            state["self_knowledge"] = sk
+        insights = sk.setdefault("insights", [])
+        if not isinstance(insights, list):
+            insights = []
+            sk["insights"] = insights
+        # Evitar duplicados por texto identico (case-insensitive).
+        for existing in insights:
+            if str(existing.get("text", "")).strip().lower() == cleaned_text.lower():
+                existing["category"] = cleaned_category
+                existing["updated_at"] = now
+                return existing.get("id", "")
+        insights.append({
+            "id": new_id,
+            "category": cleaned_category,
+            "text": cleaned_text,
+            "created_at": now,
+            "updated_at": now,
+        })
+        return new_id
+
+    saved_id = state_transaction("record_self_insight", mutate)
+    return f"Insight guardado ({cleaned_category}): {cleaned_text}\nid: {saved_id}"
+
+
+def list_self_insights() -> str:
+    """
+    Lista los aprendizajes que Yarbis tiene sobre si mismo (self-model).
+
+    Returns:
+        str: Insights por categoria, o aviso si no hay ninguno.
+    """
+    block = render_self_insights(load_state())
+    if not block:
+        return "Aun no tengo aprendizajes registrados sobre mi mismo. Usa record_self_insight cuando descubras alguno."
+    return block
+
+
+def remove_self_insight(insight_id: str) -> str:
+    """
+    Elimina un aprendizaje del self-model por su id.
+
+    Args:
+        insight_id (str): Id del insight a eliminar (ver list_self_insights).
+
+    Returns:
+        str: Resultado de la eliminacion.
+    """
+    cleaned_id = str(insight_id).strip()
+    if not cleaned_id:
+        return "Debes indicar el id del insight a eliminar."
+
+    def mutate(state):
+        sk = state.get("self_knowledge", {})
+        if not isinstance(sk, dict):
+            return False
+        insights = sk.get("insights", [])
+        if not isinstance(insights, list):
+            return False
+        before = len(insights)
+        sk["insights"] = [i for i in insights if str(i.get("id", "")) != cleaned_id]
+        return len(sk["insights"]) < before
+
+    removed = state_transaction("remove_self_insight", mutate)
+    return f"Insight {cleaned_id} eliminado." if removed else f"No encontre un insight con id {cleaned_id}."
 
 
 def list_yarbis_instances() -> str:

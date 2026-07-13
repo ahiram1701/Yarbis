@@ -208,9 +208,13 @@ DEFAULT_INTERNET_MAX_PAGE_CHARS = 12_000
 DEFAULT_INTERNET_REQUEST_TIMEOUT_SECONDS = 10
 MAX_INTERNET_DOMAIN_ITEMS = 20
 MAX_INTERNET_DOMAIN_CHARS = 120
-MAX_SELF_KNOWLEDGE_SUMMARY_CHARS = 20_000
+MAX_SELF_KNOWLEDGE_SUMMARY_CHARS = 28_000
 MAX_SELF_KNOWLEDGE_TIMESTAMP_CHARS = 80
 MAX_SELF_KNOWLEDGE_SOURCE_SIGNATURE_CHARS = 40_000
+MAX_SELF_KNOWLEDGE_INSIGHTS = 40
+MAX_SELF_KNOWLEDGE_INSIGHT_CHARS = 600
+VALID_SELF_INSIGHT_CATEGORIES = ("fortaleza", "limite", "estrategia", "leccion")
+DEFAULT_SELF_INSIGHT_CATEGORY = "leccion"
 MAX_RUNTIME_OPERATION_LABEL_CHARS = 80
 MAX_RUNTIME_OPERATION_SOURCE_CHARS = 40
 MAX_RUNTIME_TIMESTAMP_CHARS = 80
@@ -498,6 +502,7 @@ def default_state():
             "last_analyzed_at": "",
             "summary": "",
             "source_signature": "",
+            "insights": [],
         },
         "notifications": {
             "enabled": True,
@@ -2013,6 +2018,47 @@ def _normalize_internet(internet):
     }
 
 
+def _normalize_self_insight(insight):
+    if not isinstance(insight, dict):
+        return None
+
+    text = _coerce_text(insight.get("text", ""), MAX_SELF_KNOWLEDGE_INSIGHT_CHARS).strip()
+    if not text:
+        return None
+
+    category = _coerce_text(insight.get("category", ""), 20).strip().lower()
+    if category not in VALID_SELF_INSIGHT_CATEGORIES:
+        category = DEFAULT_SELF_INSIGHT_CATEGORY
+
+    insight_id = _coerce_text(insight.get("id") or _fallback_id("insight", text), 32).strip()
+    created_at = _coerce_text(insight.get("created_at", ""), MAX_SELF_KNOWLEDGE_TIMESTAMP_CHARS).strip()
+    updated_at = _coerce_text(insight.get("updated_at", ""), MAX_SELF_KNOWLEDGE_TIMESTAMP_CHARS).strip()
+
+    return {
+        "id": insight_id,
+        "category": category,
+        "text": text,
+        "created_at": created_at,
+        "updated_at": updated_at or created_at,
+    }
+
+
+def _normalize_self_insights(insights):
+    if not isinstance(insights, list):
+        return []
+    normalized = []
+    seen_ids = set()
+    for insight in insights:
+        cleaned = _normalize_self_insight(insight)
+        if not cleaned:
+            continue
+        if cleaned["id"] in seen_ids:
+            continue
+        seen_ids.add(cleaned["id"])
+        normalized.append(cleaned)
+    return normalized[:MAX_SELF_KNOWLEDGE_INSIGHTS]
+
+
 def _normalize_self_knowledge(self_knowledge):
     if not isinstance(self_knowledge, dict):
         self_knowledge = {}
@@ -2030,6 +2076,7 @@ def _normalize_self_knowledge(self_knowledge):
             self_knowledge.get("source_signature", ""),
             MAX_SELF_KNOWLEDGE_SOURCE_SIGNATURE_CHARS,
         ).strip(),
+        "insights": _normalize_self_insights(self_knowledge.get("insights", [])),
     }
 
 

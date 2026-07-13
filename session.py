@@ -600,10 +600,13 @@ def _persist_self_knowledge_summary(summary: str) -> None:
     analyzed_at = datetime.now(timezone.utc).isoformat()
 
     def mutate(state):
+        existing = state.get("self_knowledge", {})
+        insights = existing.get("insights", []) if isinstance(existing, dict) else []
         state["self_knowledge"] = {
             "last_analyzed_at": analyzed_at,
             "summary": summary,
             "source_signature": source_signature,
+            "insights": insights,
         }
 
     state_transaction("startup_self_analysis", mutate)

@@ -108,6 +108,9 @@ from tools import (
     save_note,
     set_plan,
     self_overview,
+    record_self_insight,
+    list_self_insights,
+    remove_self_insight,
     send_yarbis_message,
     answer_instance_for_user,
     list_pending_user_questions,
@@ -868,6 +871,9 @@ tool_definitions = [
     compose_email,
     open_system_target,
     self_overview,
+    record_self_insight,
+    list_self_insights,
+    remove_self_insight,
     social_accounts_overview,
     start_social_oauth,
     save_social_draft,
@@ -982,6 +988,9 @@ available_functions = {
     "compose_email": compose_email,
     "open_system_target": open_system_target,
     "self_overview": self_overview,
+    "record_self_insight": record_self_insight,
+    "list_self_insights": list_self_insights,
+    "remove_self_insight": remove_self_insight,
     "social_accounts_overview": social_accounts_overview,
     "start_social_oauth": start_social_oauth,
     "save_social_draft": save_social_draft,
@@ -1041,6 +1050,8 @@ PROACTIVE_SAFE_TOOL_NAMES = {
     "list_pending_user_questions",
     "read_yarbis_messages",
     "self_overview",
+    "list_self_insights",
+    "record_self_insight",
     "coding_workspace_overview",
     "coding_workflow_status",
     "coding_list_files",
@@ -1561,7 +1572,8 @@ Reglas:
 - Manten las tareas sincronizadas: usa `update_task_status` para moverlas a `in_progress`, `blocked` o `done`.
 - Si una tarea queda frenada por falta de informacion del usuario, marcalo con `update_task_status(..., status="blocked", result="...")`.
 - Para consultar o eliminar notas persistentes, usa `list_notes`, `get_note` y `delete_note`.
-- Tienes autoconocimiento local: identidad, mapa de codigo fuente, sistema operativo y hardware actual. Si necesitas refrescarlo o verlo completo, usa `self_overview`.
+- Tienes autoconocimiento local: identidad, capacidades (derivadas del registro real de herramientas, siempre al dia), mapa de codigo fuente, sistema operativo y hardware. Si necesitas refrescarlo o verlo completo, usa `self_overview`.
+- Ademas tienes un self-model APRENDIDO sobre ti mismo (fortalezas, limites recurrentes, estrategias, lecciones), distinto de las notas sobre el usuario. Cuando descubras algo estable sobre ti —sobre todo tras un fallo o una correccion en un ciclo proactivo— guardalo con `record_self_insight(text, category)` (fortaleza/limite/estrategia/leccion). Revisalo con `list_self_insights` y depuralo con `remove_self_insight`. No dupliques ni guardes trivialidades.
 - El pulso proactivo puede incluir un snapshot de contexto local de la PC: presencia/idle, proceso en primer plano si esta permitido, salud del sistema y cambios recientes del workspace. Usalo solo como senal auxiliar; no lo trates como certeza absoluta ni reveles detalles sensibles si no aportan.
 - El pulso proactivo del servicio corre con acceso completo a las herramientas disponibles del agente cuando el objetivo lo requiera. Si una accion depende de datos que el contexto local no entrega, obtenlos con herramientas disponibles o pide contexto al usuario.
 - El servicio administrado por SCM solo inicia, detiene o registra el proceso de fondo. No digas que SCM impide usar herramientas, ver notas, actualizar tareas o ejecutar ciclos; esas acciones dependen del servicio activo, permisos del proceso y herramientas disponibles. Instalar, quitar o reconfigurar el servicio puede requerir administrador.
@@ -1652,6 +1664,17 @@ def build_messages(state):
             "Pendiente de autoanalisis. Usa `self` para refrescar identidad, "
             "codigo fuente, sistema operativo y hardware."
         )
+    insights = self_knowledge.get("insights", [])
+    if isinstance(insights, list) and insights:
+        insight_lines = ["", "Autoconocimiento aprendido (sobre mi mismo):"]
+        for item in insights[:20]:
+            if not isinstance(item, dict):
+                continue
+            category = str(item.get("category", "leccion"))
+            text = str(item.get("text", "")).strip()
+            if text:
+                insight_lines.append(f"- [{category}] {text}")
+        self_summary = self_summary + "\n" + "\n".join(insight_lines)
     user_timezone = str(state.get("profile", {}).get("timezone", "")).strip()
     temporal_context = _format_local_temporal_context(timezone_str=user_timezone)
     learned_directives = _render_learned_directives(state)

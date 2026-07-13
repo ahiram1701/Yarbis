@@ -18,8 +18,46 @@ from memory import (
 )
 
 WORKSPACE_ROOT = Path(__file__).resolve().parent
-MAX_SOURCE_FILES = 36
+MAX_SOURCE_FILES = 90
 SELF_KNOWLEDGE_CACHE_SECONDS = 300
+
+# Areas de capacidad. Cada tool del registro real (agent.available_functions) se
+# asigna a un area por prefijo/nombre; asi el catalogo se deriva del toolset y se
+# actualiza solo cuando cambian las tools (anti-desincronizacion).
+CAPABILITY_AREAS = [
+    ("Memoria y contexto", (
+        "save_note", "list_notes", "get_note", "delete_note", "update_profile",
+        "update_goal", "set_plan", "add_task", "update_task_status", "create_idea_project",
+        "list_idea_projects", "get_idea_project", "update_idea_project",
+        "promote_idea_project_to_work", "agent_overview", "request_user_input",
+        "set_timezone", "create_memory_backup", "import_memory_backup",
+        "list_memory_backups", "inspect_memory_backup", "verify_memory_backups",
+        "memory_protection_status",
+    )),
+    ("Autoconocimiento", (
+        "self_overview", "record_self_insight", "list_self_insights", "remove_self_insight",
+    )),
+    ("Codigo y desarrollo", (
+        "coding_", "write_text_file", "read_text_file", "list_files",
+        "list_checkpoints", "restore_checkpoint", "run_project_tests", "run_project_check",
+        "run_system_command", "list_self_code_changes", "mark_self_code_changes_versioned",
+    )),
+    ("Navegador y control de PC", (
+        "browser_", "desktop_", "set_computer_control", "open_system_target",
+    )),
+    ("Redes sociales", ("social_", "set_social_confirmation", "confirm_social_publication")),
+    ("Vision", ("analyze_image", "vision_")),
+    ("Voz", ("voice_", "speak")),
+    ("Internet", ("web_search", "fetch_web_page", "set_internet")),
+    ("Instancias y coordinacion", (
+        "list_yarbis_instances", "send_yarbis_message", "read_yarbis_messages",
+        "answer_instance_for_user", "list_pending_user_questions",
+    )),
+    ("Autoevolucion", ("evolution_",)),
+    ("Notificaciones e integraciones", (
+        "compose_email", "create_calendar_event", "set_notifications",
+    )),
+]
 SOURCE_SUFFIXES = {
     ".cmd",
     ".cs",
@@ -459,16 +497,85 @@ def _render_runtime_environment() -> list[str]:
     return lines
 
 
+def _first_doc_line(func) -> str:
+    doc = (getattr(func, "__doc__", "") or "").strip()
+    for line in doc.splitlines():
+        stripped = line.strip()
+        if stripped:
+            return stripped[:110]
+    return ""
+
+
+def _match_capability_area(name: str) -> str | None:
+    for area, patterns in CAPABILITY_AREAS:
+        for pattern in patterns:
+            if pattern.endswith("_"):
+                if name.startswith(pattern):
+                    return area
+            elif name == pattern:
+                return area
+    return None
+
+
+def _render_capabilities_catalog() -> list[str]:
+    """Deriva las capacidades del registro real de tools (agent.available_functions).
+
+    Import perezoso para evitar el ciclo agent->tools->self_knowledge. Si no se
+    puede importar (p. ej. un test que carga self_knowledge aislado), cae a una
+    descripcion minima en vez de fallar.
+    """
+    try:
+        import agent
+
+        registry = dict(getattr(agent, "available_functions", {}) or {})
+    except Exception:
+        return [
+            "- (No pude derivar el catalogo de herramientas en este contexto.)",
+            "- Capacidades base: memoria persistente, filesystem, internet bajo politica, "
+            "navegador real, comandos del sistema, vision, voz y notificaciones.",
+        ]
+
+    if not registry:
+        return ["- (Registro de herramientas vacio.)"]
+
+    grouped: dict[str, list[str]] = {area: [] for area, _ in CAPABILITY_AREAS}
+    others: list[str] = []
+    for name in sorted(registry):
+        area = _match_capability_area(name)
+        (grouped[area] if area is not None else others).append(name)
+
+    lines = [f"Herramientas disponibles: {len(registry)} en {len(CAPABILITY_AREAS)} areas."]
+    for area, _ in CAPABILITY_AREAS:
+        names = grouped.get(area, [])
+        if not names:
+            continue
+        lines.append(f"- {area} ({len(names)}):")
+        for name in names[:6]:
+            doc = _first_doc_line(registry.get(name))
+            lines.append(f"    - {name}: {doc}" if doc else f"    - {name}")
+        if len(names) > 6:
+            lines.append(f"    - ... y {len(names) - 6} mas: {', '.join(names[6:16])}"
+                         + (", ..." if len(names) > 16 else ""))
+    if others:
+        lines.append(f"- Otras ({len(others)}): {', '.join(others[:20])}"
+                     + (", ..." if len(others) > 20 else ""))
+    return lines
+
+
 def _build_self_knowledge_summary() -> str:
     lines = [
         "Identidad:",
         "- Nombre: Yarbis.",
         f"- {_read_project_identity()}",
-        "- Naturaleza: agente local de terminal/escritorio con memoria persistente, herramientas de filesystem, internet bajo politica, navegador real, comandos del sistema y notificaciones opcionales.",
-        "- Capacidad sobre su codigo: puede listar, leer, editar con checkpoint, restaurar, ejecutar tests y lanzar comandos del sistema desde el workspace o rutas externas.",
+        "- Naturaleza: agente local de terminal/escritorio con memoria persistente, multi-instancia, que actua mediante herramientas.",
+        "",
+        "Capacidades (derivadas del registro real de herramientas, siempre al dia):",
+    ]
+    lines.extend(_render_capabilities_catalog())
+    lines.extend([
         "",
         "Codigo fuente:",
-    ]
+    ])
     lines.extend(_render_source_inventory())
     lines.extend([
         "",
