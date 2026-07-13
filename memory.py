@@ -211,6 +211,14 @@ MAX_INTERNET_DOMAIN_CHARS = 120
 MAX_SELF_KNOWLEDGE_SUMMARY_CHARS = 28_000
 MAX_SELF_KNOWLEDGE_TIMESTAMP_CHARS = 80
 MAX_SELF_KNOWLEDGE_SOURCE_SIGNATURE_CHARS = 40_000
+MAX_MCP_SERVERS = 12
+MAX_MCP_NAME_CHARS = 48
+MAX_MCP_TEXT_CHARS = 400
+MAX_MCP_ARGS = 40
+MAX_MCP_ENV_ITEMS = 40
+MAX_MCP_HEADER_ITEMS = 30
+VALID_MCP_TRANSPORTS = ("stdio", "http")
+_MCP_NAME_PATTERN = re.compile(r"[^a-z0-9_-]+")
 MAX_SELF_KNOWLEDGE_INSIGHTS = 40
 MAX_SELF_KNOWLEDGE_INSIGHT_CHARS = 600
 VALID_SELF_INSIGHT_CATEGORIES = ("fortaleza", "limite", "estrategia", "leccion")
@@ -395,6 +403,10 @@ def default_state():
                 "confirm_sensitive": True,
                 "os_control": True,
             },
+        },
+        "mcp": {
+            "enabled": False,
+            "servers": [],
         },
         "memory_protection": {
             "enabled": DEFAULT_MEMORY_PROTECTION_ENABLED,
@@ -1394,6 +1406,74 @@ def _normalize_computer_control(cc):
             "confirm_sensitive": bool(settings.get("confirm_sensitive", defaults["settings"]["confirm_sensitive"])),
             "os_control": bool(settings.get("os_control", defaults["settings"]["os_control"])),
         },
+    }
+
+
+def _normalize_mcp_name(value) -> str:
+    text = _coerce_text(value, MAX_MCP_NAME_CHARS).strip().lower()
+    text = _MCP_NAME_PATTERN.sub("-", text).strip("-_")
+    return text[:MAX_MCP_NAME_CHARS]
+
+
+def _normalize_mcp_server(server):
+    if not isinstance(server, dict):
+        return None
+    name = _normalize_mcp_name(server.get("name", ""))
+    if not name:
+        return None
+    transport = _coerce_text(server.get("transport", ""), 12).strip().lower()
+    if transport not in VALID_MCP_TRANSPORTS:
+        transport = "stdio"
+
+    raw_args = server.get("args", [])
+    args = []
+    if isinstance(raw_args, list):
+        for item in raw_args[:MAX_MCP_ARGS]:
+            args.append(_coerce_text(item, MAX_MCP_TEXT_CHARS))
+
+    raw_env = server.get("env", {})
+    env = {}
+    if isinstance(raw_env, dict):
+        for key, value in list(raw_env.items())[:MAX_MCP_ENV_ITEMS]:
+            env[_coerce_text(key, MAX_MCP_NAME_CHARS).strip()] = _coerce_text(value, MAX_MCP_TEXT_CHARS)
+
+    raw_headers = server.get("headers", {})
+    headers = {}
+    if isinstance(raw_headers, dict):
+        for key, value in list(raw_headers.items())[:MAX_MCP_HEADER_ITEMS]:
+            headers[_coerce_text(key, MAX_MCP_NAME_CHARS).strip()] = _coerce_text(value, MAX_MCP_TEXT_CHARS)
+
+    return {
+        "name": name,
+        "transport": transport,
+        "command": _coerce_text(server.get("command", ""), MAX_MCP_TEXT_CHARS).strip(),
+        "args": args,
+        "env": env,
+        "cwd": _coerce_text(server.get("cwd", ""), MAX_MCP_TEXT_CHARS).strip(),
+        "url": _coerce_text(server.get("url", ""), MAX_MCP_TEXT_CHARS).strip(),
+        "headers": headers,
+        "enabled": bool(server.get("enabled", True)),
+    }
+
+
+def _normalize_mcp(mcp):
+    if not isinstance(mcp, dict):
+        mcp = {}
+    raw_servers = mcp.get("servers", [])
+    servers = []
+    seen = set()
+    if isinstance(raw_servers, list):
+        for server in raw_servers:
+            normalized = _normalize_mcp_server(server)
+            if not normalized or normalized["name"] in seen:
+                continue
+            seen.add(normalized["name"])
+            servers.append(normalized)
+            if len(servers) >= MAX_MCP_SERVERS:
+                break
+    return {
+        "enabled": bool(mcp.get("enabled", False)),
+        "servers": servers,
     }
 
 
@@ -2737,6 +2817,7 @@ def normalize_state(state):
     normalized["evolution"] = _normalize_evolution(state.get("evolution", {}))
     normalized["vision"] = _normalize_vision(state.get("vision", {}))
     normalized["computer_control"] = _normalize_computer_control(state.get("computer_control", {}))
+    normalized["mcp"] = _normalize_mcp(state.get("mcp", {}))
     normalized["memory_protection"] = _normalize_memory_protection(state.get("memory_protection", {}))
     normalized["model_provider"] = _normalize_model_provider(state)
     normalized["ollama"] = dict(normalized["model_provider"][MODEL_PROVIDER_OLLAMA])

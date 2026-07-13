@@ -14,6 +14,7 @@ from urllib.parse import urlparse
 
 from ollama import Client as OllamaClient
 
+import mcp_client
 from intent_text import (
     looks_like_affirmative_action_reply as _looks_like_affirmative_action_reply,
     normalize_intent_text as _normalize_intent_text,
@@ -46,6 +47,14 @@ from tools import (
     browser_observe,
     browser_act,
     set_computer_control,
+    set_mcp_enabled,
+    mcp_add_server,
+    mcp_remove_server,
+    mcp_list_servers,
+    mcp_connect,
+    mcp_refresh_tools,
+    mcp_list_tools,
+    mcp_call_tool,
     set_social_confirmation,
     desktop_look,
     desktop_screen_size,
@@ -510,6 +519,9 @@ def _json_type_for_annotation(annotation) -> dict:
 
 
 def _openrouter_tool_schema(tool) -> dict:
+    # Las tools MCP ya llegan como schema dict en formato function-calling.
+    if isinstance(tool, dict):
+        return tool
     name = getattr(tool, "__name__", "tool")
     doc = inspect.getdoc(tool) or ""
     description = doc.splitlines()[0].strip() if doc else name
@@ -860,6 +872,14 @@ tool_definitions = [
     browser_observe,
     browser_act,
     set_computer_control,
+    set_mcp_enabled,
+    mcp_add_server,
+    mcp_remove_server,
+    mcp_list_servers,
+    mcp_connect,
+    mcp_refresh_tools,
+    mcp_list_tools,
+    mcp_call_tool,
     set_social_confirmation,
     desktop_look,
     desktop_screen_size,
@@ -977,6 +997,14 @@ available_functions = {
     "browser_observe": browser_observe,
     "browser_act": browser_act,
     "set_computer_control": set_computer_control,
+    "set_mcp_enabled": set_mcp_enabled,
+    "mcp_add_server": mcp_add_server,
+    "mcp_remove_server": mcp_remove_server,
+    "mcp_list_servers": mcp_list_servers,
+    "mcp_connect": mcp_connect,
+    "mcp_refresh_tools": mcp_refresh_tools,
+    "mcp_list_tools": mcp_list_tools,
+    "mcp_call_tool": mcp_call_tool,
     "set_social_confirmation": set_social_confirmation,
     "desktop_look": desktop_look,
     "desktop_screen_size": desktop_screen_size,
@@ -1052,6 +1080,8 @@ PROACTIVE_SAFE_TOOL_NAMES = {
     "self_overview",
     "list_self_insights",
     "record_self_insight",
+    "mcp_list_servers",
+    "mcp_list_tools",
     "coding_workspace_overview",
     "coding_workflow_status",
     "coding_list_files",
@@ -1173,9 +1203,20 @@ def _proactive_safe_mode() -> bool:
     }
 
 
+def _mcp_tool_specs() -> list:
+    """Schemas de tools MCP conectadas, solo si la capacidad esta activada."""
+    try:
+        if not load_state().get("mcp", {}).get("enabled"):
+            return []
+        return mcp_client.tool_specs()
+    except Exception:
+        return []
+
+
 def _current_tool_definitions() -> list:
     if not _proactive_safe_mode():
-        return tool_definitions
+        # Las tools MCP externas no participan del pulso proactivo (seguridad).
+        return tool_definitions + _mcp_tool_specs()
     return [
         tool
         for tool in tool_definitions
@@ -1573,6 +1614,7 @@ Reglas:
 - Si una tarea queda frenada por falta de informacion del usuario, marcalo con `update_task_status(..., status="blocked", result="...")`.
 - Para consultar o eliminar notas persistentes, usa `list_notes`, `get_note` y `delete_note`.
 - Tienes autoconocimiento local: identidad, capacidades (derivadas del registro real de herramientas, siempre al dia), mapa de codigo fuente, sistema operativo y hardware. Si necesitas refrescarlo o verlo completo, usa `self_overview`.
+- Puedes conectarte a servidores MCP externos (capacidad `mcp`, apagada por defecto). Si esta activada y hay servidores conectados, sus herramientas aparecen con el nombre `mcp__<servidor>__<herramienta>` y las usas como cualquier otra tool cuando aporten. Para administrarlos: `set_mcp_enabled`, `mcp_add_server`, `mcp_connect`, `mcp_list_servers`, `mcp_list_tools`. Conectar servidores MCP arbitrarios ejecuta comandos locales o llama endpoints: hazlo solo a peticion del usuario.
 - Ademas tienes un self-model APRENDIDO sobre ti mismo (fortalezas, limites recurrentes, estrategias, lecciones), distinto de las notas sobre el usuario. Cuando descubras algo estable sobre ti —sobre todo tras un fallo o una correccion en un ciclo proactivo— guardalo con `record_self_insight(text, category)` (fortaleza/limite/estrategia/leccion). Revisalo con `list_self_insights` y depuralo con `remove_self_insight`. No dupliques ni guardes trivialidades.
 - El pulso proactivo puede incluir un snapshot de contexto local de la PC: presencia/idle, proceso en primer plano si esta permitido, salud del sistema y cambios recientes del workspace. Usalo solo como senal auxiliar; no lo trates como certeza absoluta ni reveles detalles sensibles si no aportan.
 - El pulso proactivo del servicio corre con acceso completo a las herramientas disponibles del agente cuando el objetivo lo requiera. Si una accion depende de datos que el contexto local no entrega, obtenlos con herramientas disponibles o pide contexto al usuario.
@@ -2605,12 +2647,23 @@ def run_one_cycle(max_steps=None, model_override: str | None = None):
                 print(f"\n> Ejecutando tool: {tool_name}")
                 print(f"> Argumentos: {raw_tool_args}")
 
+                is_mcp_tool = str(tool_name).startswith("mcp__")
                 function_to_call = available_functions.get(tool_name)
                 if _proactive_safe_mode() and tool_name not in PROACTIVE_SAFE_TOOL_NAMES:
                     tool_output = (
                         "Tool no permitida durante el pulso proactivo seguro: "
                         f"{tool_name}. Registra una tarea o pide confirmacion para ejecutarla fuera del pulso."
                     )
+                elif is_mcp_tool:
+                    if tool_args_error:
+                        tool_output = tool_args_error
+                    else:
+                        try:
+                            tool_output = mcp_client.call_qualified(tool_name, tool_args)
+                        except Exception as exc:
+                            tool_output = f"Error ejecutando {tool_name}: {exc}"
+                        else:
+                            action_tools_used = True
                 elif not function_to_call:
                     tool_output = f"Tool no encontrada: {tool_name}"
                 elif tool_args_error:

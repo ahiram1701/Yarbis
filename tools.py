@@ -20,6 +20,7 @@ from browser_automation import (
     run_browser_automation,
 )
 import computer_control
+import mcp_client
 from credential_store import CredentialStoreError, load_secret, save_secret
 from process_utils import no_window_creationflags
 from integrations import (
@@ -3264,6 +3265,357 @@ def browser_act(actions_json: str = "", confirm: str = "") -> str:
         )
     except Exception as exc:
         return f"No pude actuar en la pagina: {exc}"
+
+
+# --- Cliente MCP: conectarse a servidores MCP y usar sus herramientas ---
+
+_MCP_CRED_PREFIX = "cred:"
+
+
+def _mcp_state(state: dict | None = None) -> dict:
+    mcp = (state or load_state()).get("mcp", {})
+    return mcp if isinstance(mcp, dict) else {}
+
+
+def _require_mcp() -> str:
+    if not _mcp_state().get("enabled"):
+        return (
+            "La conexion a servidores MCP esta desactivada. Actívala con set_mcp_enabled(True) "
+            "o desde los ajustes antes de usar esta capacidad."
+        )
+    return ""
+
+
+def _find_mcp_server(name: str, state: dict | None = None) -> dict | None:
+    cleaned = str(name).strip().lower()
+    for server in _mcp_state(state).get("servers", []):
+        if str(server.get("name", "")).strip().lower() == cleaned:
+            return server
+    return None
+
+
+def _mcp_runtime_config(server: dict) -> dict:
+    """Copia del server con los headers 'cred:<ref>' resueltos via credential_store."""
+    config = dict(server)
+    headers = dict(server.get("headers", {}) or {})
+    resolved = {}
+    for key, value in headers.items():
+        text = str(value)
+        if _MCP_CRED_PREFIX in text:
+            prefix, _, ref = text.partition(_MCP_CRED_PREFIX)
+            try:
+                secret = load_secret(ref.strip())
+                text = f"{prefix}{secret}"
+            except CredentialStoreError:
+                pass
+        resolved[key] = text
+    config["headers"] = resolved
+    return config
+
+
+def _parse_arg_list(raw: str) -> list[str]:
+    text = str(raw or "").strip()
+    if not text:
+        return []
+    if text.startswith("["):
+        try:
+            parsed = json.loads(text)
+            if isinstance(parsed, list):
+                return [str(item) for item in parsed]
+        except json.JSONDecodeError:
+            pass
+    return [line.strip() for line in text.splitlines() if line.strip()]
+
+
+def _parse_kv(raw: str) -> dict:
+    text = str(raw or "").strip()
+    if not text:
+        return {}
+    if text.startswith("{"):
+        try:
+            parsed = json.loads(text)
+            if isinstance(parsed, dict):
+                return {str(k): str(v) for k, v in parsed.items()}
+        except json.JSONDecodeError:
+            pass
+    result = {}
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        result[key.strip()] = value.strip()
+    return result
+
+
+def set_mcp_enabled(enabled: bool = True) -> str:
+    """
+    Activa o desactiva la capacidad de conectarse a servidores MCP.
+
+    Apagada por defecto: conectar servidores MCP arbitrarios ejecuta comandos
+    locales (stdio) o llama endpoints (HTTP).
+
+    Args:
+        enabled (bool): True para permitir conexiones MCP.
+
+    Returns:
+        str: Estado resultante.
+    """
+    value = bool(enabled)
+
+    def mutate(state):
+        mcp = state.setdefault("mcp", {})
+        mcp["enabled"] = value
+
+    state_transaction("set_mcp_enabled", mutate)
+    return f"Conexion MCP: {'activada' if value else 'desactivada'}."
+
+
+def mcp_add_server(
+    name: str,
+    transport: str = "stdio",
+    command: str = "",
+    args: str = "",
+    url: str = "",
+    cwd: str = "",
+    env: str = "",
+    headers: str = "",
+    auth_token: str = "",
+) -> str:
+    """
+    Registra un servidor MCP (no lo conecta todavia; usa mcp_connect despues).
+
+    Args:
+        name (str): Nombre corto del servidor (letras, numeros, guion).
+        transport (str): 'stdio' (comando local) o 'http' (url remota).
+        command (str): Comando a lanzar (transport stdio), ej. 'npx'.
+        args (str): Argumentos: lista JSON o uno por linea.
+        url (str): URL del servidor (transport http).
+        cwd (str): Carpeta de trabajo para stdio (opcional).
+        env (str): Variables de entorno como JSON o lineas CLAVE=valor.
+        headers (str): Headers HTTP como JSON o lineas Clave=valor (transport http).
+        auth_token (str): Token de autenticacion; se guarda cifrado y se envia como Bearer.
+
+    Returns:
+        str: Resultado del registro.
+    """
+    cleaned_name = str(name).strip()
+    if not cleaned_name:
+        return "Debes indicar un nombre para el servidor MCP."
+    cleaned_transport = str(transport).strip().lower() or "stdio"
+    if cleaned_transport not in ("stdio", "http"):
+        return "Transporte invalido: usa 'stdio' o 'http'."
+    if cleaned_transport == "stdio" and not str(command).strip():
+        return "El transporte stdio requiere 'command'."
+    if cleaned_transport == "http" and not str(url).strip():
+        return "El transporte http requiere 'url'."
+
+    parsed_headers = _parse_kv(headers)
+    token = str(auth_token).strip()
+    if token:
+        try:
+            ref = save_secret(token, kind="mcp", metadata={"server": cleaned_name})
+        except CredentialStoreError as exc:
+            return f"No pude guardar el token de forma segura: {exc}"
+        parsed_headers["Authorization"] = f"Bearer {_MCP_CRED_PREFIX}{ref}"
+
+    server = {
+        "name": cleaned_name,
+        "transport": cleaned_transport,
+        "command": str(command).strip(),
+        "args": _parse_arg_list(args),
+        "url": str(url).strip(),
+        "cwd": str(cwd).strip(),
+        "env": _parse_kv(env),
+        "headers": parsed_headers,
+        "enabled": True,
+    }
+
+    def mutate(state):
+        mcp = state.setdefault("mcp", {})
+        servers = mcp.setdefault("servers", [])
+        if not isinstance(servers, list):
+            servers = []
+            mcp["servers"] = servers
+        normalized_name = cleaned_name.strip().lower()
+        mcp["servers"] = [s for s in servers if str(s.get("name", "")).strip().lower() != normalized_name]
+        mcp["servers"].append(server)
+
+    state_transaction("mcp_add_server", mutate)
+    stored = _find_mcp_server(cleaned_name)
+    final_name = stored["name"] if stored else cleaned_name
+    return (
+        f"Servidor MCP '{final_name}' registrado ({cleaned_transport}). "
+        "Actívalo con set_mcp_enabled(True) si hace falta y conecta con mcp_connect."
+    )
+
+
+def mcp_remove_server(name: str) -> str:
+    """
+    Elimina un servidor MCP registrado (y lo desconecta si estaba conectado).
+
+    Args:
+        name (str): Nombre del servidor.
+
+    Returns:
+        str: Resultado.
+    """
+    cleaned = str(name).strip().lower()
+    if not cleaned:
+        return "Debes indicar el nombre del servidor."
+    try:
+        mcp_client.disconnect(cleaned)
+    except Exception:
+        pass
+
+    def mutate(state):
+        mcp = state.setdefault("mcp", {})
+        servers = mcp.get("servers", [])
+        if not isinstance(servers, list):
+            return False
+        before = len(servers)
+        mcp["servers"] = [s for s in servers if str(s.get("name", "")).strip().lower() != cleaned]
+        return len(mcp["servers"]) < before
+
+    removed = state_transaction("mcp_remove_server", mutate)
+    return f"Servidor MCP '{cleaned}' eliminado." if removed else f"No encontre un servidor MCP llamado '{cleaned}'."
+
+
+def mcp_list_servers() -> str:
+    """
+    Lista los servidores MCP registrados y si estan conectados.
+
+    Returns:
+        str: Resumen de servidores.
+    """
+    mcp = _mcp_state()
+    servers = mcp.get("servers", [])
+    header = f"Conexion MCP: {'activada' if mcp.get('enabled') else 'desactivada'}."
+    if not servers:
+        return header + "\nNo hay servidores MCP registrados. Usa mcp_add_server para agregar uno."
+    lines = [header, "Servidores:"]
+    for server in servers:
+        name = str(server.get("name", ""))
+        transport = str(server.get("transport", ""))
+        target = server.get("command") or server.get("url") or ""
+        connected = mcp_client.is_connected(name)
+        lines.append(f"- {name} ({transport}): {target} | {'conectado' if connected else 'desconectado'}")
+    return "\n".join(lines)
+
+
+def mcp_connect(name: str) -> str:
+    """
+    Conecta a un servidor MCP registrado y descubre sus herramientas.
+
+    Tras conectar, sus herramientas quedan disponibles para Yarbis con el nombre
+    mcp__<servidor>__<herramienta>.
+
+    Args:
+        name (str): Nombre del servidor a conectar.
+
+    Returns:
+        str: Herramientas descubiertas o el error.
+    """
+    gate = _require_mcp()
+    if gate:
+        return gate
+    server = _find_mcp_server(name)
+    if not server:
+        return f"No encontre un servidor MCP llamado '{name}'. Regístralo con mcp_add_server."
+    try:
+        tools = mcp_client.connect(_mcp_runtime_config(server))
+    except Exception as exc:
+        return f"No pude conectar a '{server['name']}': {exc}"
+    if not tools:
+        return f"Conectado a '{server['name']}', pero no expone herramientas."
+    names = ", ".join(mcp_client.qualified_tool_name(server["name"], t.get("name", "")) for t in tools)
+    return f"Conectado a '{server['name']}'. Herramientas disponibles ({len(tools)}): {names}"
+
+
+def mcp_refresh_tools(name: str = "") -> str:
+    """
+    Reconecta/refresca las herramientas de un servidor MCP (o de todos los habilitados).
+
+    Args:
+        name (str): Servidor a refrescar; vacio = todos los habilitados.
+
+    Returns:
+        str: Resultado del refresco.
+    """
+    gate = _require_mcp()
+    if gate:
+        return gate
+    if str(name).strip():
+        return mcp_connect(name)
+    servers = [s for s in _mcp_state().get("servers", []) if s.get("enabled", True)]
+    if not servers:
+        return "No hay servidores MCP habilitados para refrescar."
+    results = []
+    for server in servers:
+        try:
+            tools = mcp_client.connect(_mcp_runtime_config(server))
+            results.append(f"- {server['name']}: {len(tools)} herramienta(s)")
+        except Exception as exc:
+            results.append(f"- {server['name']}: error ({exc})")
+    return "Refresco MCP:\n" + "\n".join(results)
+
+
+def mcp_list_tools(name: str = "") -> str:
+    """
+    Lista las herramientas MCP disponibles de los servidores conectados.
+
+    Args:
+        name (str): Servidor concreto; vacio = todos los conectados.
+
+    Returns:
+        str: Herramientas con su nombre namespaced y descripcion.
+    """
+    specs = mcp_client.tool_specs()
+    if not specs:
+        return "No hay herramientas MCP disponibles. Conecta un servidor con mcp_connect."
+    prefix = f"mcp__{str(name).strip().lower()}__" if str(name).strip() else "mcp__"
+    lines = ["Herramientas MCP disponibles:"]
+    for spec in specs:
+        fn = spec.get("function", {})
+        fn_name = str(fn.get("name", ""))
+        if not fn_name.startswith(prefix):
+            continue
+        lines.append(f"- {fn_name}: {str(fn.get('description', ''))[:120]}")
+    if len(lines) == 1:
+        return "No hay herramientas MCP para ese filtro."
+    return "\n".join(lines)
+
+
+def mcp_call_tool(server: str, tool: str, args_json: str = "") -> str:
+    """
+    Llama manualmente una herramienta de un servidor MCP conectado.
+
+    Normalmente no hace falta: las herramientas MCP ya estan disponibles para
+    Yarbis directamente como mcp__<servidor>__<tool>. Usa esto para depurar.
+
+    Args:
+        server (str): Nombre del servidor MCP.
+        tool (str): Nombre de la herramienta (tal cual la expone el servidor).
+        args_json (str): Argumentos como objeto JSON.
+
+    Returns:
+        str: Resultado de la herramienta.
+    """
+    gate = _require_mcp()
+    if gate:
+        return gate
+    arguments = {}
+    if str(args_json).strip():
+        try:
+            arguments = json.loads(args_json)
+        except json.JSONDecodeError as exc:
+            return f"args_json no es JSON valido: {exc}"
+        if not isinstance(arguments, dict):
+            return "args_json debe ser un objeto JSON."
+    try:
+        return mcp_client.call_tool(str(server).strip(), str(tool).strip(), arguments)
+    except Exception as exc:
+        return f"Error llamando la herramienta MCP: {exc}"
 
 
 def desktop_look(prompt: str = "") -> str:
