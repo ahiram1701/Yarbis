@@ -1722,6 +1722,9 @@ def _execute_action(action: str, payload: dict | None = None) -> dict:
             browser_channel=_payload_text(payload, "browser_channel"),
             os_control=bool(payload.get("os_control", True)),
             confirm_sensitive=bool(payload.get("confirm_sensitive", True)),
+            browser_profile_mode=_payload_text(payload, "browser_profile_mode"),
+            browser_profile_directory=_payload_text(payload, "browser_profile_directory"),
+            browser_user_data_dir=_payload_text(payload, "browser_user_data_dir"),
         )}
     if action == "social_confirmation":
         return {"result": set_social_confirmation(enabled=bool(payload.get("enabled", True)))}
@@ -4412,6 +4415,10 @@ function renderSettings() {
         <label><input id="ccSocialConfirm" type="checkbox" ${appState.social_require_confirmation === false ? "" : "checked"}> Pedir confirmacion antes de publicar por API (PUBLICAR id)</label>
         <div class="muted">Apaga estas casillas para que Yarbis publique en Facebook (incluido perfil personal) sin pausar a confirmar.</div>
         <div><label>Navegador</label><select id="ccBrowserChannel"><option value="msedge">Edge</option><option value="chrome">Chrome</option><option value="brave">Brave</option></select></div>
+        <div><label>Perfil</label><select id="ccProfileMode"><option value="isolated">Aislado de Yarbis (login propio)</option><option value="system">Mi perfil del sistema (mis sesiones)</option></select></div>
+        <div><label>Perfil del navegador (opcional)</label><input id="ccProfileDir" placeholder="Default, Profile 1…"></div>
+        <div><label>Carpeta de datos personalizada (avanzado, opcional)</label><input id="ccUserDataDir" placeholder="ej. C:\\Users\\tu\\AppData\\Local\\BraveSoftware\\Brave-Browser\\User Data"></div>
+        <div class="muted">Con "Mi perfil del sistema" Yarbis usa tu navegador real (con tu sesión de Facebook ya iniciada), pero ese navegador debe estar cerrado cuando Yarbis lo abra.</div>
         <button data-action="save-computer-control">Guardar control de PC</button>
       </div>
     </section>
@@ -4619,8 +4626,15 @@ function renderSettings() {
   if (telegramVoiceMode) telegramVoiceMode.value = voice.telegram_reply_mode || "auto";
   const ntfyPriority = $("ntfyPriority");
   if (ntfyPriority) ntfyPriority.value = ntfy.priority || "";
+  const ccSettings = (appState.computer_control || {}).settings || {};
   const ccBrowserChannel = $("ccBrowserChannel");
-  if (ccBrowserChannel) ccBrowserChannel.value = ((appState.computer_control || {}).settings || {}).browser_channel || "msedge";
+  if (ccBrowserChannel) ccBrowserChannel.value = ccSettings.browser_channel || "msedge";
+  const ccProfileMode = $("ccProfileMode");
+  if (ccProfileMode) ccProfileMode.value = ccSettings.browser_profile_mode || "isolated";
+  const ccProfileDir = $("ccProfileDir");
+  if (ccProfileDir) ccProfileDir.value = ccSettings.browser_profile_directory || "";
+  const ccUserDataDir = $("ccUserDataDir");
+  if (ccUserDataDir) ccUserDataDir.value = ccSettings.browser_user_data_dir || "";
 }
 
 function renderActivity() {
@@ -4914,7 +4928,10 @@ document.addEventListener("click", async (event) => {
         enabled: $("ccEnabled").checked,
         os_control: $("ccOsControl").checked,
         confirm_sensitive: $("ccConfirmSensitive").checked,
-        browser_channel: $("ccBrowserChannel").value
+        browser_channel: $("ccBrowserChannel").value,
+        browser_profile_mode: $("ccProfileMode").value,
+        browser_profile_directory: $("ccProfileDir").value,
+        browser_user_data_dir: $("ccUserDataDir").value
       });
       if ($("ccSocialConfirm")) await action("social_confirmation", { enabled: $("ccSocialConfirm").checked });
     } else if (name === "save-mobile") {

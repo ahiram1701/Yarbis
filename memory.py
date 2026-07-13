@@ -384,6 +384,9 @@ def default_state():
             "enabled": False,
             "settings": {
                 "browser_channel": "msedge",
+                "browser_profile_mode": "isolated",
+                "browser_user_data_dir": "",
+                "browser_profile_directory": "",
                 "headed": True,
                 "confirm_sensitive": True,
                 "os_control": True,
@@ -1353,6 +1356,7 @@ def _normalize_vision(vision):
 
 
 VALID_BROWSER_CHANNELS = {"msedge", "chrome", "chromium", "brave", "edge"}
+VALID_BROWSER_PROFILE_MODES = {"isolated", "system"}
 
 
 def _normalize_computer_control(cc):
@@ -1365,10 +1369,22 @@ def _normalize_computer_control(cc):
     channel = _coerce_text(settings.get("browser_channel", defaults["settings"]["browser_channel"]), 20).strip().lower()
     if channel not in VALID_BROWSER_CHANNELS:
         channel = defaults["settings"]["browser_channel"]
+    profile_mode = _coerce_text(
+        settings.get("browser_profile_mode", defaults["settings"]["browser_profile_mode"]), 20
+    ).strip().lower()
+    if profile_mode not in VALID_BROWSER_PROFILE_MODES:
+        profile_mode = defaults["settings"]["browser_profile_mode"]
     return {
         "enabled": bool(cc.get("enabled", defaults["enabled"])),
         "settings": {
             "browser_channel": channel,
+            "browser_profile_mode": profile_mode,
+            "browser_user_data_dir": _coerce_text(
+                settings.get("browser_user_data_dir", defaults["settings"]["browser_user_data_dir"]), 400
+            ).strip(),
+            "browser_profile_directory": _coerce_text(
+                settings.get("browser_profile_directory", defaults["settings"]["browser_profile_directory"]), 120
+            ).strip(),
             "headed": bool(settings.get("headed", defaults["settings"]["headed"])),
             "confirm_sensitive": bool(settings.get("confirm_sensitive", defaults["settings"]["confirm_sensitive"])),
             "os_control": bool(settings.get("os_control", defaults["settings"]["os_control"])),

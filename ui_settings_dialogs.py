@@ -1443,3 +1443,104 @@ class NotificationsDialog(ThemedDialog):
             "telegram_bot_token": telegram_bot_token,
             "telegram_chat_id": self.telegram_chat_id_entry.get().strip(),
         }
+
+
+class ComputerControlDialog(ThemedDialog):
+    _CHANNEL_LABELS = (("msedge", "Edge"), ("chrome", "Chrome"), ("brave", "Brave"))
+    _PROFILE_LABELS = (
+        ("isolated", "Aislado de Yarbis (login propio)"),
+        ("system", "Mi perfil del sistema (mis sesiones)"),
+    )
+
+    def __init__(self, parent, initial_settings: dict):
+        self.initial_settings = initial_settings if isinstance(initial_settings, dict) else {}
+        super().__init__(parent, "Navegador y perfil")
+
+    def body(self, master):
+        self._prepare_body(master)
+        master.columnconfigure(0, weight=1)
+        s = self.initial_settings.get("settings", {}) if isinstance(self.initial_settings, dict) else {}
+        if not isinstance(s, dict):
+            s = {}
+
+        self.enabled_var = tk.BooleanVar(value=bool(self.initial_settings.get("enabled", False)))
+        self.os_control_var = tk.BooleanVar(value=bool(s.get("os_control", True)))
+        self.confirm_var = tk.BooleanVar(value=bool(s.get("confirm_sensitive", True)))
+
+        ttk.Checkbutton(master, text="Activar control de la PC", variable=self.enabled_var).grid(
+            row=0, column=0, columnspan=2, sticky="w", padx=6, pady=(6, 2)
+        )
+        ttk.Checkbutton(master, text="Permitir control del sistema (mouse/teclado)", variable=self.os_control_var).grid(
+            row=1, column=0, columnspan=2, sticky="w", padx=6, pady=2
+        )
+        ttk.Checkbutton(
+            master,
+            text="Confirmar antes de acciones sensibles (Publicar, Pagar, Enviar)",
+            variable=self.confirm_var,
+        ).grid(row=2, column=0, columnspan=2, sticky="w", padx=6, pady=2)
+
+        channel = str(s.get("browser_channel", "msedge")).strip().lower()
+        self._channel_display = {label: value for value, label in self._CHANNEL_LABELS}
+        self.channel_var = tk.StringVar(
+            value=dict(self._CHANNEL_LABELS).get(channel, "Edge")
+        )
+        ttk.Label(master, text="Navegador").grid(row=3, column=0, sticky="w", padx=6, pady=(12, 2))
+        self.channel_combo = ttk.Combobox(
+            master,
+            textvariable=self.channel_var,
+            values=[label for _, label in self._CHANNEL_LABELS],
+            state="readonly",
+            width=30,
+        )
+        self.channel_combo.grid(row=4, column=0, columnspan=2, sticky="ew", padx=6)
+
+        mode = str(s.get("browser_profile_mode", "isolated")).strip().lower()
+        self._profile_display = {label: value for value, label in self._PROFILE_LABELS}
+        self.profile_mode_var = tk.StringVar(
+            value=dict(self._PROFILE_LABELS).get(mode, self._PROFILE_LABELS[0][1])
+        )
+        ttk.Label(master, text="Perfil").grid(row=5, column=0, sticky="w", padx=6, pady=(12, 2))
+        self.profile_combo = ttk.Combobox(
+            master,
+            textvariable=self.profile_mode_var,
+            values=[label for _, label in self._PROFILE_LABELS],
+            state="readonly",
+            width=40,
+        )
+        self.profile_combo.grid(row=6, column=0, columnspan=2, sticky="ew", padx=6)
+
+        ttk.Label(master, text="Perfil del navegador (opcional: Default, Profile 1…)").grid(
+            row=7, column=0, sticky="w", padx=6, pady=(12, 2)
+        )
+        self.profile_dir_entry = ttk.Entry(master, width=44)
+        self.profile_dir_entry.grid(row=8, column=0, columnspan=2, sticky="ew", padx=6)
+        self.profile_dir_entry.insert(0, str(s.get("browser_profile_directory", "")))
+
+        ttk.Label(master, text="Carpeta de datos personalizada (avanzado, opcional)").grid(
+            row=9, column=0, sticky="w", padx=6, pady=(12, 2)
+        )
+        self.user_data_entry = ttk.Entry(master, width=44)
+        self.user_data_entry.grid(row=10, column=0, columnspan=2, sticky="ew", padx=6)
+        self.user_data_entry.insert(0, str(s.get("browser_user_data_dir", "")))
+
+        ttk.Label(
+            master,
+            text=(
+                "Con \"Mi perfil del sistema\" Yarbis usa tu navegador real (con tu sesión de "
+                "Facebook ya iniciada), pero ese navegador debe estar cerrado cuando Yarbis lo abra."
+            ),
+            foreground=self.theme_palette["muted"],
+            wraplength=420,
+        ).grid(row=11, column=0, columnspan=2, sticky="w", padx=6, pady=(10, 4))
+        return self.channel_combo
+
+    def apply(self):
+        self.result = {
+            "enabled": self.enabled_var.get(),
+            "os_control": self.os_control_var.get(),
+            "confirm_sensitive": self.confirm_var.get(),
+            "browser_channel": self._channel_display.get(self.channel_var.get(), "msedge"),
+            "browser_profile_mode": self._profile_display.get(self.profile_mode_var.get(), "isolated"),
+            "browser_profile_directory": self.profile_dir_entry.get().strip(),
+            "browser_user_data_dir": self.user_data_entry.get().strip(),
+        }

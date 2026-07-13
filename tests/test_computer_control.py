@@ -82,11 +82,75 @@ class ComputerControlTestCase(unittest.TestCase):
     def test_normalize_computer_control_defaults(self):
         cc = memory.default_state()["computer_control"]
         self.assertFalse(cc["enabled"])
+        self.assertEqual(cc["settings"]["browser_profile_mode"], "isolated")
+        self.assertEqual(cc["settings"]["browser_user_data_dir"], "")
+        self.assertEqual(cc["settings"]["browser_profile_directory"], "")
         norm = memory.normalize_state({"computer_control": {"enabled": True, "settings": {"browser_channel": "bogus", "os_control": False}}})
         cc2 = norm["computer_control"]
         self.assertTrue(cc2["enabled"])
         self.assertEqual(cc2["settings"]["browser_channel"], "msedge")
         self.assertFalse(cc2["settings"]["os_control"])
+
+    def test_normalize_profile_mode_invalid_falls_back(self):
+        norm = memory.normalize_state({"computer_control": {"settings": {
+            "browser_profile_mode": "bogus",
+            "browser_user_data_dir": "  C:/x/User Data  ",
+            "browser_profile_directory": "  Profile 1  ",
+        }}})
+        s = norm["computer_control"]["settings"]
+        self.assertEqual(s["browser_profile_mode"], "isolated")
+        self.assertEqual(s["browser_user_data_dir"], "C:/x/User Data")
+        self.assertEqual(s["browser_profile_directory"], "Profile 1")
+
+    def test_set_computer_control_persists_profile(self):
+        with patch.object(memory, "STATE_FILE", self._state_path()):
+            memory.save_state(memory.default_state())
+            out = tools.set_computer_control(
+                enabled=True,
+                browser_channel="brave",
+                browser_profile_mode="system",
+                browser_profile_directory="Default",
+            )
+            self.assertIn("sistema", out.lower())
+            s = memory.load_state()["computer_control"]["settings"]
+            self.assertEqual(s["browser_profile_mode"], "system")
+            self.assertEqual(s["browser_profile_directory"], "Default")
+
+    def test_resolve_user_data_dir_isolated_system_custom(self):
+        # isolated -> perfil propio de Yarbis
+        _, label = browser_automation._resolve_user_data_dir("brave", "isolated", "")
+        self.assertIn("aislado", label.lower())
+        # custom override gana sobre el modo
+        custom = str(TEST_RUNTIME_DIR / f"ud_{id(self)}")
+        path, label = browser_automation._resolve_user_data_dir("brave", "system", custom)
+        self.assertIn("personalizado", label.lower())
+        self.assertTrue(Path(path).exists())
+        # system con LOCALAPPDATA existente -> ruta del sistema
+        import os
+        fake_local = TEST_RUNTIME_DIR / f"local_{id(self)}"
+        (fake_local / "BraveSoftware" / "Brave-Browser" / "User Data").mkdir(parents=True, exist_ok=True)
+        with patch.dict(os.environ, {"LOCALAPPDATA": str(fake_local)}):
+            path, label = browser_automation._resolve_user_data_dir("brave", "system", "")
+        self.assertIn("perfil del sistema", label.lower())
+        self.assertTrue(str(path).endswith("User Data"))
+
+    def test_browser_open_passes_profile_settings(self):
+        with patch.object(memory, "STATE_FILE", self._state_path()):
+            memory.save_state(memory.default_state())
+            tools.set_computer_control(
+                enabled=True,
+                browser_channel="brave",
+                browser_profile_mode="system",
+                browser_profile_directory="Profile 1",
+                browser_user_data_dir="C:/custom/UD",
+            )
+            with patch.object(tools, "open_persistent_browser", return_value="ok") as mock_open:
+                tools.browser_open("https://www.facebook.com/")
+            _, kwargs = mock_open.call_args
+            self.assertEqual(kwargs["channel"], "brave")
+            self.assertEqual(kwargs["profile_mode"], "system")
+            self.assertEqual(kwargs["profile_directory"], "Profile 1")
+            self.assertEqual(kwargs["user_data_dir"], "C:/custom/UD")
 
 
 if __name__ == "__main__":

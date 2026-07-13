@@ -49,6 +49,50 @@ def _persistent_profile_dir() -> Path:
     return profile
 
 
+# Ubicacion del "User Data" real de cada navegador en Windows, para el modo
+# "system" (usar el perfil del usuario, con sus sesiones ya iniciadas).
+_SYSTEM_USER_DATA_SUBPATH = {
+    "msedge": ("Microsoft", "Edge", "User Data"),
+    "edge": ("Microsoft", "Edge", "User Data"),
+    "chrome": ("Google", "Chrome", "User Data"),
+    "chromium": ("Chromium", "User Data"),
+    "brave": ("BraveSoftware", "Brave-Browser", "User Data"),
+}
+
+
+def _system_user_data_dir(channel: str) -> Path | None:
+    local_app_data = os.environ.get("LOCALAPPDATA", "")
+    if not local_app_data:
+        return None
+    parts = _SYSTEM_USER_DATA_SUBPATH.get(str(channel or "").strip().lower())
+    if not parts:
+        return None
+    return Path(local_app_data).joinpath(*parts)
+
+
+def _resolve_user_data_dir(
+    channel: str,
+    profile_mode: str = "isolated",
+    user_data_dir_override: str = "",
+) -> tuple[Path, str]:
+    """Resuelve el directorio de datos del navegador y una etiqueta descriptiva.
+
+    Prioridad: override explicito > modo "system" (perfil real del navegador) >
+    "isolated" (perfil propio de Yarbis, por defecto). Si el modo "system" no
+    encuentra el User Data real, cae al perfil aislado para no fallar.
+    """
+    override = str(user_data_dir_override or "").strip()
+    if override:
+        path = Path(override).expanduser()
+        path.mkdir(parents=True, exist_ok=True)
+        return path, f"personalizado ({path})"
+    if str(profile_mode or "").strip().lower() == "system":
+        system_dir = _system_user_data_dir(channel)
+        if system_dir and system_dir.exists():
+            return system_dir, f"perfil del sistema ({system_dir})"
+    return _persistent_profile_dir(), "perfil aislado de Yarbis"
+
+
 def _find_browser_executable(channel: str) -> str:
     channel = str(channel or "").strip().lower()
     candidates = {
@@ -402,20 +446,31 @@ def _resolve_locator(page, action):
     raise ValueError("El click/fill requiere ref, text o selector.")
 
 
-def open_persistent_browser(url: str = "", channel: str = "msedge", workspace_root: Path | None = None) -> str:
+def open_persistent_browser(
+    url: str = "",
+    channel: str = "msedge",
+    workspace_root: Path | None = None,
+    profile_mode: str = "isolated",
+    user_data_dir: str = "",
+    profile_directory: str = "",
+) -> str:
     workspace_root = workspace_root or Path.cwd()
     with _BROWSER_LOCK:
         launched = False
+        profile_label = ""
         if not _cdp_reachable():
             exe = _find_browser_executable(channel)
-            profile = _persistent_profile_dir()
+            data_dir, profile_label = _resolve_user_data_dir(channel, profile_mode, user_data_dir)
             args = [
                 exe,
                 "--remote-debugging-port=9222",
-                f"--user-data-dir={profile}",
+                f"--user-data-dir={data_dir}",
                 "--no-first-run",
                 "--no-default-browser-check",
             ]
+            profile_dir = str(profile_directory or "").strip()
+            if profile_dir:
+                args.append(f"--profile-directory={profile_dir}")
             creationflags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0) | getattr(subprocess, "DETACHED_PROCESS", 0)
             subprocess.Popen(
                 args,
@@ -429,7 +484,11 @@ def open_persistent_browser(url: str = "", channel: str = "msedge", workspace_ro
             while time.monotonic() < deadline and not _cdp_reachable():
                 time.sleep(0.5)
             if not _cdp_reachable():
-                raise RuntimeError("No pude iniciar el navegador con depuracion remota.")
+                raise RuntimeError(
+                    "No pude iniciar el navegador con depuracion remota. Si elegiste el perfil "
+                    "del sistema, cierra por completo ese navegador (no puede estar abierto con el "
+                    "mismo perfil) y reintenta."
+                )
         sync_playwright = _load_playwright()
         with sync_playwright() as playwright:
             browser = playwright.chromium.connect_over_cdp(CDP_URL)
@@ -440,7 +499,10 @@ def open_persistent_browser(url: str = "", channel: str = "msedge", workspace_ro
                 final_url = page.url
             finally:
                 browser.close()
-    estado = "Navegador de Yarbis abierto (nuevo)" if launched else "Navegador de Yarbis ya estaba abierto"
+    if launched:
+        estado = f"Navegador de Yarbis abierto (nuevo, {profile_label})" if profile_label else "Navegador de Yarbis abierto (nuevo)"
+    else:
+        estado = "Navegador de Yarbis ya estaba abierto (reutilizo la ventana existente; para cambiar de perfil cierrala primero)"
     return (
         f"{estado}. URL: {final_url}. El perfil es persistente (tu login se guarda). "
         "Usa browser_observe para ver la pagina y browser_act para hacer clic o escribir."

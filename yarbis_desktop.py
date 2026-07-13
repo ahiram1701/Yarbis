@@ -134,6 +134,7 @@ from ui_dialogs import (
     TaskDialog,
 )
 from ui_settings_dialogs import (
+    ComputerControlDialog,
     LocalContextDialog,
     MemoryProtectionDialog,
     NotificationsDialog,
@@ -1488,7 +1489,8 @@ class YarbisDesktop(tk.Tk):
             "Control de la PC",
             (
                 {"text": "Estado", "command": self._show_computer_control_status},
-                {"text": "Activar", "command": lambda: self._set_computer_control_enabled(True), "style": "Accent.TButton"},
+                {"text": "Navegador y perfil…", "command": self._configure_computer_control, "style": "Accent.TButton"},
+                {"text": "Activar", "command": lambda: self._set_computer_control_enabled(True)},
                 {"text": "Desactivar", "command": lambda: self._set_computer_control_enabled(False)},
                 {"text": "Publicar sin confirmar", "command": lambda: self._set_publish_confirmation(False)},
                 {"text": "Pedir confirmación", "command": lambda: self._set_publish_confirmation(True)},
@@ -1526,9 +1528,16 @@ class YarbisDesktop(tk.Tk):
         try:
             cc = memory_store.load_state().get("computer_control", {})
             s = cc.get("settings", {})
+            mode = s.get("browser_profile_mode", "isolated")
+            perfil = "aislado (Yarbis)" if mode == "isolated" else "sistema (tu navegador)"
+            if str(s.get("browser_user_data_dir", "")).strip():
+                perfil = f"personalizado ({s.get('browser_user_data_dir')})"
+            if str(s.get("browser_profile_directory", "")).strip():
+                perfil += f", perfil '{s.get('browser_profile_directory')}'"
             text = (
                 f"Control de la PC: {'activado' if cc.get('enabled') else 'desactivado'}.\n"
                 f"Navegador: {s.get('browser_channel', 'msedge')}\n"
+                f"Perfil: {perfil}\n"
                 f"Control del sistema (mouse/teclado): {'si' if s.get('os_control', True) else 'no'}\n"
                 f"Confirmar acciones sensibles: {'si' if s.get('confirm_sensitive', True) else 'no'}"
             )
@@ -1536,6 +1545,32 @@ class YarbisDesktop(tk.Tk):
             messagebox.showwarning("Control de la PC", f"No pude leer el estado: {exc}", parent=self)
             return
         messagebox.showinfo("Control de la PC", text, parent=self)
+
+    def _configure_computer_control(self):
+        try:
+            current = memory_store.load_state().get("computer_control", {})
+        except Exception as exc:
+            messagebox.showwarning("Control de la PC", f"No pude leer los ajustes: {exc}", parent=self)
+            return
+        dialog = ComputerControlDialog(self, initial_settings=current)
+        result = getattr(dialog, "result", None)
+        if not result:
+            return
+        try:
+            message = set_computer_control(
+                enabled=bool(result.get("enabled", False)),
+                os_control=bool(result.get("os_control", True)),
+                confirm_sensitive=bool(result.get("confirm_sensitive", True)),
+                browser_channel=str(result.get("browser_channel", "")),
+                browser_profile_mode=str(result.get("browser_profile_mode", "")),
+                browser_profile_directory=str(result.get("browser_profile_directory", "")),
+                browser_user_data_dir=str(result.get("browser_user_data_dir", "")),
+            )
+        except Exception as exc:
+            messagebox.showwarning("Control de la PC", f"No pude guardar: {exc}", parent=self)
+            return
+        messagebox.showinfo("Control de la PC", message, parent=self)
+        self.refresh_state_view()
 
     def _set_computer_control_enabled(self, enabled: bool):
         if enabled and not messagebox.askyesno(

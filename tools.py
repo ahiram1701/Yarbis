@@ -3105,6 +3105,9 @@ def set_computer_control(
     browser_channel: str = "",
     os_control: bool | None = None,
     confirm_sensitive: bool | None = None,
+    browser_profile_mode: str = "",
+    browser_user_data_dir: str | None = None,
+    browser_profile_directory: str | None = None,
 ) -> str:
     """
     Activa o ajusta el control de la PC (navegador propio y sistema operativo).
@@ -3114,6 +3117,9 @@ def set_computer_control(
         browser_channel (str): Canal del navegador: msedge, chrome, brave.
         os_control (bool): Permitir control del SO (mouse/teclado) ademas del navegador.
         confirm_sensitive (bool): Exigir confirmacion antes de acciones sensibles (publicar/pagar/eliminar).
+        browser_profile_mode (str): 'isolated' (perfil propio de Yarbis) o 'system' (tu perfil real, con tus sesiones).
+        browser_user_data_dir (str): Ruta personalizada de "User Data" del navegador (vacio = automatico segun el modo).
+        browser_profile_directory (str): Perfil dentro del navegador, ej. 'Default' o 'Profile 1' (vacio = el predeterminado).
 
     Returns:
         str: Estado resultante del control de PC.
@@ -3129,13 +3135,26 @@ def set_computer_control(
             settings["os_control"] = bool(os_control)
         if confirm_sensitive is not None:
             settings["confirm_sensitive"] = bool(confirm_sensitive)
+        if str(browser_profile_mode).strip():
+            settings["browser_profile_mode"] = str(browser_profile_mode).strip().lower()
+        if browser_user_data_dir is not None:
+            settings["browser_user_data_dir"] = str(browser_user_data_dir).strip()
+        if browser_profile_directory is not None:
+            settings["browser_profile_directory"] = str(browser_profile_directory).strip()
 
     state_transaction("set_computer_control", mutate)
     cc = _computer_control_state()
     s = cc.get("settings", {})
+    perfil = s.get("browser_profile_mode", "isolated")
+    perfil_txt = "aislado (Yarbis)" if perfil == "isolated" else "sistema (tu navegador)"
+    if str(s.get("browser_user_data_dir", "")).strip():
+        perfil_txt = f"personalizado ({s['browser_user_data_dir']})"
+    if str(s.get("browser_profile_directory", "")).strip():
+        perfil_txt += f", perfil '{s['browser_profile_directory']}'"
     return (
         f"Control de PC: {'activado' if cc.get('enabled') else 'desactivado'}. "
         f"Navegador={s.get('browser_channel', 'msedge')}, "
+        f"perfil={perfil_txt}, "
         f"control SO={'si' if s.get('os_control', True) else 'no'}, "
         f"confirmar acciones sensibles={'si' if s.get('confirm_sensitive', True) else 'no'}."
     )
@@ -3177,9 +3196,17 @@ def browser_open(url: str = "", channel: str = "") -> str:
     gate = _require_computer_control()
     if gate:
         return gate
-    channel = str(channel).strip() or _computer_control_state().get("settings", {}).get("browser_channel", "msedge")
+    settings = _computer_control_state().get("settings", {})
+    channel = str(channel).strip() or settings.get("browser_channel", "msedge")
     try:
-        return open_persistent_browser(url=url, channel=channel, workspace_root=WORKSPACE_ROOT)
+        return open_persistent_browser(
+            url=url,
+            channel=channel,
+            workspace_root=WORKSPACE_ROOT,
+            profile_mode=str(settings.get("browser_profile_mode", "isolated")),
+            user_data_dir=str(settings.get("browser_user_data_dir", "")),
+            profile_directory=str(settings.get("browser_profile_directory", "")),
+        )
     except Exception as exc:
         return f"No pude abrir el navegador: {exc}"
 
