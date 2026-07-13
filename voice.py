@@ -244,10 +244,31 @@ def _load_whisper_model(settings: dict):
             raise VoiceError(
                 "Falta faster-whisper. Instala dependencias con python -m pip install -r requirements.txt."
             ) from exc
-        try:
-            model = WhisperModel(model_name, device="cpu", compute_type=compute_type)
-        except Exception as exc:
-            raise VoiceError(f"No pude cargar el modelo local de voz '{model_name}': {exc}") from exc
+        # Ordered fallback: try requested compute_type first, then progressively
+        # lighter alternatives that avoid MKL memory allocation issues on low-RAM systems.
+        fallback_chain = [compute_type]
+        for ct in ("float32", "default"):
+            if ct not in fallback_chain:
+                fallback_chain.append(ct)
+        last_exc = None
+        model = None
+        loaded_ct = compute_type
+        for ct in fallback_chain:
+            try:
+                model = WhisperModel(model_name, device="cpu", compute_type=ct)
+                loaded_ct = ct
+                if ct != compute_type:
+                    import logging
+                    logging.getLogger(__name__).warning(
+                        "Modelo Whisper cargado con compute_type='%s' (fallback desde '%s') para evitar error de memoria MKL.",
+                        ct, compute_type,
+                    )
+                break
+            except Exception as exc:
+                last_exc = exc
+                continue
+        if model is None:
+            raise VoiceError(f"No pude cargar el modelo local de voz '{model_name}': {last_exc}") from last_exc
         _WHISPER_MODELS[key] = model
         return model
 
