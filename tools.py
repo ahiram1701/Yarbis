@@ -4,6 +4,7 @@ import json
 import os
 import re
 import shlex
+import shutil
 import subprocess
 import sys
 from datetime import datetime, timezone
@@ -2746,6 +2747,45 @@ def update_memory_protection_settings(
     return memory_protection_status()
 
 
+_TEST_SANDBOX_PREFIX = "test-sandbox-"
+
+
+def _isolated_test_env() -> tuple[dict, str]:
+    """Entorno para el subproceso de tests apuntado a una instancia desechable.
+
+    Critico: el subproceso de `unittest` hereda el entorno del proceso que lo
+    lanza. Si Yarbis corre sus propios tests desde una instancia real (p. ej.
+    `asistente`), cualquier test que escriba estado sin aislar apunta al
+    `state.json` REAL de esa instancia y borra la memoria del usuario. Forzamos
+    un `YARBIS_INSTANCE` desechable para que los tests solo puedan tocar un
+    estado sandbox descartable, nunca el de una instancia productiva.
+    """
+    sandbox_id = f"{_TEST_SANDBOX_PREFIX}{uuid4().hex[:8]}"
+    env = dict(os.environ)
+    env[yarbis_instance.ENV_INSTANCE] = sandbox_id
+    env.pop(yarbis_instance.ENV_SERVICE_NAME, None)
+    return env, sandbox_id
+
+
+def _cleanup_test_sandbox(sandbox_id: str) -> None:
+    """Borra el directorio de la instancia sandbox creada para los tests."""
+    if not str(sandbox_id).startswith(_TEST_SANDBOX_PREFIX):
+        return
+    try:
+        sandbox_dir = yarbis_instance.instance_root(sandbox_id)
+    except Exception:
+        return
+    try:
+        resolved = sandbox_dir.resolve()
+        instances_root = yarbis_instance.INSTANCES_ROOT.resolve()
+    except OSError:
+        return
+    # Seguridad: solo borrar dentro de .yarbis_instances y con el prefijo sandbox.
+    if resolved.parent != instances_root or resolved.name != sandbox_id:
+        return
+    shutil.rmtree(resolved, ignore_errors=True)
+
+
 def run_project_tests(
     test_target: str = "tests",
     pattern: str = "test*.py",
@@ -2798,6 +2838,7 @@ def run_project_tests(
     else:
         return f"No es una ruta valida para tests: {cleaned_target}"
 
+    sandbox_env, sandbox_id = _isolated_test_env()
     try:
         completed = subprocess.run(
             command,
@@ -2807,6 +2848,7 @@ def run_project_tests(
             encoding="utf-8",
             errors="replace",
             timeout=normalized_timeout,
+            env=sandbox_env,
         )
     except subprocess.TimeoutExpired:
         return (
@@ -2815,6 +2857,8 @@ def run_project_tests(
         )
     except OSError as exc:
         return f"No pude ejecutar los tests: {exc}"
+    finally:
+        _cleanup_test_sandbox(sandbox_id)
 
     combined_output = "\n".join(
         part.strip()

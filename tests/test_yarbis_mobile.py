@@ -1,6 +1,7 @@
 import http.client
 import base64
 import json
+import os
 import socket
 import subprocess
 import threading
@@ -153,7 +154,8 @@ class YarbisMobileTestCase(unittest.TestCase):
         state_path.parent.mkdir(parents=True, exist_ok=True)
         instances_root = TEST_RUNTIME_DIR / f"mobile_instances_root-{socket.gethostname()}-{_free_port()}"
 
-        with patch.object(memory, "STATE_FILE", state_path):
+        with patch.dict(os.environ, {yarbis_instance.ENV_INSTANCE: "default"}):
+          with patch.object(memory, "STATE_FILE", state_path):
             with patch.object(yarbis_instance, "INSTANCES_ROOT", instances_root):
                 memory.save_state(memory.default_state())
                 yarbis_mobile.update_mobile_ui_settings(enabled=True, port=8787, pin="1357")
