@@ -153,5 +153,40 @@ class ComputerControlTestCase(unittest.TestCase):
             self.assertEqual(kwargs["user_data_dir"], "C:/custom/UD")
 
 
+class BrowserSessionLaunchTestCase(unittest.TestCase):
+    def test_process_session_id_is_int_or_none(self):
+        sid = browser_automation._process_session_id()
+        self.assertTrue(sid is None or isinstance(sid, int))
+        # el proceso de tests es interactivo: no debe ser Session 0
+        self.assertFalse(browser_automation._running_in_session0())
+
+    def test_spawn_uses_popen_outside_session0(self):
+        with patch.object(browser_automation, "_running_in_session0", return_value=False), \
+             patch.object(browser_automation.subprocess, "Popen") as popen, \
+             patch.object(browser_automation, "_launch_in_active_session") as user_launch:
+            browser_automation._spawn_browser_process("x.exe", ["x.exe", "--a"], 0)
+        self.assertTrue(popen.called)
+        self.assertFalse(user_launch.called)
+
+    def test_spawn_uses_user_session_in_session0(self):
+        with patch.object(browser_automation, "_running_in_session0", return_value=True), \
+             patch.object(browser_automation, "_launch_in_active_session", return_value=True) as user_launch, \
+             patch.object(browser_automation.subprocess, "Popen") as popen:
+            browser_automation._spawn_browser_process("x.exe", ["x.exe", "--a"], 0)
+        self.assertTrue(user_launch.called)
+        self.assertFalse(popen.called)  # no doble-lanzamiento
+
+    def test_spawn_falls_back_to_popen_when_user_launch_fails(self):
+        with patch.object(browser_automation, "_running_in_session0", return_value=True), \
+             patch.object(browser_automation, "_launch_in_active_session", return_value=False), \
+             patch.object(browser_automation.subprocess, "Popen") as popen:
+            browser_automation._spawn_browser_process("x.exe", ["x.exe", "--a"], 0)
+        self.assertTrue(popen.called)
+
+    def test_launch_in_active_session_non_windows_returns_false(self):
+        with patch.object(browser_automation.os, "name", "posix"):
+            self.assertFalse(browser_automation._launch_in_active_session("x", ["x"]))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -446,6 +446,162 @@ def _resolve_locator(page, action):
     raise ValueError("El click/fill requiere ref, text o selector.")
 
 
+def _process_session_id() -> int | None:
+    """SessionId de Windows del proceso actual (None si no se puede determinar).
+
+    Un servicio del SCM corre en Session 0 (aislada, sin escritorio); un proceso
+    interactivo del usuario corre en su propia sesion (>0).
+    """
+    if os.name != "nt":
+        return None
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        kernel32 = ctypes.windll.kernel32
+        kernel32.ProcessIdToSessionId.argtypes = [wintypes.DWORD, ctypes.POINTER(wintypes.DWORD)]
+        kernel32.ProcessIdToSessionId.restype = wintypes.BOOL
+        session_id = wintypes.DWORD(0)
+        if kernel32.ProcessIdToSessionId(kernel32.GetCurrentProcessId(), ctypes.byref(session_id)):
+            return int(session_id.value)
+    except Exception:
+        return None
+    return None
+
+
+def _running_in_session0() -> bool:
+    return _process_session_id() == 0
+
+
+def _launch_in_active_session(exe: str, args: list[str], cwd: str | None = None) -> bool:
+    """Lanza exe+args en la sesion interactiva del usuario.
+
+    Necesario cuando Yarbis corre como servicio en Session 0: un subprocess.Popen
+    normal abriria el navegador en Session 0 (invisible para el usuario). Usa
+    WTSGetActiveConsoleSessionId -> WTSQueryUserToken -> DuplicateTokenEx ->
+    CreateEnvironmentBlock -> CreateProcessAsUserW para abrirlo en el escritorio
+    del usuario. Devuelve True si lo lanzo; False para caer a Popen normal.
+    """
+    if os.name != "nt":
+        return False
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        kernel32 = ctypes.windll.kernel32
+        wtsapi32 = ctypes.windll.wtsapi32
+        userenv = ctypes.windll.userenv
+        advapi32 = ctypes.windll.advapi32
+
+        kernel32.WTSGetActiveConsoleSessionId.restype = wintypes.DWORD
+        kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+        wtsapi32.WTSQueryUserToken.argtypes = [wintypes.ULONG, ctypes.POINTER(wintypes.HANDLE)]
+        wtsapi32.WTSQueryUserToken.restype = wintypes.BOOL
+        advapi32.DuplicateTokenEx.argtypes = [
+            wintypes.HANDLE, wintypes.DWORD, ctypes.c_void_p,
+            ctypes.c_int, ctypes.c_int, ctypes.POINTER(wintypes.HANDLE),
+        ]
+        advapi32.DuplicateTokenEx.restype = wintypes.BOOL
+        userenv.CreateEnvironmentBlock.argtypes = [ctypes.POINTER(ctypes.c_void_p), wintypes.HANDLE, wintypes.BOOL]
+        userenv.CreateEnvironmentBlock.restype = wintypes.BOOL
+        userenv.DestroyEnvironmentBlock.argtypes = [ctypes.c_void_p]
+
+        session_id = kernel32.WTSGetActiveConsoleSessionId()
+        if session_id == 0xFFFFFFFF:
+            return False  # no hay sesion de consola activa
+
+        user_token = wintypes.HANDLE()
+        if not wtsapi32.WTSQueryUserToken(session_id, ctypes.byref(user_token)):
+            return False
+
+        TOKEN_ALL_ACCESS = 0xF01FF
+        SecurityImpersonation = 2
+        TokenPrimary = 1
+        primary = wintypes.HANDLE()
+        try:
+            if not advapi32.DuplicateTokenEx(
+                user_token, TOKEN_ALL_ACCESS, None, SecurityImpersonation, TokenPrimary, ctypes.byref(primary)
+            ):
+                return False
+        finally:
+            kernel32.CloseHandle(user_token)
+
+        env_block = ctypes.c_void_p()
+        have_env = bool(userenv.CreateEnvironmentBlock(ctypes.byref(env_block), primary, False))
+
+        class STARTUPINFOW(ctypes.Structure):
+            _fields_ = [
+                ("cb", wintypes.DWORD), ("lpReserved", wintypes.LPWSTR),
+                ("lpDesktop", wintypes.LPWSTR), ("lpTitle", wintypes.LPWSTR),
+                ("dwX", wintypes.DWORD), ("dwY", wintypes.DWORD),
+                ("dwXSize", wintypes.DWORD), ("dwYSize", wintypes.DWORD),
+                ("dwXCountChars", wintypes.DWORD), ("dwYCountChars", wintypes.DWORD),
+                ("dwFillAttribute", wintypes.DWORD), ("dwFlags", wintypes.DWORD),
+                ("wShowWindow", wintypes.WORD), ("cbReserved2", wintypes.WORD),
+                ("lpReserved2", ctypes.c_void_p), ("hStdInput", wintypes.HANDLE),
+                ("hStdOutput", wintypes.HANDLE), ("hStdError", wintypes.HANDLE),
+            ]
+
+        class PROCESS_INFORMATION(ctypes.Structure):
+            _fields_ = [
+                ("hProcess", wintypes.HANDLE), ("hThread", wintypes.HANDLE),
+                ("dwProcessId", wintypes.DWORD), ("dwThreadId", wintypes.DWORD),
+            ]
+
+        advapi32.CreateProcessAsUserW.argtypes = [
+            wintypes.HANDLE, wintypes.LPCWSTR, wintypes.LPWSTR, ctypes.c_void_p, ctypes.c_void_p,
+            wintypes.BOOL, wintypes.DWORD, ctypes.c_void_p, wintypes.LPCWSTR,
+            ctypes.POINTER(STARTUPINFOW), ctypes.POINTER(PROCESS_INFORMATION),
+        ]
+        advapi32.CreateProcessAsUserW.restype = wintypes.BOOL
+
+        si = STARTUPINFOW()
+        si.cb = ctypes.sizeof(si)
+        si.lpDesktop = "winsta0\\default"  # escritorio interactivo del usuario
+        pi = PROCESS_INFORMATION()
+
+        cmd_buf = ctypes.create_unicode_buffer(subprocess.list2cmdline(args))
+        CREATE_NEW_PROCESS_GROUP = 0x00000200
+        DETACHED_PROCESS = 0x00000008
+        CREATE_UNICODE_ENVIRONMENT = 0x00000400
+        flags = CREATE_NEW_PROCESS_GROUP | DETACHED_PROCESS | (CREATE_UNICODE_ENVIRONMENT if have_env else 0)
+
+        try:
+            ok = advapi32.CreateProcessAsUserW(
+                primary, exe, cmd_buf, None, None, False, flags,
+                env_block if have_env else None, cwd, ctypes.byref(si), ctypes.byref(pi),
+            )
+        finally:
+            if have_env:
+                userenv.DestroyEnvironmentBlock(env_block)
+            kernel32.CloseHandle(primary)
+
+        if ok:
+            if pi.hProcess:
+                kernel32.CloseHandle(pi.hProcess)
+            if pi.hThread:
+                kernel32.CloseHandle(pi.hThread)
+            return True
+        return False
+    except Exception:
+        return False
+
+
+def _spawn_browser_process(exe: str, args: list[str], creationflags: int) -> None:
+    """Lanza el navegador. Si Yarbis corre en Session 0 (servicio), intenta abrirlo
+    en la sesion interactiva del usuario para que sea visible; si no puede, cae a
+    un Popen normal (comportamiento previo, seguro)."""
+    if _running_in_session0() and _launch_in_active_session(exe, args):
+        return
+    subprocess.Popen(
+        args,
+        close_fds=True,
+        creationflags=creationflags,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+
+
 def open_persistent_browser(
     url: str = "",
     channel: str = "msedge",
@@ -472,13 +628,7 @@ def open_persistent_browser(
             if profile_dir:
                 args.append(f"--profile-directory={profile_dir}")
             creationflags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0) | getattr(subprocess, "DETACHED_PROCESS", 0)
-            subprocess.Popen(
-                args,
-                close_fds=True,
-                creationflags=creationflags,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
+            _spawn_browser_process(exe, args, creationflags)
             launched = True
             deadline = time.monotonic() + 20
             while time.monotonic() < deadline and not _cdp_reachable():
