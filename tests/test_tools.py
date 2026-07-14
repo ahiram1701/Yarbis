@@ -90,6 +90,30 @@ class ToolsTestCase(unittest.TestCase):
 
         self.assertIn("Escritura bloqueada", result)
 
+    def test_write_text_file_blocks_python_syntax_error(self):
+        file_path = self.runtime_dir / "roto.py"
+        file_path.write_text("print('ok')\n", encoding="utf-8")
+        with patch.object(tools, "CHECKPOINTS_DIR", self.checkpoints_dir):
+            result = tools.write_text_file(
+                file_path.relative_to(tools.WORKSPACE_ROOT).as_posix(),
+                'return int(x or "-1")) == 0\n',  # parentesis de mas (el bug real)
+            )
+        self.assertIn("BLOQUEADO", result)
+        # el archivo NO se toco
+        self.assertEqual(file_path.read_text(encoding="utf-8"), "print('ok')\n")
+        # no se creo checkpoint
+        self.assertFalse(any(self.checkpoints_dir.iterdir()) if self.checkpoints_dir.exists() else False)
+
+    def test_write_text_file_allows_valid_python_and_non_py(self):
+        py_path = self.runtime_dir / "bien.py"
+        with patch.object(tools, "CHECKPOINTS_DIR", self.checkpoints_dir):
+            ok = tools.write_text_file(py_path.relative_to(tools.WORKSPACE_ROOT).as_posix(), "def f():\n    return 1\n")
+            # texto no-.py con parentesis sueltos: permitido (no es Python)
+            txt_path = self.runtime_dir / "nota.txt"
+            txt = tools.write_text_file(txt_path.relative_to(tools.WORKSPACE_ROOT).as_posix(), "esto (no) es python )")
+        self.assertNotIn("BLOQUEADO", ok)
+        self.assertNotIn("BLOQUEADO", txt)
+
     def test_write_text_file_creates_checkpoint_and_diff_for_existing_file(self):
         file_path = self.runtime_dir / "self_edit.py"
         file_path.write_text("print('old')\n", encoding="utf-8")

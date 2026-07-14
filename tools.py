@@ -1,3 +1,4 @@
+import ast
 import difflib
 import html
 import json
@@ -724,6 +725,24 @@ def read_text_file(path: str, max_bytes: int = 0) -> str:
     return content
 
 
+def _python_syntax_error(file_path: Path, content: str) -> str | None:
+    """Si file_path es .py y content tiene un error de sintaxis, devuelve el mensaje.
+
+    Evita que se escriba Python roto que romperia el arranque de Yarbis (una sola
+    instancia con un SyntaxError tumba a todas las que importan ese modulo).
+    """
+    if str(file_path).lower().endswith(".py"):
+        try:
+            ast.parse(content, filename=str(file_path))
+        except SyntaxError as exc:
+            return (
+                f"BLOQUEADO: el contenido tiene un error de sintaxis de Python y no se escribio "
+                f"({_workspace_relative(file_path)}): linea {exc.lineno}: {exc.msg}. "
+                "Corrige el codigo y reintenta; no se toco el archivo."
+            )
+    return None
+
+
 def _write_text_file_impl(path: str, content: str, enforce_coding_guard: bool = True) -> str:
     """
     Escribe texto en un archivo de forma segura.
@@ -748,6 +767,10 @@ def _write_text_file_impl(path: str, content: str, enforce_coding_guard: bool = 
     write_error = _validate_write_path(file_path)
     if write_error:
         return write_error
+
+    syntax_error = _python_syntax_error(file_path, content)
+    if syntax_error:
+        return syntax_error
 
     encoded_content = content.encode("utf-8")
     if len(encoded_content) > MAX_WRITE_BYTES:
@@ -1883,6 +1906,18 @@ def coding_apply_proposal(proposal_id: str) -> str:
     proposal, proposal_path, _workspace_path, preflight, error = _preflight_coding_proposal(proposal_id)
     if error:
         return error
+
+    # Validar sintaxis de TODOS los .py antes de escribir nada (evita dejar el
+    # codigo a medias y que un SyntaxError tumbe el arranque de Yarbis).
+    for item in preflight:
+        if item["operation"] == CODING_FILE_OPERATION_DELETE:
+            continue
+        syntax_error = _python_syntax_error(item["target_path"], item["proposed_content"])
+        if syntax_error:
+            return (
+                f"Propuesta NO aplicada: {syntax_error}\n"
+                f"Archivo con el problema: {item['relative_path'].as_posix()}"
+            )
 
     applied = []
     for item in preflight:
