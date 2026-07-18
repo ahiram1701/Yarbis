@@ -18,6 +18,23 @@ import tools
 import yarbis_instance
 
 
+class GlobalTestIsolationTestCase(unittest.TestCase):
+    def test_suite_runs_under_sandbox_instance(self):
+        # tests/__init__.py fuerza un YARBIS_INSTANCE sandbox al importar el
+        # paquete, para que NINGUN test (lanzado por run_project_tests,
+        # run_system_command o manualmente) toque una instancia real.
+        self.assertTrue(
+            os.environ.get(yarbis_instance.ENV_INSTANCE, "").startswith("test-sandbox"),
+            "La suite debe correr bajo una instancia sandbox, no una real.",
+        )
+
+    def test_current_instance_is_not_a_real_one(self):
+        self.assertNotIn(
+            yarbis_instance.current_instance_id(),
+            {"asistente", "default", "trader", "dev", "worker", "contenidos", "mantenimiento", "ciber-seguridad"},
+        )
+
+
 class RunTestsIsolationTestCase(unittest.TestCase):
     def test_isolated_env_uses_disposable_instance(self):
         env, sandbox_id = tools._isolated_test_env()

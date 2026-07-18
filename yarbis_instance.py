@@ -23,6 +23,26 @@ DEFAULT_MOBILE_UI_PORT = 8787
 MAX_INSTANCE_ID_CHARS = 48
 INSTANCE_ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9_-]{0,47}$")
 
+TEST_SANDBOX_INSTANCE = "test-sandbox"
+
+
+def _running_under_test_runner() -> bool:
+    """True si el proceso corre bajo `python -m unittest` o pytest."""
+    argv0 = (sys.argv[0] if sys.argv else "") or ""
+    argv0 = argv0.lower()
+    return "unittest" in argv0 or "pytest" in argv0 or "pytest" in sys.modules
+
+
+# AISLAMIENTO GLOBAL DE TESTS (causa raiz de reseteos repetidos): si corremos la
+# suite y el entorno apunta a una instancia REAL (asistente, default, ...), un
+# test que escriba estado la sobrescribiria y la dejaria "como nueva". Aqui, al
+# importar el modulo (antes de que memory calcule STATE_FILE), forzamos una
+# instancia sandbox descartable para CUALQUIER forma de lanzar los tests
+# (run_project_tests, run_system_command con `python -m unittest ...`, o manual).
+# No afecta produccion: el servicio corre como `python yarbis_service.py`.
+if _running_under_test_runner() and not os.environ.get(ENV_INSTANCE, "").startswith(TEST_SANDBOX_INSTANCE):
+    os.environ[ENV_INSTANCE] = TEST_SANDBOX_INSTANCE
+
 
 class YarbisInstanceError(ValueError):
     pass

@@ -3345,14 +3345,24 @@ def _load_state_unlocked():
         return recovered_state or default_state()
 
     had_bom = file_has_bom(state_path)
-    try:
-        # utf-8-sig tolera un BOM opcional (p.ej. si el estado se trasplanto con
-        # PowerShell, que escribe UTF-8 CON BOM). Antes se usaba utf-8 estricto y
-        # un BOM tumbaba una memoria perfectamente valida -> reset a "como nueva".
-        with open(state_path, "r", encoding="utf-8-sig") as file:
-            state = json.load(file)
-    except (OSError, json.JSONDecodeError, UnicodeDecodeError) as exc:
-        recovered_state = _recover_state_from_backups_unlocked("corrupt", exc)
+    # Reintento ante fallo TRANSITORIO de lectura (lock del antivirus, escritura
+    # concurrente en curso): antes de declarar "corrupto" y resetear, reintentar
+    # unas veces. Una memoria valida no debe perderse por un fallo momentaneo.
+    state = None
+    last_exc: Exception | None = None
+    for attempt in range(4):
+        try:
+            # utf-8-sig tolera un BOM opcional (p.ej. si el estado se trasplanto
+            # con PowerShell, que escribe UTF-8 CON BOM). Antes se usaba utf-8
+            # estricto y un BOM tumbaba una memoria valida -> reset a "como nueva".
+            with open(state_path, "r", encoding="utf-8-sig") as file:
+                state = json.load(file)
+            break
+        except (OSError, json.JSONDecodeError, UnicodeDecodeError) as exc:
+            last_exc = exc
+            time.sleep(0.15 * (attempt + 1))
+    if state is None:
+        recovered_state = _recover_state_from_backups_unlocked("corrupt", last_exc)
         return recovered_state or default_state()
 
     normalized = normalize_state(state)
