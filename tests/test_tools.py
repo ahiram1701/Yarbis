@@ -207,6 +207,81 @@ class ToolsTestCase(unittest.TestCase):
         self.assertIn("--max-count", run_mock.call_args.args[0])
         self.assertIn("5", run_mock.call_args.args[0])
 
+
+    def test_coding_search_text_fallback_without_rg_finds_match(self):
+        (self.external_dir / 'app.py').write_text('alpha\nneedle here\nomega\n', encoding='utf-8')
+
+        with patch.object(memory, 'STATE_FILE', self.state_path):
+            with patch.object(tools, 'CODING_PROPOSALS_DIR', self.proposals_dir):
+                tools.coding_set_workspace(str(self.external_dir))
+                with patch.object(tools.subprocess, 'run', side_effect=FileNotFoundError('rg')):
+                    result = tools.coding_search_text('needle', glob='*.py')
+
+        self.assertIn('Busqueda coding', result)
+        self.assertIn('fallback', result.lower())
+        self.assertIn('needle here', result)
+        self.assertIn('app.py', result)
+
+    def test_coding_search_text_fallback_without_rg_reports_no_matches(self):
+        (self.external_dir / 'app.py').write_text('alpha\nbeta\n', encoding='utf-8')
+
+        with patch.object(memory, 'STATE_FILE', self.state_path):
+            with patch.object(tools, 'CODING_PROPOSALS_DIR', self.proposals_dir):
+                tools.coding_set_workspace(str(self.external_dir))
+                with patch.object(tools.subprocess, 'run', side_effect=FileNotFoundError('rg')):
+                    result = tools.coding_search_text('missing')
+
+        self.assertIn('Sin coincidencias', result)
+
+    def test_coding_search_text_fallback_without_rg_rejects_invalid_regex(self):
+        (self.external_dir / 'app.py').write_text('alpha\n', encoding='utf-8')
+
+        with patch.object(memory, 'STATE_FILE', self.state_path):
+            with patch.object(tools, 'CODING_PROPOSALS_DIR', self.proposals_dir):
+                tools.coding_set_workspace(str(self.external_dir))
+                with patch.object(tools.subprocess, 'run', side_effect=FileNotFoundError('rg')):
+                    result = tools.coding_search_text('[')
+
+        self.assertIn('invalido', result.lower())
+
+    def test_coding_search_text_fallback_without_rg_respects_glob(self):
+        (self.external_dir / 'app.py').write_text('needle\n', encoding='utf-8')
+        (self.external_dir / 'data.txt').write_text('needle\n', encoding='utf-8')
+
+        with patch.object(memory, 'STATE_FILE', self.state_path):
+            with patch.object(tools, 'CODING_PROPOSALS_DIR', self.proposals_dir):
+                tools.coding_set_workspace(str(self.external_dir))
+                with patch.object(tools.subprocess, 'run', side_effect=FileNotFoundError('rg')):
+                    result = tools.coding_search_text('needle', glob='*.py')
+
+        self.assertIn('app.py', result)
+        self.assertNotIn('data.txt', result)
+
+    def test_coding_search_text_fallback_without_rg_limits_results(self):
+        (self.external_dir / 'app.py').write_text('\n'.join(['needle'] * 5), encoding='utf-8')
+
+        with patch.object(memory, 'STATE_FILE', self.state_path):
+            with patch.object(tools, 'CODING_PROPOSALS_DIR', self.proposals_dir):
+                tools.coding_set_workspace(str(self.external_dir))
+                with patch.object(tools.subprocess, 'run', side_effect=FileNotFoundError('rg')):
+                    result = tools.coding_search_text('needle', max_results=2)
+
+        self.assertIn('limite 2', result)
+
+    def test_coding_search_text_fallback_without_rg_includes_context(self):
+        (self.external_dir / 'app.py').write_text('one\ntwo\nneedle\nfour\nfive\n', encoding='utf-8')
+
+        with patch.object(memory, 'STATE_FILE', self.state_path):
+            with patch.object(tools, 'CODING_PROPOSALS_DIR', self.proposals_dir):
+                tools.coding_set_workspace(str(self.external_dir))
+                with patch.object(tools.subprocess, 'run', side_effect=FileNotFoundError('rg')):
+                    result = tools.coding_search_text('needle', context_lines=1)
+
+        self.assertIn('two', result)
+        self.assertIn('needle', result)
+        self.assertIn('four', result)
+        self.assertNotIn('one', result)
+        self.assertNotIn('five', result)
     def test_coding_read_text_range_returns_numbered_lines(self):
         file_path = self.external_dir / "app.py"
         file_path.write_text("one\ntwo\nthree\nfour\n", encoding="utf-8")

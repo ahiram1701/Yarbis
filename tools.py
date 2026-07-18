@@ -1079,6 +1079,84 @@ def coding_read_text_range(path: str, start_line: int = 1, line_count: int = 120
     )
 
 
+def _python_search_fallback(
+    pattern: str,
+    search_path: Path,
+    relative_path: Path,
+    glob: str,
+    context_lines: int,
+    max_results: int,
+) -> str:
+    '''
+    Busqueda de respaldo en Python puro cuando ripgrep no esta disponible.
+    '''
+    try:
+        regex = re.compile(pattern)
+    except re.error as exc:
+        return f'Patron de busqueda invalido: {exc}'
+
+    glob_pattern = str(glob).strip()
+
+    def should_skip(file_path: Path) -> bool:
+        rel_parts = file_path.relative_to(search_path).parts
+        return any(part.startswith('.') or part == '__pycache__' for part in rel_parts)
+
+    output_lines: list[str] = []
+    total_matches = 0
+    truncated = False
+
+    if search_path.is_file():
+        files = [search_path]
+    else:
+        files = sorted(p for p in search_path.rglob('*') if p.is_file())
+
+    for file_path in files:
+        if should_skip(file_path):
+            continue
+        if glob_pattern and not file_path.relative_to(search_path).match(glob_pattern):
+            continue
+        try:
+            text = file_path.read_text(encoding='utf-8', errors='replace')
+        except Exception:
+            continue
+        lines = text.splitlines()
+        for line_number, line in enumerate(lines, start=1):
+            if not regex.search(line):
+                continue
+            total_matches += 1
+            if total_matches > max_results:
+                truncated = True
+                break
+            start_ctx = max(1, line_number - context_lines)
+            end_ctx = min(len(lines), line_number + context_lines)
+            rel_name = file_path.relative_to(search_path).as_posix()
+            dot = '.'
+            for ctx_line in range(start_ctx, end_ctx + 1):
+                prefix = f'{rel_name}:{ctx_line}:'
+                output_lines.append(f'{prefix}{lines[ctx_line - 1]}')
+            output_lines.append('--')
+        if truncated:
+            break
+
+    if not output_lines:
+        dot = '.'
+        return f'Sin coincidencias para {pattern!r} en {relative_path.as_posix() or dot}.'
+
+    if truncated:
+        output_lines.append(f'... mas resultados omitidos (limite {max_results}).')
+
+    output = '\n'.join(output_lines)
+    dot = '.'
+    dash = '-'
+    return (
+        'Busqueda coding (fallback sin rg).\n'
+        f'Patron: {pattern}\n'
+        f'Ruta: {relative_path.as_posix() or dot}\n'
+        f'Glob: {glob or dash}\n'
+        f'Max resultados: {max_results}\n'
+        'Salida:\n'
+        f'{_bounded_text(output, MAX_COMMAND_OUTPUT_CHARS)}'
+    )
 def coding_search_text(pattern: str, path: str = ".", glob: str = "", context_lines: int = 2, max_results: int = 50) -> str:
     """
     Busca texto dentro del workspace de codigo activo usando ripgrep.
@@ -1143,7 +1221,14 @@ def coding_search_text(pattern: str, path: str = ".", glob: str = "", context_li
             timeout=30,
         )
     except FileNotFoundError:
-        return "No encontre `rg` en PATH; instala ripgrep para usar busqueda rapida de coding."
+        return _python_search_fallback(
+            cleaned_pattern,
+            search_path,
+            relative_path,
+            cleaned_glob,
+            normalized_context,
+            normalized_max,
+        )
     except subprocess.TimeoutExpired:
         return "La busqueda excedio el timeout de 30 segundos."
     except OSError as exc:
