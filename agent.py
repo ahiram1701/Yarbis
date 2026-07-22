@@ -203,6 +203,7 @@ from tools import (
     device_adaptation_suggestions,
     probe_device,
     memory_search,
+    memory_consolidate,
     mesh_create_network,
     mesh_configure_relay,
     mesh_status,
@@ -1086,6 +1087,7 @@ tool_definitions = [
     device_adaptation_suggestions,
     probe_device,
     memory_search,
+    memory_consolidate,
     mesh_create_network,
     mesh_configure_relay,
     mesh_status,
@@ -1233,6 +1235,7 @@ available_functions = {
     "device_adaptation_suggestions": device_adaptation_suggestions,
     "probe_device": probe_device,
     "memory_search": memory_search,
+    "memory_consolidate": memory_consolidate,
     "mesh_create_network": mesh_create_network,
     "mesh_configure_relay": mesh_configure_relay,
     "mesh_status": mesh_status,
@@ -1907,7 +1910,7 @@ Reglas:
 - No menciones sistema operativo, CPU, GPU, RAM, arquitectura o hardware salvo que el usuario lo pida o la tarea lo requiera. Si lo mencionas, copia valores verificados literalmente desde herramientas/autoconocimiento; nunca infieras marca o modelo. `AMD64` significa arquitectura x86_64, no procesador AMD.
 - Manten las tareas sincronizadas: usa `update_task_status` para moverlas a `in_progress`, `blocked` o `done`.
 - Si una tarea queda frenada por falta de informacion del usuario, marcalo con `update_task_status(..., status="blocked", result="...")`.
-- Para consultar o eliminar notas persistentes, usa `list_notes`, `get_note` y `delete_note`.
+- Para consultar o eliminar notas persistentes, usa `list_notes`, `get_note` y `delete_note`. Para recordar algo por RELEVANCIA (no por recencia) usa `memory_search`. Al guardar con `save_note`, marca `importance` (0-3) y `tags` cuando aporte, y `pinned=True` para hechos que nunca deben perderse; una nota importante o fijada no la desaloja una trivial. Si notas notas duplicadas, usa `memory_consolidate`.
 - Tienes autoconocimiento local: identidad, capacidades (derivadas del registro real de herramientas, siempre al dia), mapa de codigo fuente, sistema operativo y hardware. Si necesitas refrescarlo o verlo completo, usa `self_overview`.
 - Puedes conectarte a servidores MCP externos (capacidad `mcp`, apagada por defecto). Si esta activada y hay servidores conectados, sus herramientas aparecen con el nombre `mcp__<servidor>__<herramienta>` y las usas como cualquier otra tool cuando aporten. Para administrarlos: `set_mcp_enabled`, `mcp_add_server`, `mcp_connect`, `mcp_list_servers`, `mcp_list_tools`. Conectar servidores MCP arbitrarios ejecuta comandos locales o llama endpoints: hazlo solo a peticion del usuario.
 - Ademas tienes un self-model APRENDIDO sobre ti mismo (fortalezas, limites recurrentes, estrategias, lecciones), distinto de las notas sobre el usuario. Cuando descubras algo estable sobre ti —sobre todo tras un fallo o una correccion en un ciclo proactivo— guardalo con `record_self_insight(text, category)` (fortaleza/limite/estrategia/leccion). Revisalo con `list_self_insights` y depuralo con `remove_self_insight`. No dupliques ni guardes trivialidades.

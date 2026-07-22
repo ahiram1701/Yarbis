@@ -5687,7 +5687,14 @@ def request_user_input(question: str, reason: str = "", missing_fields: str = ""
     return "\n".join(lines)
 
 
-def save_note(title: str, content: str, category: str = "general") -> str:
+def save_note(
+    title: str,
+    content: str,
+    category: str = "general",
+    tags: str = "",
+    importance: int = 0,
+    pinned: bool = False,
+) -> str:
     """
     Guarda una nota breve y persistente en la memoria del agente.
 
@@ -5695,6 +5702,9 @@ def save_note(title: str, content: str, category: str = "general") -> str:
         title (str): Titulo corto de la nota.
         content (str): Contenido de la nota.
         category (str): Categoria simple para agrupar notas.
+        tags (str): Etiquetas separadas por coma para recuperar mejor (opcional).
+        importance (int): 0-3; una nota importante (>=2) no la desaloja una trivial.
+        pinned (bool): Si es True, la nota nunca se desaloja.
 
     Returns:
         str: Confirmacion con el identificador de la nota.
@@ -5702,16 +5712,39 @@ def save_note(title: str, content: str, category: str = "general") -> str:
     if not str(title).strip() and not str(content).strip():
         return "Debes indicar al menos un titulo o contenido para la nota."
 
+    tag_list = [t.strip().lower() for t in str(tags).replace(";", ",").split(",") if t.strip()]
+    try:
+        importance_value = max(0, min(3, int(importance)))
+    except (TypeError, ValueError):
+        importance_value = 0
+    now = datetime.now(timezone.utc).isoformat()
+
     note = {
         "id": _new_id("note"),
         "title": str(title).strip() or "Nota sin titulo",
         "content": str(content).strip(),
         "category": str(category).strip() or "general",
+        "tags": tag_list,
+        "importance": importance_value,
+        "pinned": bool(pinned),
+        "created_at": now,
+        "updated_at": now,
+        "last_accessed": "",
+        "access_count": 0,
+        "source": "agent",
     }
 
     state_transaction("save_note", lambda state: state["notes"].append(note))
 
-    return f"Nota guardada con id {note['id']}: {note['title']} ({note['category']})"
+    extra = []
+    if pinned:
+        extra.append("fijada")
+    if importance_value:
+        extra.append(f"importancia {importance_value}")
+    if tag_list:
+        extra.append("tags: " + ", ".join(tag_list))
+    suffix = f" [{'; '.join(extra)}]" if extra else ""
+    return f"Nota guardada con id {note['id']}: {note['title']} ({note['category']}){suffix}"
 
 
 def _matching_notes(notes: list[dict], identifier: str) -> list[dict]:
@@ -7873,8 +7906,98 @@ def memory_search(query: str, limit: int = 5) -> str:
     items = memory_recall.recall(load_state(), cleaned, k=k)
     if not items:
         return f"No encontre nada relevante para: {cleaned}"
+
+    # Marca como accedidas las NOTAS recuperadas: la senal de uso alimenta el
+    # desalojo (una nota que se recuerda seguido no se descarta).
+    note_ids = {item["id"] for item in items if item.get("type") == "note"}
+    if note_ids:
+        now = datetime.now(timezone.utc).isoformat()
+
+        def mark_accessed(state):
+            for note in state.get("notes", []):
+                if note.get("id") in note_ids:
+                    note["last_accessed"] = now
+                    note["access_count"] = int(note.get("access_count", 0) or 0) + 1
+
+        try:
+            state_transaction("memory_search_access", mark_accessed, create_backup=False)
+        except Exception:
+            pass
+
     block = memory_recall.render_recall_block(items, header=f"Recuerdos para '{cleaned}'")
     return block
+
+
+def memory_consolidate(threshold: float = 0.6) -> str:
+    """
+    Consolida la memoria: fusiona notas casi-duplicadas para reducir ruido.
+
+    Detecta pares de notas con alto solapamiento lexico y las une (conserva la
+    de mayor importancia/mas larga, combina tags y suma accesos). No toca notas
+    fijadas de distinta intencion salvo que sean casi identicas.
+
+    Args:
+        threshold (float): Solapamiento minimo (0-1) para considerar duplicado.
+
+    Returns:
+        str: Cuantas notas se fusionaron.
+    """
+    import memory_recall
+
+    try:
+        cutoff = max(0.3, min(0.95, float(threshold)))
+    except (TypeError, ValueError):
+        cutoff = 0.6
+
+    state = load_state()
+    notes = list(state.get("notes", []))
+    if len(notes) < 2:
+        return "No hay suficientes notas para consolidar."
+
+    def text_of(note):
+        return f"{note.get('title', '')} {note.get('content', '')}"
+
+    merged_pairs = []
+    removed_ids = set()
+    for i in range(len(notes)):
+        if notes[i]["id"] in removed_ids:
+            continue
+        for j in range(i + 1, len(notes)):
+            if notes[j]["id"] in removed_ids:
+                continue
+            if memory_recall.overlap_score(text_of(notes[i]), text_of(notes[j])) < cutoff:
+                continue
+            # Conserva la mas rica (importancia, luego longitud); funde la otra.
+            keep, drop = (notes[i], notes[j])
+            if (int(drop.get("importance", 0) or 0), len(text_of(drop))) > (
+                int(keep.get("importance", 0) or 0), len(text_of(keep))
+            ):
+                keep, drop = drop, keep
+            keep["tags"] = list(dict.fromkeys((keep.get("tags", []) or []) + (drop.get("tags", []) or [])))[:8]
+            keep["access_count"] = int(keep.get("access_count", 0) or 0) + int(drop.get("access_count", 0) or 0)
+            keep["pinned"] = bool(keep.get("pinned") or drop.get("pinned"))
+            keep["importance"] = max(int(keep.get("importance", 0) or 0), int(drop.get("importance", 0) or 0))
+            removed_ids.add(drop["id"])
+            merged_pairs.append((keep["title"], drop["title"]))
+
+    if not removed_ids:
+        return "No encontre notas duplicadas para fusionar."
+
+    def mutate(mutable_state):
+        mutable_state["notes"] = [n for n in mutable_state.get("notes", []) if n.get("id") not in removed_ids]
+        # Persiste tags/importancia/accesos actualizados de las notas conservadas.
+        by_id = {n["id"]: n for n in notes if n["id"] not in removed_ids}
+        for note in mutable_state["notes"]:
+            if note["id"] in by_id:
+                note.update({
+                    "tags": by_id[note["id"]].get("tags", note.get("tags")),
+                    "importance": by_id[note["id"]].get("importance", note.get("importance")),
+                    "pinned": by_id[note["id"]].get("pinned", note.get("pinned")),
+                    "access_count": by_id[note["id"]].get("access_count", note.get("access_count")),
+                })
+
+    state_transaction("memory_consolidate", mutate)
+    return f"Consolide {len(removed_ids)} nota(s) duplicada(s). Ahora hay menos ruido en la memoria."
 
 
 def probe_device() -> str:

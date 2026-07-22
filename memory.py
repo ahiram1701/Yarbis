@@ -56,7 +56,11 @@ MAX_CONVERSATION_SUMMARY_CHARS = 6_000
 MAX_LAST_RESULT_CHARS = 4_000
 MAX_PROFILE_ITEMS = 12
 MAX_PROFILE_ITEM_CHARS = 140
-MAX_NOTES = 30
+MAX_NOTES = 200
+MAX_NOTE_TAGS = 8
+MAX_NOTE_TAG_CHARS = 30
+MAX_NOTE_SOURCE_CHARS = 40
+MAX_NOTE_IMPORTANCE = 3
 MAX_NOTE_TITLE_CHARS = 120
 MAX_NOTE_CONTENT_CHARS = 1_200
 MAX_TASKS = 60
@@ -837,12 +841,57 @@ def _normalize_note(note):
 
     note_id = _coerce_text(note.get("id") or _fallback_id("note", title or content), 32).strip()
 
+    # Tags: lista corta, sin duplicados, minusculas.
+    raw_tags = note.get("tags", [])
+    tags = []
+    if isinstance(raw_tags, list):
+        for tag in raw_tags:
+            cleaned_tag = _coerce_text(tag, MAX_NOTE_TAG_CHARS).strip().lower()
+            if cleaned_tag and cleaned_tag not in tags:
+                tags.append(cleaned_tag)
+            if len(tags) >= MAX_NOTE_TAGS:
+                break
+
+    try:
+        importance = int(note.get("importance", 0) or 0)
+    except (TypeError, ValueError):
+        importance = 0
+    importance = max(0, min(MAX_NOTE_IMPORTANCE, importance))
+
+    try:
+        access_count = int(note.get("access_count", 0) or 0)
+    except (TypeError, ValueError):
+        access_count = 0
+
+    # No fabricamos timestamps aqui: normalize_state debe ser puro/determinista.
+    # save_note pone created_at real; migracion de notas viejas -> "" (mas antiguas).
     return {
         "id": note_id,
         "title": title or "Nota sin titulo",
         "content": content,
         "category": category,
+        "tags": tags,
+        "importance": importance,
+        "pinned": bool(note.get("pinned", False)),
+        "created_at": _coerce_text(note.get("created_at", ""), 40).strip()[:40],
+        "updated_at": _coerce_text(note.get("updated_at", ""), 40).strip()[:40],
+        "last_accessed": _coerce_text(note.get("last_accessed", ""), 40).strip()[:40],
+        "access_count": max(0, access_count),
+        "source": _coerce_text(note.get("source", ""), MAX_NOTE_SOURCE_CHARS).strip()[:MAX_NOTE_SOURCE_CHARS],
     }
+
+
+def _note_eviction_score(note: dict) -> tuple:
+    """Score para desalojar: pinned e importancia mandan; luego recencia y accesos.
+
+    Devuelve una tupla comparable (mayor = se conserva). Las notas fijadas o
+    importantes NUNCA las expulsa una nota trivial nueva.
+    """
+    pinned = 1 if note.get("pinned") else 0
+    importance = int(note.get("importance", 0) or 0)
+    recency = note.get("updated_at") or note.get("created_at") or note.get("last_accessed") or ""
+    access = int(note.get("access_count", 0) or 0)
+    return (pinned, importance, str(recency), access)
 
 
 def _normalize_task(task):
@@ -3004,6 +3053,14 @@ def normalize_state(state):
             normalized_note = _normalize_note(note)
             if normalized_note:
                 normalized["notes"].append(normalized_note)
+    # Desalojo inteligente al superar el tope: conserva las mejores por score
+    # (pinned/importancia/recencia/accesos), preservando el ORDEN de las que quedan.
+    if len(normalized["notes"]) > MAX_NOTES:
+        keep_ids = {
+            note["id"]
+            for note in sorted(normalized["notes"], key=_note_eviction_score, reverse=True)[:MAX_NOTES]
+        }
+        normalized["notes"] = [note for note in normalized["notes"] if note["id"] in keep_ids]
 
     raw_tasks = state.get("tasks", [])
     if isinstance(raw_tasks, list):

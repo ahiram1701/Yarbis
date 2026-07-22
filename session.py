@@ -1505,9 +1505,23 @@ def update_profile_text(
         )
 
 
-def save_note_text(title: str, content: str, category: str = "general") -> str:
+def save_note_text(
+    title: str,
+    content: str,
+    category: str = "general",
+    tags: str = "",
+    importance: int = 0,
+    pinned: bool = False,
+) -> str:
     with SESSION_LOCK:
-        return save_note(title=title, content=content, category=category or "general")
+        return save_note(
+            title=title,
+            content=content,
+            category=category or "general",
+            tags=tags,
+            importance=importance,
+            pinned=pinned,
+        )
 
 
 def list_notes_text(category: str = "", limit: int = 10) -> str:
