@@ -28,10 +28,20 @@ from memory import (
     DEFAULT_OPENROUTER_HOST,
     DEFAULT_OPENROUTER_MODEL,
     DEFAULT_OPENROUTER_TIMEOUT_SECONDS,
+    DEFAULT_OPENAI_COMPAT_API_KEY_ENV_VAR,
+    DEFAULT_OPENAI_COMPAT_HOST,
+    DEFAULT_OPENAI_COMPAT_MODEL,
+    DEFAULT_OPENAI_COMPAT_TIMEOUT_SECONDS,
+    DEFAULT_PUTER_API_KEY_ENV_VAR,
+    DEFAULT_PUTER_HOST,
+    DEFAULT_PUTER_MODEL,
+    DEFAULT_PUTER_TIMEOUT_SECONDS,
     MAX_OLLAMA_TIMEOUT_SECONDS,
     MIN_OLLAMA_TIMEOUT_SECONDS,
     MODEL_PROVIDER_OLLAMA,
     MODEL_PROVIDER_OPENROUTER,
+    MODEL_PROVIDER_OPENAI_COMPAT,
+    MODEL_PROVIDER_PUTER,
     VALID_MODEL_PROVIDERS,
     load_state,
     normalize_cycle_count,
@@ -476,6 +486,19 @@ def _normalize_openrouter_host(host: str) -> str:
     return cleaned.rstrip("/")
 
 
+def _normalize_worker_host(host: str) -> str:
+    """URL del Worker de Puter: se usa tal cual (solo quita la barra final)."""
+    return str(host or "").strip().rstrip("/")
+
+
+_PROVIDER_LABELS = {
+    MODEL_PROVIDER_OLLAMA: "Ollama",
+    MODEL_PROVIDER_OPENROUTER: "OpenRouter",
+    MODEL_PROVIDER_OPENAI_COMPAT: "OpenAI-compatible",
+    MODEL_PROVIDER_PUTER: "Puter",
+}
+
+
 def _openrouter_api_key(api_key_env_var: str, configured_api_key: str = "") -> tuple[str, str]:
     direct_key = os.getenv("YARBIS_OPENROUTER_API_KEY", "").strip()
     if direct_key:
@@ -777,6 +800,91 @@ def _openrouter_http_error(status_code: int, error_body: str) -> OpenRouterHTTPE
 
 def _build_openrouter_client(host: str, timeout_seconds: int, api_key_env_var: str, api_key: str = ""):
     return OpenRouterClient(host, timeout_seconds, api_key_env_var, api_key=api_key)
+
+
+class PuterClient:
+    """Cliente para el proveedor Puter via un Worker pasarela (puter.js).
+
+    Yarbis (Python) -> HTTPS -> Worker de Puter -> puter.ai.chat (500+ modelos).
+    El Worker recibe {model, messages, tools} en formato OpenAI y responde
+    {message:{content, tool_calls}}. `host` es la URL del Worker; `api_key` es el
+    secreto compartido que valida el Worker (evita que otros gasten los creditos
+    Puter del usuario).
+    """
+
+    def __init__(self, host: str, timeout_seconds: int, api_key_env_var: str, api_key: str = ""):
+        self.host = _normalize_worker_host(host)
+        self.timeout_seconds = int(timeout_seconds)
+        self.api_key_env_var = str(api_key_env_var).strip() or DEFAULT_PUTER_API_KEY_ENV_VAR
+        self.api_key = str(api_key).strip()
+
+    def _secret(self) -> str:
+        env_secret = os.getenv(self.api_key_env_var, "").strip() if self.api_key_env_var else ""
+        return env_secret or self.api_key
+
+    def chat(self, **kwargs):
+        if not self.host:
+            raise RuntimeError("Falta la URL del Worker de Puter. Configura el host del proveedor puter.")
+        model = str(kwargs.get("model", "")).strip()
+        if not model:
+            raise RuntimeError("No hay modelo Puter configurado.")
+
+        payload = {
+            "model": model,
+            "messages": _openrouter_messages(kwargs.get("messages", [])),
+        }
+        tools = kwargs.get("tools")
+        if tools:
+            payload["tools"] = _openrouter_tools(tools)
+        payload = _sanitize_model_payload(payload)
+
+        headers = {"Content-Type": "application/json"}
+        secret = self._secret()
+        if secret:
+            headers["X-Puter-Secret"] = secret
+
+        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        http_request = request.Request(self.host, data=body, headers=headers, method="POST")
+        try:
+            with request.urlopen(http_request, timeout=self.timeout_seconds) as response:
+                response_body = response.read().decode("utf-8", errors="replace")
+        except urllib_error.HTTPError as exc:
+            try:
+                error_body = exc.read().decode("utf-8", errors="replace")
+            except Exception:
+                error_body = ""
+            raise RuntimeError(f"Puter Worker HTTP {exc.code}: {error_body[:300]}") from exc
+        except urllib_error.URLError as exc:
+            raise RuntimeError(f"El Worker de Puter no respondio: {exc}") from exc
+
+        data = json.loads(response_body)
+        if isinstance(data, dict) and data.get("error"):
+            raise RuntimeError(f"Puter devolvio error: {str(data.get('error'))[:300]}")
+        message = data.get("message", {}) if isinstance(data, dict) else {}
+        if not isinstance(message, dict):
+            message = {}
+        content = message.get("content")
+        if isinstance(content, list):
+            content = "".join(
+                str(part.get("text", "")) for part in content if isinstance(part, dict)
+            )
+        return SimpleNamespace(
+            message=SimpleNamespace(
+                content=content or "",
+                tool_calls=_openrouter_tool_calls(message.get("tool_calls", [])),
+            )
+        )
+
+
+def _puter_client_signature(host: str, timeout_seconds: int, api_key_env_var: str, api_key: str = "") -> tuple:
+    cleaned_host = _normalize_worker_host(host)
+    env_secret = os.getenv(str(api_key_env_var).strip(), "").strip() if str(api_key_env_var).strip() else ""
+    secret = env_secret or str(api_key).strip()
+    return cleaned_host, int(timeout_seconds), str(api_key_env_var).strip(), secret
+
+
+def _build_puter_client(host: str, timeout_seconds: int, api_key_env_var: str, api_key: str = ""):
+    return PuterClient(host, timeout_seconds, api_key_env_var, api_key=api_key)
 
 
 client = _build_ollama_client(
@@ -1253,13 +1361,23 @@ def _close_model_client(model_client) -> None:
 
 def _runtime_client_signature(settings: dict) -> tuple:
     provider = settings.get("provider", MODEL_PROVIDER_OLLAMA)
-    if provider == MODEL_PROVIDER_OPENROUTER:
+    if provider in (MODEL_PROVIDER_OPENROUTER, MODEL_PROVIDER_OPENAI_COMPAT):
         return (
             provider,
             *_openrouter_client_signature(
                 settings.get("host", DEFAULT_OPENROUTER_HOST),
                 settings.get("timeout_seconds", DEFAULT_OPENROUTER_TIMEOUT_SECONDS),
                 settings.get("api_key_env_var", DEFAULT_OPENROUTER_API_KEY_ENV_VAR),
+                settings.get("api_key", ""),
+            ),
+        )
+    if provider == MODEL_PROVIDER_PUTER:
+        return (
+            provider,
+            *_puter_client_signature(
+                settings.get("host", DEFAULT_PUTER_HOST),
+                settings.get("timeout_seconds", DEFAULT_PUTER_TIMEOUT_SECONDS),
+                settings.get("api_key_env_var", DEFAULT_PUTER_API_KEY_ENV_VAR),
                 settings.get("api_key", ""),
             ),
         )
@@ -1275,11 +1393,20 @@ def _runtime_client_signature(settings: dict) -> tuple:
 
 
 def _build_model_client(settings: dict):
-    if settings.get("provider") == MODEL_PROVIDER_OPENROUTER:
+    provider = settings.get("provider")
+    if provider in (MODEL_PROVIDER_OPENROUTER, MODEL_PROVIDER_OPENAI_COMPAT):
+        # openai_compat reutiliza el cliente OpenAI-compatible con su propio host.
         return _build_openrouter_client(
             settings.get("host", DEFAULT_OPENROUTER_HOST),
             settings.get("timeout_seconds", DEFAULT_OPENROUTER_TIMEOUT_SECONDS),
             settings.get("api_key_env_var", DEFAULT_OPENROUTER_API_KEY_ENV_VAR),
+            settings.get("api_key", ""),
+        )
+    if provider == MODEL_PROVIDER_PUTER:
+        return _build_puter_client(
+            settings.get("host", DEFAULT_PUTER_HOST),
+            settings.get("timeout_seconds", DEFAULT_PUTER_TIMEOUT_SECONDS),
+            settings.get("api_key_env_var", DEFAULT_PUTER_API_KEY_ENV_VAR),
             settings.get("api_key", ""),
         )
     return _build_ollama_client(
@@ -1375,10 +1502,10 @@ def _provider_settings_from_state(state: dict, provider: str) -> dict:
     model_provider = state.get("model_provider", {}) if isinstance(state, dict) else {}
     if not isinstance(model_provider, dict):
         model_provider = {}
-    if provider == MODEL_PROVIDER_OPENROUTER:
-        settings = model_provider.get("openrouter", {})
+    if provider == MODEL_PROVIDER_OLLAMA:
+        settings = model_provider.get("ollama", state.get("ollama", {}))
         return settings if isinstance(settings, dict) else {}
-    settings = model_provider.get("ollama", state.get("ollama", {}))
+    settings = model_provider.get(provider, {})
     return settings if isinstance(settings, dict) else {}
 
 
@@ -1424,6 +1551,28 @@ def _resolve_model_runtime_settings(
         api_key_env_name = "YARBIS_OPENROUTER_API_KEY_ENV_VAR"
         timeout_env_name = "YARBIS_OPENROUTER_TIMEOUT_SECONDS"
         host_normalizer = _normalize_openrouter_host
+    elif provider == MODEL_PROVIDER_OPENAI_COMPAT:
+        default_model = DEFAULT_OPENAI_COMPAT_MODEL
+        default_host = DEFAULT_OPENAI_COMPAT_HOST
+        default_api_key_env_var = DEFAULT_OPENAI_COMPAT_API_KEY_ENV_VAR
+        default_api_key = ""
+        default_timeout = DEFAULT_OPENAI_COMPAT_TIMEOUT_SECONDS
+        fallback_env_name = "YARBIS_OPENAI_COMPAT_FALLBACK_MODELS"
+        host_env_name = "YARBIS_OPENAI_COMPAT_HOST"
+        api_key_env_name = "YARBIS_OPENAI_COMPAT_API_KEY_ENV_VAR"
+        timeout_env_name = "YARBIS_OPENAI_COMPAT_TIMEOUT_SECONDS"
+        host_normalizer = _normalize_openrouter_host
+    elif provider == MODEL_PROVIDER_PUTER:
+        default_model = DEFAULT_PUTER_MODEL
+        default_host = DEFAULT_PUTER_HOST
+        default_api_key_env_var = DEFAULT_PUTER_API_KEY_ENV_VAR
+        default_api_key = ""
+        default_timeout = DEFAULT_PUTER_TIMEOUT_SECONDS
+        fallback_env_name = "YARBIS_PUTER_FALLBACK_MODELS"
+        host_env_name = "YARBIS_PUTER_HOST"
+        api_key_env_name = "YARBIS_PUTER_API_KEY_ENV_VAR"
+        timeout_env_name = "YARBIS_PUTER_TIMEOUT_SECONDS"
+        host_normalizer = _normalize_worker_host
     else:
         provider = MODEL_PROVIDER_OLLAMA
         default_model = DEFAULT_MODEL
@@ -1459,11 +1608,7 @@ def _resolve_model_runtime_settings(
     env_model = os.getenv("YARBIS_MODEL", "").strip()
     if env_model:
         model = env_model
-    provider_model_env = (
-        "YARBIS_OPENROUTER_MODEL"
-        if provider == MODEL_PROVIDER_OPENROUTER
-        else "YARBIS_OLLAMA_MODEL"
-    )
+    provider_model_env = f"YARBIS_{provider.upper()}_MODEL"
     env_provider_model = os.getenv(provider_model_env, "").strip()
     if env_provider_model:
         model = env_provider_model
@@ -1495,7 +1640,7 @@ def _resolve_model_runtime_settings(
 
     return {
         "provider": provider,
-        "provider_label": "OpenRouter" if provider == MODEL_PROVIDER_OPENROUTER else "Ollama",
+        "provider_label": _PROVIDER_LABELS.get(provider, "Ollama"),
         "model": model_candidates[0] if model_candidates else model,
         "fallback_models": model_candidates[1:],
         "models": model_candidates,

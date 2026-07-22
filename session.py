@@ -39,6 +39,10 @@ from memory import (
     MAX_OLLAMA_MODEL_CHARS,
     MODEL_PROVIDER_OLLAMA,
     MODEL_PROVIDER_OPENROUTER,
+    MODEL_PROVIDER_OPENAI_COMPAT,
+    MODEL_PROVIDER_PUTER,
+    DEFAULT_PUTER_API_KEY_ENV_VAR,
+    DEFAULT_OPENAI_COMPAT_API_KEY_ENV_VAR,
     VALID_LOCAL_CONTEXT_MODES,
     VALID_MODEL_PROVIDERS,
     MAX_OLLAMA_TIMEOUT_SECONDS,
@@ -1079,6 +1083,104 @@ def update_openrouter_settings(
         f"API key: {'guardada' if settings.get('api_key') else 'no configurada'}\n"
         f"API key env: {settings['api_key_env_var']}\n"
         f"Timeout: {settings['timeout_seconds']} segundos"
+    )
+
+
+_NAMED_PROVIDER_DEFAULT_ENV = {
+    MODEL_PROVIDER_OPENAI_COMPAT: DEFAULT_OPENAI_COMPAT_API_KEY_ENV_VAR,
+    MODEL_PROVIDER_PUTER: DEFAULT_PUTER_API_KEY_ENV_VAR,
+}
+_NAMED_PROVIDER_LABEL = {
+    MODEL_PROVIDER_OPENAI_COMPAT: "Proveedor OpenAI-compatible",
+    MODEL_PROVIDER_PUTER: "Puter",
+}
+
+
+def _update_named_provider_settings(
+    provider: str,
+    model: str,
+    timeout_seconds: int,
+    host: str | None = None,
+    fallback_models=None,
+    api_key: str | None = None,
+    api_key_env_var: str | None = None,
+    set_default: bool = True,
+) -> str:
+    """Actualiza el bloque de un proveedor OpenAI-compatible o Puter.
+
+    Puter usa `host` = URL del Worker pasarela y `api_key` = secreto compartido.
+    """
+    if provider not in _NAMED_PROVIDER_DEFAULT_ENV:
+        raise ValueError(f"Proveedor no soportado: {provider}")
+    default_env = _NAMED_PROVIDER_DEFAULT_ENV[provider]
+    label = _NAMED_PROVIDER_LABEL[provider]
+
+    cleaned_model = str(model).strip()
+    if not cleaned_model:
+        raise ValueError(f"El modelo de {label} no puede quedar vacio.")
+
+    cleaned_timeout = _parse_model_timeout(timeout_seconds)
+    current = load_state()["model_provider"].get(provider, {})
+    cleaned_host = _normalize_provider_host(
+        host if host is not None else current.get("host", ""),
+        default="",
+    )
+    cleaned_api_key_env_var = (
+        str(api_key_env_var).strip()
+        if api_key_env_var is not None
+        else str(current.get("api_key_env_var", default_env)).strip()
+    ) or default_env
+    cleaned_api_key = (
+        str(api_key).strip()
+        if api_key is not None
+        else str(current.get("api_key", "")).strip()
+    )
+    if len(cleaned_api_key) > MAX_OPENROUTER_API_KEY_CHARS:
+        raise ValueError(f"La API key/secreto de {label} es demasiado larga.")
+    cleaned_fallback_models = _parse_fallback_models(
+        fallback_models,
+        current=current.get("fallback_models", []),
+    )
+    next_settings = {
+        "model": cleaned_model,
+        "fallback_models": cleaned_fallback_models,
+        "host": cleaned_host,
+        "api_key": cleaned_api_key,
+        "api_key_env_var": cleaned_api_key_env_var,
+        "timeout_seconds": cleaned_timeout,
+    }
+
+    def mutate(state):
+        model_provider = state.setdefault("model_provider", {})
+        model_provider[provider] = dict(next_settings)
+        if set_default:
+            model_provider["default"] = provider
+
+    state_transaction(f"update_{provider}_settings", mutate)
+    settings = load_state()["model_provider"][provider]
+    fallback_text = ", ".join(settings["fallback_models"]) or "-"
+    host_label = "URL del Worker" if provider == MODEL_PROVIDER_PUTER else "Host"
+    key_label = "Secreto" if provider == MODEL_PROVIDER_PUTER else "API key"
+    return (
+        f"Configuracion de {label} actualizada.\n"
+        f"Modelo: {settings['model']}\n"
+        f"Fallbacks: {fallback_text}\n"
+        f"{host_label}: {settings['host'] or '-'}\n"
+        f"{key_label}: {'guardada' if settings.get('api_key') else 'no configurada'}\n"
+        f"API key env: {settings['api_key_env_var']}\n"
+        f"Timeout: {settings['timeout_seconds']} segundos"
+    )
+
+
+def update_openai_compat_settings(model, timeout_seconds, host=None, fallback_models=None, api_key=None, api_key_env_var=None, set_default=True) -> str:
+    return _update_named_provider_settings(
+        MODEL_PROVIDER_OPENAI_COMPAT, model, timeout_seconds, host, fallback_models, api_key, api_key_env_var, set_default,
+    )
+
+
+def update_puter_settings(model, timeout_seconds, host=None, fallback_models=None, api_key=None, api_key_env_var=None, set_default=True) -> str:
+    return _update_named_provider_settings(
+        MODEL_PROVIDER_PUTER, model, timeout_seconds, host, fallback_models, api_key, api_key_env_var, set_default,
     )
 
 

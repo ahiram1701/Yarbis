@@ -32,6 +32,8 @@ from memory import (
     DEFAULT_OLLAMA_TIMEOUT_SECONDS,
     MODEL_PROVIDER_OLLAMA,
     MODEL_PROVIDER_OPENROUTER,
+    MODEL_PROVIDER_OPENAI_COMPAT,
+    MODEL_PROVIDER_PUTER,
     format_cycle_count,
     load_state,
     normalize_cycle_count,
@@ -101,6 +103,8 @@ from session import (
     update_model_provider,
     update_ollama_settings,
     update_openrouter_settings,
+    update_openai_compat_settings,
+    update_puter_settings,
     update_memory_protection_settings_text,
     update_profile_text,
     update_service_proactive_settings,
@@ -3420,6 +3424,10 @@ class YarbisDesktop(tk.Tk):
             provider = dialog.result.pop("provider", MODEL_PROVIDER_OLLAMA)
             if provider == MODEL_PROVIDER_OPENROUTER:
                 result = update_openrouter_settings(**dialog.result)
+            elif provider == MODEL_PROVIDER_OPENAI_COMPAT:
+                result = update_openai_compat_settings(**dialog.result)
+            elif provider == MODEL_PROVIDER_PUTER:
+                result = update_puter_settings(**dialog.result)
             else:
                 result = update_ollama_settings(**dialog.result)
             provider_result = update_model_provider(provider)

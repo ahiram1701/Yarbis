@@ -96,8 +96,15 @@ MIN_MOBILE_UI_JOB_TIMEOUT_SECONDS = 60
 MAX_MOBILE_UI_JOB_TIMEOUT_SECONDS = 24 * 60 * 60
 MODEL_PROVIDER_OLLAMA = "ollama"
 MODEL_PROVIDER_OPENROUTER = "openrouter"
+MODEL_PROVIDER_OPENAI_COMPAT = "openai_compat"
+MODEL_PROVIDER_PUTER = "puter"
 DEFAULT_MODEL_PROVIDER = MODEL_PROVIDER_OLLAMA
-VALID_MODEL_PROVIDERS = {MODEL_PROVIDER_OLLAMA, MODEL_PROVIDER_OPENROUTER}
+VALID_MODEL_PROVIDERS = {
+    MODEL_PROVIDER_OLLAMA,
+    MODEL_PROVIDER_OPENROUTER,
+    MODEL_PROVIDER_OPENAI_COMPAT,
+    MODEL_PROVIDER_PUTER,
+}
 DEFAULT_OLLAMA_MODEL = "qwen3.5:2b"
 DEFAULT_OLLAMA_HOST = ""
 DEFAULT_OLLAMA_CLOUD_HOST = "https://ollama.com"
@@ -107,6 +114,16 @@ DEFAULT_OPENROUTER_MODEL = ""
 DEFAULT_OPENROUTER_HOST = "https://openrouter.ai/api/v1"
 DEFAULT_OPENROUTER_API_KEY_ENV_VAR = "OPENROUTER_API_KEY"
 DEFAULT_OPENROUTER_TIMEOUT_SECONDS = DEFAULT_OLLAMA_TIMEOUT_SECONDS
+# Proveedor OpenAI-compatible generico (Groq, DeepSeek, Together, LM Studio local, etc.)
+DEFAULT_OPENAI_COMPAT_MODEL = ""
+DEFAULT_OPENAI_COMPAT_HOST = ""
+DEFAULT_OPENAI_COMPAT_API_KEY_ENV_VAR = "OPENAI_COMPAT_API_KEY"
+DEFAULT_OPENAI_COMPAT_TIMEOUT_SECONDS = DEFAULT_OLLAMA_TIMEOUT_SECONDS
+# Puter: host = URL del Worker pasarela; api_key = secreto compartido del worker.
+DEFAULT_PUTER_MODEL = ""
+DEFAULT_PUTER_HOST = ""
+DEFAULT_PUTER_API_KEY_ENV_VAR = "PUTER_WORKER_SECRET"
+DEFAULT_PUTER_TIMEOUT_SECONDS = DEFAULT_OLLAMA_TIMEOUT_SECONDS
 MAX_OLLAMA_API_KEY_CHARS = 512
 MAX_OPENROUTER_API_KEY_CHARS = 512
 MIN_OLLAMA_TIMEOUT_SECONDS = 1
@@ -448,6 +465,22 @@ def default_state():
                 "api_key": "",
                 "api_key_env_var": DEFAULT_OPENROUTER_API_KEY_ENV_VAR,
                 "timeout_seconds": DEFAULT_OPENROUTER_TIMEOUT_SECONDS,
+            },
+            "openai_compat": {
+                "model": DEFAULT_OPENAI_COMPAT_MODEL,
+                "fallback_models": [],
+                "host": DEFAULT_OPENAI_COMPAT_HOST,
+                "api_key": "",
+                "api_key_env_var": DEFAULT_OPENAI_COMPAT_API_KEY_ENV_VAR,
+                "timeout_seconds": DEFAULT_OPENAI_COMPAT_TIMEOUT_SECONDS,
+            },
+            "puter": {
+                "model": DEFAULT_PUTER_MODEL,
+                "fallback_models": [],
+                "host": DEFAULT_PUTER_HOST,
+                "api_key": "",
+                "api_key_env_var": DEFAULT_PUTER_API_KEY_ENV_VAR,
+                "timeout_seconds": DEFAULT_PUTER_TIMEOUT_SECONDS,
             },
         },
         "service": {
@@ -1596,6 +1629,34 @@ def _normalize_openrouter(openrouter):
     )
 
 
+def _normalize_openai_compat(openai_compat):
+    defaults = default_state()["model_provider"]["openai_compat"]
+    return _normalize_provider_settings(
+        openai_compat,
+        defaults,
+        model_char_limit=MAX_OPENROUTER_MODEL_CHARS,
+        host_char_limit=MAX_OPENROUTER_HOST_CHARS,
+        api_key_env_char_limit=MAX_OPENROUTER_API_KEY_ENV_VAR_CHARS,
+        fallback_limit=MAX_OPENROUTER_FALLBACK_MODELS,
+        api_key_char_limit=MAX_OPENROUTER_API_KEY_CHARS,
+        allow_empty_model=True,
+    )
+
+
+def _normalize_puter(puter):
+    defaults = default_state()["model_provider"]["puter"]
+    return _normalize_provider_settings(
+        puter,
+        defaults,
+        model_char_limit=MAX_OPENROUTER_MODEL_CHARS,
+        host_char_limit=MAX_OPENROUTER_HOST_CHARS,
+        api_key_env_char_limit=MAX_OPENROUTER_API_KEY_ENV_VAR_CHARS,
+        fallback_limit=MAX_OPENROUTER_FALLBACK_MODELS,
+        api_key_char_limit=MAX_OPENROUTER_API_KEY_CHARS,
+        allow_empty_model=True,
+    )
+
+
 def _normalize_model_provider(state):
     defaults = default_state()["model_provider"]
     source = state.get("model_provider", {}) if isinstance(state, dict) else {}
@@ -1616,6 +1677,8 @@ def _normalize_model_provider(state):
         "default": default_provider,
         "ollama": _normalize_ollama(ollama_source),
         "openrouter": _normalize_openrouter(openrouter_source),
+        "openai_compat": _normalize_openai_compat(source.get("openai_compat", {})),
+        "puter": _normalize_puter(source.get("puter", {})),
     }
 
 

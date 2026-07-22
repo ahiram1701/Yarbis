@@ -32,6 +32,11 @@ from memory import (
     MIN_VOICE_TTS_RATE,
     MODEL_PROVIDER_OLLAMA,
     MODEL_PROVIDER_OPENROUTER,
+    MODEL_PROVIDER_OPENAI_COMPAT,
+    MODEL_PROVIDER_PUTER,
+    DEFAULT_OPENAI_COMPAT_API_KEY_ENV_VAR,
+    DEFAULT_PUTER_API_KEY_ENV_VAR,
+    VALID_MODEL_PROVIDERS,
     MIN_OLLAMA_TIMEOUT_SECONDS,
     format_cycle_count,
     normalize_cycle_count,
@@ -723,6 +728,24 @@ class OllamaSettingsDialog(ThemedDialog):
                 "api_key_env_var": DEFAULT_OPENROUTER_API_KEY_ENV_VAR,
                 "timeout_seconds": DEFAULT_OPENROUTER_TIMEOUT_SECONDS,
             }
+        elif provider == MODEL_PROVIDER_OPENAI_COMPAT:
+            defaults = {
+                "model": "",
+                "fallback_models": [],
+                "host": "",
+                "api_key": "",
+                "api_key_env_var": DEFAULT_OPENAI_COMPAT_API_KEY_ENV_VAR,
+                "timeout_seconds": DEFAULT_OPENROUTER_TIMEOUT_SECONDS,
+            }
+        elif provider == MODEL_PROVIDER_PUTER:
+            defaults = {
+                "model": "",
+                "fallback_models": [],
+                "host": "",
+                "api_key": "",
+                "api_key_env_var": DEFAULT_PUTER_API_KEY_ENV_VAR,
+                "timeout_seconds": DEFAULT_OPENROUTER_TIMEOUT_SECONDS,
+            }
         else:
             defaults = {
                 "model": DEFAULT_OLLAMA_MODEL,
@@ -811,7 +834,7 @@ class OllamaSettingsDialog(ThemedDialog):
         if self._loaded_provider:
             self._provider_settings[self._loaded_provider] = self._current_form_settings()
         provider = self.provider_var.get().strip().lower()
-        if provider not in {MODEL_PROVIDER_OLLAMA, MODEL_PROVIDER_OPENROUTER}:
+        if provider not in VALID_MODEL_PROVIDERS:
             provider = MODEL_PROVIDER_OLLAMA
             self.provider_var.set(provider)
         self._load_provider_fields(provider)
@@ -823,11 +846,16 @@ class OllamaSettingsDialog(ThemedDialog):
             if isinstance(self.initial_settings, dict)
             else MODEL_PROVIDER_OLLAMA
         ).strip().lower()
-        if initial_provider not in {MODEL_PROVIDER_OLLAMA, MODEL_PROVIDER_OPENROUTER}:
+        if initial_provider not in VALID_MODEL_PROVIDERS:
             initial_provider = MODEL_PROVIDER_OLLAMA
         self._provider_settings = {
-            MODEL_PROVIDER_OLLAMA: self._initial_provider_settings(MODEL_PROVIDER_OLLAMA),
-            MODEL_PROVIDER_OPENROUTER: self._initial_provider_settings(MODEL_PROVIDER_OPENROUTER),
+            provider: self._initial_provider_settings(provider)
+            for provider in (
+                MODEL_PROVIDER_OLLAMA,
+                MODEL_PROVIDER_OPENROUTER,
+                MODEL_PROVIDER_OPENAI_COMPAT,
+                MODEL_PROVIDER_PUTER,
+            )
         }
         self.provider_var = tk.StringVar(value=initial_provider)
         self.host_help_var = tk.StringVar()
@@ -837,9 +865,14 @@ class OllamaSettingsDialog(ThemedDialog):
         self.provider_combo = ttk.Combobox(
             master,
             textvariable=self.provider_var,
-            values=(MODEL_PROVIDER_OLLAMA, MODEL_PROVIDER_OPENROUTER),
+            values=(
+                MODEL_PROVIDER_OLLAMA,
+                MODEL_PROVIDER_OPENROUTER,
+                MODEL_PROVIDER_OPENAI_COMPAT,
+                MODEL_PROVIDER_PUTER,
+            ),
             state="readonly",
-            width=20,
+            width=24,
         )
         self.provider_combo.grid(row=1, column=0, columnspan=2, sticky="ew", padx=6)
         self.provider_combo.bind("<<ComboboxSelected>>", self._provider_changed)
@@ -915,7 +948,7 @@ class OllamaSettingsDialog(ThemedDialog):
 
     def apply(self):
         provider = self.provider_var.get().strip().lower()
-        if provider not in {MODEL_PROVIDER_OLLAMA, MODEL_PROVIDER_OPENROUTER}:
+        if provider not in VALID_MODEL_PROVIDERS:
             provider = MODEL_PROVIDER_OLLAMA
         self.result = {
             "provider": provider,

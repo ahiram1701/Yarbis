@@ -36,6 +36,9 @@ from memory import (
     MIN_MOBILE_UI_JOB_TIMEOUT_SECONDS,
     MODEL_PROVIDER_OLLAMA,
     MODEL_PROVIDER_OPENROUTER,
+    MODEL_PROVIDER_OPENAI_COMPAT,
+    MODEL_PROVIDER_PUTER,
+    VALID_MODEL_PROVIDERS,
     default_state,
     load_state,
     render_state_summary,
@@ -99,6 +102,8 @@ from session import (
     update_notification_settings,
     update_ollama_settings,
     update_openrouter_settings,
+    update_openai_compat_settings,
+    update_puter_settings,
     update_profile_text,
     update_service_proactive_settings,
     update_project_visual_board_text,
@@ -1083,13 +1088,9 @@ def _notify_mobile_job_timeout(job: dict, exc: MobileJobTimeoutError) -> None:
 
 
 def _public_model_settings(settings: dict, provider: str) -> dict:
-    default_model = "" if provider == MODEL_PROVIDER_OPENROUTER else DEFAULT_OLLAMA_MODEL
+    default_model = DEFAULT_OLLAMA_MODEL if provider == MODEL_PROVIDER_OLLAMA else ""
     default_host = DEFAULT_OPENROUTER_HOST if provider == MODEL_PROVIDER_OPENROUTER else ""
-    default_timeout = (
-        DEFAULT_OPENROUTER_TIMEOUT_SECONDS
-        if provider == MODEL_PROVIDER_OPENROUTER
-        else DEFAULT_OLLAMA_TIMEOUT_SECONDS
-    )
+    default_timeout = DEFAULT_OLLAMA_TIMEOUT_SECONDS
     return {
         "model": str(settings.get("model", default_model)).strip() or default_model,
         "fallback_models": settings.get("fallback_models", []) if isinstance(settings.get("fallback_models"), list) else [],
@@ -1142,19 +1143,21 @@ def _model_provider_from_state(state: dict) -> dict:
     if not isinstance(model_provider, dict):
         model_provider = {}
     default_provider = str(model_provider.get("default", MODEL_PROVIDER_OLLAMA)).strip().lower()
-    if default_provider not in {MODEL_PROVIDER_OLLAMA, MODEL_PROVIDER_OPENROUTER}:
+    if default_provider not in VALID_MODEL_PROVIDERS:
         default_provider = MODEL_PROVIDER_OLLAMA
-    ollama = model_provider.get(MODEL_PROVIDER_OLLAMA, state.get("ollama", {}))
-    if not isinstance(ollama, dict):
-        ollama = {}
-    openrouter = model_provider.get(MODEL_PROVIDER_OPENROUTER, {})
-    if not isinstance(openrouter, dict):
-        openrouter = {}
-    return {
-        "default": default_provider,
-        MODEL_PROVIDER_OLLAMA: _public_model_settings(ollama, MODEL_PROVIDER_OLLAMA),
-        MODEL_PROVIDER_OPENROUTER: _public_model_settings(openrouter, MODEL_PROVIDER_OPENROUTER),
-    }
+    result = {"default": default_provider}
+    for provider in (
+        MODEL_PROVIDER_OLLAMA,
+        MODEL_PROVIDER_OPENROUTER,
+        MODEL_PROVIDER_OPENAI_COMPAT,
+        MODEL_PROVIDER_PUTER,
+    ):
+        fallback = state.get("ollama", {}) if provider == MODEL_PROVIDER_OLLAMA else {}
+        settings = model_provider.get(provider, fallback)
+        if not isinstance(settings, dict):
+            settings = {}
+        result[provider] = _public_model_settings(settings, provider)
+    return result
 
 
 def _mobile_health_status_from_state(state: dict, service_status: dict) -> dict:
@@ -1887,8 +1890,13 @@ def _execute_action(action: str, payload: dict | None = None) -> dict:
         return {"result": evolution_discard_suggestion_text(_payload_text(payload, "id"))}
     if action == "update_model":
         provider = _payload_text(payload, "provider", MODEL_PROVIDER_OLLAMA).lower()
-        if provider == MODEL_PROVIDER_OPENROUTER:
-            result = update_openrouter_settings(
+        _provider_updaters = {
+            MODEL_PROVIDER_OPENROUTER: update_openrouter_settings,
+            MODEL_PROVIDER_OPENAI_COMPAT: update_openai_compat_settings,
+            MODEL_PROVIDER_PUTER: update_puter_settings,
+        }
+        if provider in _provider_updaters:
+            result = _provider_updaters[provider](
                 model=_payload_text(payload, "model"),
                 timeout_seconds=payload.get("timeout_seconds"),
                 host=_payload_text(payload, "host"),
@@ -4396,7 +4404,7 @@ function renderSettings() {
     <section class="section">
       <h2>Modelo</h2>
       <div class="setting-group form-grid wide">
-        <div><label>Proveedor</label><select id="modelProvider"><option value="ollama">ollama</option><option value="openrouter">openrouter</option></select></div>
+        <div><label>Proveedor</label><select id="modelProvider"><option value="ollama">ollama</option><option value="openrouter">openrouter</option><option value="openai_compat">OpenAI-compatible (Groq, DeepSeek, local…)</option><option value="puter">Puter (500+ modelos gratis)</option></select></div>
         <div><label>Modelo</label><input id="modelName" value="${escapeHtml(active.model || "")}"></div>
         <div><label>Host</label><input id="modelHost" value="${escapeHtml(active.host || "")}"></div>
         <div><label>Timeout segundos</label><input id="modelTimeout" type="number" value="${escapeHtml(active.timeout_seconds || 900)}"></div>
