@@ -8,6 +8,7 @@ pyttsx3>=2.99,<3
 sounddevice>=0.5,<1
 imageio-ffmpeg>=0.6,<1
 ttkbootstrap>=1.20,<2
+textual>=1,<2
 edge-tts>=7,<8
 tzdata>=2024.1
 pyautogui>=0.9.54,<1

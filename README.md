@@ -196,6 +196,22 @@ Si ya tienes `.venv` y dependencias listas, puedes abrir Yarbis con doble clic:
 - `abrir_yarbis.vbs`: abre la app de escritorio sin mostrar consola
 - `abrir_yarbis.cmd`: abre la app con una ventana visible por si necesitas revisar errores de arranque
 - `abrir_yarbis_admin.cmd`: pide permisos de administrador y abre la app para instalar o reconfigurar el servicio SCM
+- `abrir_yarbis_tui.cmd`: abre la **TUI** (interfaz de terminal completa, ver abajo). En Linux/macOS usa `abrir_yarbis_tui.sh`.
+
+## TUI (interfaz de terminal)
+
+Ademas de la app de escritorio y la UI web, Yarbis tiene una **TUI completa** (Textual) que corre en cualquier terminal y sistema operativo. Abrela con doble clic en `abrir_yarbis_tui.cmd` (Windows) / `abrir_yarbis_tui.sh` (Linux/macOS), o con `python yarbis_tui.py [--instance <id>]`.
+
+Pestanas:
+
+- **Chat**: habla con Yarbis (Enter envia); atajos `Ctrl+R` (un ciclo), `Ctrl+G` (auto hasta terminar), `Ctrl+S` (detener), `F5` (refrescar), `Ctrl+Q` (salir).
+- **Estado**: resumen del estado + health (servicio, proveedor/modelo, pulso, operacion activa), con refresco periodico.
+- **Instancias**: lista de instancias, cuales esperan tu respuesta, y desbloquearlas ("responder por mi") o enviarles mensajes.
+- **Contexto**: objetivo, tareas y notas.
+- **Ajustes**: cambiar proveedor de modelo (los 4) y toggles de control de PC / MCP.
+- **Actividad**: eventos recientes en vivo.
+
+La TUI se adjunta a una instancia (`--instance`, por defecto `default`) y coordina las demas por el bus. No corre en el servicio; es una interfaz que abres cuando quieras.
 
 Tambien puedes iniciarlo desde PowerShell:
 
