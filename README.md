@@ -1,6 +1,6 @@
 # Yarbis
 
-Yarbis es un agente local para convertir un objetivo general en trabajo accionable usando Ollama u OpenRouter, memoria persistente, herramientas de filesystem/sistema, busqueda web controlada, navegador automatizable y notificaciones opcionales.
+Yarbis es un agente local para convertir un objetivo general en trabajo accionable. Habla con modelos LLM a traves de cuatro proveedores (Ollama, OpenRouter, cualquier endpoint OpenAI-compatible, o Puter con 500+ modelos gratis), tiene memoria persistente, herramientas de filesystem/sistema, busqueda web controlada, navegador automatizable, control de la PC, cliente MCP para conectar servidores externos, multiples instancias que se coordinan entre si, y notificaciones opcionales.
 
 Funciona en tres modos:
 
@@ -39,9 +39,9 @@ Yarbis ya funciona como agente personal local:
 - Windows para la app de escritorio, notificaciones nativas y arranque con Windows
 - Python 3.11 o superior
 - .NET SDK 8 para compilar el host nativo del servicio SCM
-- Ollama ejecutandose localmente, acceso directo a Ollama Cloud, u OpenRouter con API key
+- un proveedor de modelo LLM (elige uno): Ollama local/Cloud, OpenRouter con API key, cualquier endpoint OpenAI-compatible (Groq/DeepSeek/LM Studio local/…), o Puter (500+ modelos gratis, requiere desplegar un Worker de Puter). Ver la seccion "Proveedores de modelo LLM"
 - un modelo disponible en el proveedor elegido; por defecto inicial se usa Ollama con `qwen3.5:2b`
-- Microsoft Edge/Chrome o Chromium instalado para automatizacion con Playwright
+- Microsoft Edge/Chrome/Brave o Chromium instalado para automatizacion con Playwright
 - permisos de administrador para instalar, quitar o reconfigurar el servicio en SCM
 
 Dependencias Python declaradas:
@@ -537,6 +537,71 @@ $env:YARBIS_NOTIFICATIONS="0"
 .\.venv\Scripts\python.exe yarbis_desktop.py
 ```
 
+## Proveedores de modelo LLM
+
+Yarbis soporta cuatro proveedores. El proveedor activo y su configuracion se guardan en `state.json` (`model_provider`), se cambian desde la app (`Modelo` -> `Modelo y timeout`), desde la UI movil (seccion "Modelo"), o por Telegram (`/proveedor`, `/modelo`, `/timeout`, `/ollama`, `/openrouter`). Cualquier proveedor con tool-calling funciona con el loop de herramientas de Yarbis.
+
+### 1. Ollama (por defecto)
+Modelos locales (o Ollama Cloud). No requiere API key para modelos locales. Default inicial: `qwen3.5:2b`.
+- Setup: instala Ollama, `ollama pull qwen3.5:2b`. En la app: `Modelo y timeout` -> proveedor `ollama`, modelo, host (vacio = daemon local), timeout.
+- Cloud: haz `ollama signin` y usa modelos `:cloud` (ej. `gpt-oss:120b-cloud`) o host `https://ollama.com` con API key.
+
+### 2. OpenRouter
+Acceso a muchos modelos con una API key de OpenRouter.
+- Setup: en `Modelo y timeout` elige `openrouter`, pon el modelo en formato `proveedor/modelo` (ej. `anthropic/claude-sonnet-4`), host `https://openrouter.ai/api/v1` y tu API key en `API key directa` (o define `OPENROUTER_API_KEY`).
+
+### 3. OpenAI-compatible generico (`openai_compat`)
+Un endpoint OpenAI-compatible cualquiera: **Groq, DeepSeek, Together, Fireworks, y modelos LOCALES via LM Studio / llama.cpp / vLLM**. Funciona de inmediato, sin Puter.
+- Setup: en `Modelo y timeout` elige `openai_compat` y define:
+  - **base_url** (campo Host): la raiz OpenAI del proveedor, ej.
+    - Groq: `https://api.groq.com/openai/v1`
+    - DeepSeek: `https://api.deepseek.com`
+    - LM Studio local: `http://localhost:1234/v1`
+    - llama.cpp server: `http://localhost:8080/v1`
+  - **modelo**: el id que expone ese endpoint (ej. `llama-3.3-70b-versatile`, `deepseek-chat`).
+  - **API key**: la del proveedor (o la variable de entorno indicada en `api_key_env_var`, por defecto `OPENAI_COMPAT_API_KEY`). Para servidores locales sin auth, deja la key vacia o cualquier valor.
+- Por lenguaje natural / Telegram no hay atajo dedicado aun; usa la UI.
+
+### 4. Puter (500+ modelos gratis, "user-pays")
+Puter da acceso gratis a 500+ modelos (GPT, Claude, Gemini, etc.) con el modelo "user-pays": paga tu cuenta Puter, no tu bolsillo por API keys. La API de Puter es solo JavaScript (puter.js), asi que Yarbis la usa a traves de un **Worker de Puter** (una pasarela serverless que tu despliegas una vez).
+
+Pasos para habilitarlo:
+1. **Crea/usa tu cuenta Puter** (https://puter.com) con email verificado.
+2. **Despliega el Worker.** El codigo esta en el repo (`puter_worker.js`) y ya quedo una copia con tu secreto en tu drive de Puter (`/<usuario>/yarbis/llm_gateway.js`). Desplegalo desde el **Dev Center** de Puter (o la Puter CLI, o `puter.workers.create("yarbis-llm-gateway", "~/yarbis/llm_gateway.js")` desde una consola puter.js). Copia la **URL del worker** que te devuelve.
+3. **Configura el secreto compartido.** El Worker valida un header `X-Puter-Secret`. Usa el secreto ya incrustado en tu `llm_gateway.js` (o edita el archivo y pon el tuyo; para actualizar el worker basta reescribir ese archivo).
+4. **En Yarbis** (`Modelo y timeout` -> `puter`):
+   - **Host** = la URL del worker + `/chat` (ej. `https://yarbis-llm-gateway.<algo>.puter.work/chat`).
+   - **Modelo** = el id Puter (ej. `gpt-5-nano`, `claude-sonnet-4-6`, `gemini-3.1-flash-lite`).
+   - **API key** = el secreto compartido (o define la variable `PUTER_WORKER_SECRET`).
+
+El Worker usa `me.puter.ai.chat` (tus recursos Puter). Manten el secreto privado: quien tenga la URL + secreto puede gastar tus creditos Puter.
+
+### Fallbacks y overrides
+Cada proveedor acepta **modelos de respaldo** (fallbacks): si el principal devuelve vacio/falla, Yarbis rota al siguiente. Variables de entorno como `YARBIS_MODEL_PROVIDER`, `YARBIS_<PROVEEDOR>_MODEL`, `YARBIS_<PROVEEDOR>_HOST`, etc. sirven como override avanzado sobre lo guardado en la UI.
+
+## Servidores MCP (cliente MCP)
+
+Yarbis puede actuar como **cliente MCP** (Model Context Protocol) y usar las herramientas de servidores MCP arbitrarios como si fueran propias. **Apagado por defecto** (conectar servidores MCP ejecuta comandos locales o llama endpoints).
+
+Uso por lenguaje natural (o las tools directamente):
+1. **Activa**: "activa MCP" -> `set_mcp_enabled(True)`.
+2. **Agrega un servidor**:
+   - Local (stdio): `mcp_add_server("filesystem", "stdio", command="npx", args="-y @modelcontextprotocol/server-filesystem C:/ruta")`.
+   - Remoto (HTTP): `mcp_add_server("remoto", "http", url="https://servidor/mcp", auth_token="...")`. El token se guarda cifrado (credential_store).
+3. **Conecta y descubre**: `mcp_connect("filesystem")`. Sus herramientas quedan disponibles con el nombre `mcp__<servidor>__<tool>` y Yarbis las usa cuando aportan.
+4. **Administra**: `mcp_list_servers`, `mcp_list_tools`, `mcp_refresh_tools`, `mcp_remove_server`, `mcp_call_tool` (manual/debug).
+
+Notas: en Windows, un `command` tipo `npx` puede necesitar `.cmd` o ruta completa. Las tools MCP no participan del pulso proactivo (seguridad).
+
+## Coordinacion entre instancias
+
+Yarbis corre como multiples instancias (default, asistente, dev, trader, etc.), cada una con su memoria. Se comunican por un bus local:
+
+- **Mensajes directos**: `send_yarbis_message("dev", "...")` (una instancia le habla a otra); `read_yarbis_messages` para leer los recibidos.
+- **Desbloquear instancias que te esperan**: cuando una instancia se pausa esperando tu respuesta (`request_user_input`), puedes pedirle a **cualquier** otra que responda en tu nombre y la desbloquee:
+  1. "que instancias me estan esperando" -> `list_pending_user_questions` (muestra quien esta pausada y su pregunta).
+  2. "responde por mi a dev: si, adelante" -> `answer_instance_for_user("dev", "si, adelante")`. La instancia destino retoma; la respuesta queda **atribuida** en su historial. Las acciones sensibles de esa instancia mantienen sus propias confirmaciones.
+
 ## Variables de entorno
 
 Modelo y ejecucion:
@@ -655,15 +720,21 @@ Internamente el agente usa `update_internet_settings`, `web_search`, `fetch_web_
 
 ## Control de la PC (navegador y sistema)
 
-Yarbis puede controlar la PC para tareas como publicar en Facebook personal. Esta apagado por defecto: actívalo con `set_computer_control(enabled=True)` (por lenguaje natural: "activa el control de la PC"). Nunca se usa durante pulsos proactivos autonomos y esta marcado como accion (ACTION_PROOF).
+Yarbis puede controlar la PC para tareas como publicar en Facebook personal. Esta apagado por defecto: actívalo con `set_computer_control(enabled=True)` (por lenguaje natural: "activa el control de la PC"). Nunca se usa durante pulsos proactivos autonomos y esta marcado como accion (ACTION_PROOF). Desde las UIs: en la app de escritorio, grupo "Control de la PC" -> boton "Navegador y perfil…"; en la UI movil, seccion "Control de la PC".
 
-- **Navegador (recomendado, fiable):** `browser_open` abre una ventana propia de Yarbis con perfil persistente (te logueas una vez y guarda la sesion); `browser_observe` lista los elementos clicables por `ref`; `browser_act` hace clic/escribe por `ref` o `text` en la pagina viva. Requiere Edge/Chrome instalado (usa depuracion remota en el puerto 9222).
+- **Navegador (recomendado, fiable):** `browser_open` abre una ventana propia de Yarbis con perfil persistente (te logueas una vez y guarda la sesion); `browser_observe` lista los elementos clicables por `ref`; `browser_act` hace clic/escribe por `ref` o `text` en la pagina viva. Requiere Edge/Chrome/Brave instalado (usa depuracion remota en el puerto 9222).
+- **Elegir navegador y perfil (desde las UIs):**
+  - **Navegador**: Edge / Chrome / Brave.
+  - **Perfil**: *Aislado de Yarbis* (perfil propio; te logueas una vez ahi) o *Mi perfil del sistema* (usa tu navegador real con tus sesiones ya iniciadas, ej. tu Facebook — ese navegador debe estar **cerrado** cuando Yarbis lo abra). Opcionalmente un perfil concreto (`Default`, `Profile 1`) o una carpeta de datos personalizada.
+- **Navegador visible cuando Yarbis corre como servicio:** el servicio corre en Session 0 (sin escritorio); Yarbis detecta eso y lanza el navegador en tu sesion interactiva para que lo veas (via CreateProcessAsUserW). Si por permisos no puede, cae a un lanzamiento normal sin romper nada.
 - **Sistema operativo (best-effort):** `desktop_look` (captura + vision), `desktop_click`, `desktop_type`, `desktop_press`, `desktop_move` con `pyautogui`, para apps sin navegador.
 - **Seguridad:** las acciones sensibles (Publicar, Pagar, Enviar, Eliminar) se bloquean hasta que el usuario confirma y se reintenta con `confirm="<texto del boton>"`. La ventana del navegador y el mouse son visibles.
 
 ## Proteccion, respaldo y trasplante de memoria
 
 Yarbis protege `state.json` con escrituras atomicas, verificacion JSON posterior y respaldos automaticos redactados en cada cambio. Si `state.json` falta o queda danado, intenta restaurar automaticamente el respaldo valido mas reciente; si no hay ninguno, preserva una copia del archivo danado en `.yarbis_runtime/memory_recovery/` y arranca con defaults seguros.
+
+Confiabilidad (correcciones ya integradas para que una instancia no se resetee "como nueva"): las lecturas de estado toleran un BOM UTF-8 (un trasplante por PowerShell ya no rompe la carga) y se auto-sanan; la carga reintenta ante fallos transitorios de lectura antes de declarar "corrupto"; y correr la suite de tests **nunca** toca el estado de una instancia real (se fuerza una instancia sandbox al ejecutar `unittest`, sea por `run_project_tests`, `run_system_command` o manualmente).
 
 Los respaldos se guardan por defecto en `.yarbis_memory_backups/` y quedan fuera de git. Puedes configurar un espejo externo desde `Memoria` -> `Proteccion`, por ejemplo una carpeta de OneDrive, USB o red. La perdida fisica del disco solo queda cubierta si ese espejo vive fuera del workspace local.
 
@@ -690,7 +761,12 @@ Desde la app de escritorio usa `Memoria` -> `Proteccion`, `Respaldar memoria`, `
 Yarbis expone al modelo estas herramientas:
 
 - `agent_overview`: resumen del estado actual
-- `self_overview`: identidad, codigo fuente y entorno local
+- `self_overview`: identidad, capacidades auto-derivadas, codigo fuente y entorno local
+- `record_self_insight`, `list_self_insights`, `remove_self_insight`: self-model aprendido (fortalezas, limites, estrategias, lecciones sobre si mismo)
+- `set_mcp_enabled`, `mcp_add_server`, `mcp_remove_server`, `mcp_list_servers`, `mcp_connect`, `mcp_refresh_tools`, `mcp_list_tools`, `mcp_call_tool`: cliente MCP para conectar servidores externos
+- `set_computer_control`, `browser_open`, `browser_observe`, `browser_act`, `desktop_*`: control de la PC (navegador y sistema)
+- `send_yarbis_message`, `read_yarbis_messages`, `list_yarbis_instances`, `list_pending_user_questions`, `answer_instance_for_user`: coordinacion entre instancias
+- `list_self_code_changes`, `mark_self_code_changes_versioned`: bitacora de auto-cambios de codigo
 - `update_profile`: perfil personal
 - `update_internet_settings`: politica web
 - `request_user_input`: registra una pregunta pendiente
@@ -724,6 +800,9 @@ Yarbis expone al modelo estas herramientas:
 ## Autoedicion segura
 
 Las tools de archivos pueden trabajar dentro del workspace o con rutas absolutas externas. Las escrituras mantienen checkpoint previo en `.yarbis_checkpoints/`.
+
+- **Guardian de sintaxis:** antes de escribir cualquier archivo `.py` (con `write_text_file` o al aplicar una propuesta de coding), Yarbis valida la sintaxis con `ast.parse`. Si esta rota, se bloquea la escritura y no se toca el archivo — asi Yarbis no puede tumbarse a si mismo escribiendo Python invalido.
+- **Bitacora de auto-cambios:** cada edicion que Yarbis hace a su propio codigo fuente queda registrada en `.yarbis_self_changes.jsonl` (con motivo y diff). `list_self_code_changes` la muestra; sirve para versionar en git esas auto-mejoras antes de que se pierdan, y `mark_self_code_changes_versioned` la archiva.
 
 ## Modo coding
 
@@ -803,13 +882,18 @@ Al arrancar desde terminal, app de escritorio o servicio, Yarbis ejecuta un auto
 Ese resumen incluye:
 
 - identidad del proyecto tomada del README
+- **catalogo de capacidades derivado del registro real de herramientas** (agrupado por area: memoria, codigo, navegador/PC, redes, vision, voz, instancias, autoevolucion, etc.), siempre al dia con el toolset — no una lista escrita a mano
 - inventario compacto de archivos fuente
 - rama y commit de Git, si estan disponibles
-- sistema operativo
-- host y modelo de equipo cuando Windows lo reporta
-- CPU, RAM, disco del workspace y GPU cuando Windows lo reporta
+- sistema operativo, host/modelo de equipo, CPU, RAM, disco y GPU cuando Windows lo reporta
 - version de Python, ejecutable, PID y cwd
 - proveedor/modelo configurado
+
+Ademas Yarbis mantiene un **self-model aprendido** sobre si mismo (distinto de las notas sobre ti): fortalezas, limites recurrentes, estrategias y lecciones. Lo actualiza con la experiencia (sobre todo tras fallos/correcciones) y tu puedes gestionarlo:
+
+- `record_self_insight("me cuesta estimar tiempos", "limite")` — guarda un aprendizaje (categorias: `fortaleza`, `limite`, `estrategia`, `leccion`).
+- `list_self_insights` — verlos; `remove_self_insight(id)` — depurarlos.
+- Aparecen en `self_overview` y en el contexto que Yarbis usa para actuar.
 
 Durante una sesion, puedes pedir:
 
@@ -817,6 +901,7 @@ Durante una sesion, puedes pedir:
 - "hazte un autoanalisis"
 - "refresca tu autoanalisis"
 - "que sabes de ti"
+- "que has aprendido de ti mismo"
 
 ## Archivos runtime y git
 
