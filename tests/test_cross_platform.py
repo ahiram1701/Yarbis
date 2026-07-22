@@ -79,13 +79,54 @@ class GracefulDegradationTestCase(unittest.TestCase):
         self.assertIsInstance(ctx, dict)
 
 
-class CredentialStoreFallbackTestCase(unittest.TestCase):
-    def test_base64_roundtrip_without_dpapi(self):
-        # Fuera de Windows (sin DPAPI) el store usa base64 y hace round-trip.
-        with patch.object(credential_store, "_dpapi_available", return_value=False):
-            method, payload = credential_store._protect_secret("un-secreto-123")
+class _FakeKeyring:
+    def __init__(self):
+        self.store = {}
+
+    def set_password(self, service, ref, value):
+        self.store[(service, ref)] = value
+
+    def get_password(self, service, ref):
+        return self.store.get((service, ref))
+
+    def delete_password(self, service, ref):
+        self.store.pop((service, ref), None)
+
+
+class CredentialStoreBackendsTestCase(unittest.TestCase):
+    def test_windows_uses_dpapi_unchanged(self):
+        with patch.object(credential_store, "_dpapi_available", return_value=True), \
+             patch.object(credential_store, "_dpapi_protect", return_value=b"prot"):
+            method, _ = credential_store._store_secret("cred-x", "s")
+        self.assertEqual(method, "dpapi")
+
+    def test_non_windows_uses_keyring_and_keeps_secret_out_of_file(self):
+        fake = _FakeKeyring()
+        with patch.object(credential_store, "_dpapi_available", return_value=False), \
+             patch.object(credential_store, "_keyring_module", return_value=fake):
+            ref = credential_store.save_secret("secreto-nube", kind="mcp")
+            record_text = credential_store._credential_path(ref).read_text(encoding="utf-8")
+            self.assertNotIn("secreto-nube", record_text)  # el secreto vive en el keyring
+            self.assertEqual(credential_store.load_secret(ref), "secreto-nube")
+            self.assertTrue(credential_store.delete_secret(ref))
+            self.assertEqual(fake.store, {})  # delete limpia el keyring
+
+    def test_non_windows_falls_back_to_base64_without_keyring(self):
+        with patch.object(credential_store, "_dpapi_available", return_value=False), \
+             patch.object(credential_store, "_keyring_module", return_value=None):
+            method, payload = credential_store._store_secret("cred-y", "un-secreto")
             self.assertEqual(method, "base64")
-            self.assertEqual(credential_store._unprotect_secret(method, payload), "un-secreto-123")
+            self.assertEqual(credential_store._unprotect_secret(method, payload), "un-secreto")
+
+    def test_keyring_set_failure_falls_back_to_base64(self):
+        class Boom(_FakeKeyring):
+            def set_password(self, *a):
+                raise RuntimeError("no dbus")
+        with patch.object(credential_store, "_dpapi_available", return_value=False), \
+             patch.object(credential_store, "_keyring_module", return_value=Boom()):
+            method, payload = credential_store._store_secret("cred-z", "sec")
+            self.assertEqual(method, "base64")
+            self.assertEqual(credential_store._unprotect_secret(method, payload), "sec")
 
 
 if __name__ == "__main__":

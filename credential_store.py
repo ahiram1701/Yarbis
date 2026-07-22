@@ -106,6 +106,29 @@ def _dpapi_unprotect(protected: bytes) -> bytes:
     return raw
 
 
+KEYRING_SERVICE = "yarbis-credentials"
+
+
+def _keyring_module():
+    """Devuelve el modulo `keyring` si hay un backend usable del SO, si no None.
+
+    En Linux headless sin Secret Service / macOS sin acceso, el backend puede ser
+    el 'fail' backend; en ese caso preferimos el fallback base64.
+    """
+    try:
+        import keyring
+        from keyring.backends import fail as _fail_backend
+    except Exception:
+        return None
+    try:
+        backend = keyring.get_keyring()
+    except Exception:
+        return None
+    if isinstance(backend, _fail_backend.Keyring):
+        return None
+    return keyring
+
+
 def _protect_secret(secret: str) -> tuple[str, str]:
     raw = str(secret).encode("utf-8")
     if _dpapi_available():
@@ -113,7 +136,33 @@ def _protect_secret(secret: str) -> tuple[str, str]:
     return "base64", base64.b64encode(raw).decode("ascii")
 
 
+def _store_secret(ref: str, secret: str) -> tuple[str, str]:
+    """Elige el backend de almacenamiento y devuelve (method, payload).
+
+    Windows: DPAPI (IDENTICO al comportamiento previo). Otros SO: keyring del SO
+    si hay backend usable, si no base64 (ofuscacion, ultimo recurso).
+    """
+    if _dpapi_available():
+        return _protect_secret(secret)  # Windows sin cambios
+    keyring = _keyring_module()
+    if keyring is not None:
+        try:
+            keyring.set_password(KEYRING_SERVICE, ref, secret)
+            return "keyring", ref
+        except Exception:
+            pass  # backend fallo en tiempo real -> caer a base64
+    return _protect_secret(secret)
+
+
 def _unprotect_secret(method: str, payload: str) -> str:
+    if method == "keyring":
+        keyring = _keyring_module()
+        if keyring is None:
+            raise CredentialStoreError("keyring no esta disponible para leer esta credencial.")
+        value = keyring.get_password(KEYRING_SERVICE, str(payload))
+        if value is None:
+            raise CredentialStoreError("La credencial no existe en el keyring del sistema.")
+        return value
     protected = base64.b64decode(str(payload).encode("ascii"))
     if method == "dpapi":
         return _dpapi_unprotect(protected).decode("utf-8")
@@ -128,7 +177,7 @@ def save_secret(secret: str, kind: str = "social", metadata: dict | None = None)
         raise CredentialStoreError("La credencial no puede quedar vacia.")
 
     ref = _new_ref(kind)
-    method, payload = _protect_secret(cleaned_secret)
+    method, payload = _store_secret(ref, cleaned_secret)
     record = {
         "id": ref,
         "kind": str(kind).strip() or "social",
@@ -160,6 +209,18 @@ def load_secret(ref: str) -> str:
 
 def delete_secret(ref: str) -> bool:
     path = _credential_path(ref)
+    # Si la credencial vive en el keyring del SO, borrar tambien esa entrada.
+    try:
+        record = read_json_bom_safe(path)
+        if str(record.get("method", "")) == "keyring":
+            keyring = _keyring_module()
+            if keyring is not None:
+                try:
+                    keyring.delete_password(KEYRING_SERVICE, str(record.get("payload", ref)))
+                except Exception:
+                    pass
+    except Exception:
+        pass
     try:
         path.unlink()
         return True
