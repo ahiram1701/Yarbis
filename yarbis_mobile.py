@@ -2070,8 +2070,16 @@ def _html_page() -> str:
 <html lang="es">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Yarbis movil</title>
+<link rel="manifest" href="/manifest.webmanifest">
+<meta name="theme-color" content="#0f1115">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Yarbis">
+<link rel="apple-touch-icon" href="/icons/icon-192.png">
+<link rel="icon" type="image/png" sizes="512x512" href="/icons/icon-512.png">
 <style>
 :root {
   color-scheme: dark;
@@ -5203,9 +5211,85 @@ window.setInterval(() => {
   if (isEditingField()) return;
   refresh({ silent: true });
 }, 15000);
+
+// PWA: instalable en el telefono. El service worker requiere HTTPS (o
+// localhost); con Tailscale HTTPS serve la instalacion funciona en iPhone.
+if ("serviceWorker" in navigator) {
+  window.addEventListener("load", () => {
+    navigator.serviceWorker.register("/sw.js").catch(() => {});
+  });
+}
 </script>
 </body>
 </html>"""
+
+
+PWA_ICONS_DIR = WORKSPACE_ROOT / "assets" / "pwa"
+PWA_SHELL_CACHE = "yarbis-shell-v1"
+
+
+def _pwa_manifest() -> str:
+    """Manifest que hace la UI instalable en Android, iPhone/iPad y escritorio."""
+    return json.dumps(
+        {
+            "name": "Yarbis",
+            "short_name": "Yarbis",
+            "description": "Agente local Yarbis",
+            "start_url": "/",
+            "scope": "/",
+            "display": "standalone",
+            "orientation": "portrait",
+            "background_color": "#0f1115",
+            "theme_color": "#0f1115",
+            "icons": [
+                {"src": "/icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any"},
+                {"src": "/icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any"},
+                {"src": "/icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable"},
+            ],
+        },
+        ensure_ascii=False,
+        indent=2,
+    )
+
+
+def _pwa_service_worker() -> str:
+    """Service worker deliberadamente conservador.
+
+    Solo cachea el shell estatico (iconos y manifest). TODO lo que sea /api/ va
+    siempre a la red: nunca se debe mostrar estado viejo del agente desde cache.
+    El HTML tambien va a la red primero para no servir una UI desactualizada.
+    """
+    return (
+        f'const SHELL_CACHE = "{PWA_SHELL_CACHE}";\n'
+        'const SHELL_ASSETS = ["/icons/icon-192.png", "/icons/icon-512.png", "/manifest.webmanifest"];\n'
+        "\n"
+        'self.addEventListener("install", (event) => {\n'
+        "  event.waitUntil(caches.open(SHELL_CACHE).then((c) => c.addAll(SHELL_ASSETS)));\n"
+        "  self.skipWaiting();\n"
+        "});\n"
+        "\n"
+        'self.addEventListener("activate", (event) => {\n'
+        "  event.waitUntil(\n"
+        "    caches.keys().then((keys) =>\n"
+        "      Promise.all(keys.filter((k) => k !== SHELL_CACHE).map((k) => caches.delete(k)))\n"
+        "    )\n"
+        "  );\n"
+        "  self.clients.claim();\n"
+        "});\n"
+        "\n"
+        'self.addEventListener("fetch", (event) => {\n'
+        "  const url = new URL(event.request.url);\n"
+        '  if (event.request.method !== "GET") return;\n'
+        "  if (url.origin !== self.location.origin) return;\n"
+        "  // Nunca cachear la API ni el HTML: el estado del agente debe ser fresco.\n"
+        '  if (url.pathname.startsWith("/api/")) return;\n'
+        '  if (url.pathname === "/") return;\n'
+        "  if (!SHELL_ASSETS.includes(url.pathname)) return;\n"
+        "  event.respondWith(\n"
+        "    caches.match(event.request).then((hit) => hit || fetch(event.request))\n"
+        "  );\n"
+        "});\n"
+    )
 
 
 class MobileRequestHandler(BaseHTTPRequestHandler):
@@ -5284,6 +5368,34 @@ class MobileRequestHandler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         if parsed.path == "/":
             self._send_html(HTTPStatus.OK, _html_page())
+            return
+        # Recursos PWA: el navegador los pide ANTES de autenticar y no llevan
+        # datos sensibles, asi que van sin sesion.
+        if parsed.path == "/manifest.webmanifest":
+            self._send_bytes(
+                HTTPStatus.OK,
+                _pwa_manifest().encode("utf-8"),
+                "application/manifest+json; charset=utf-8",
+            )
+            return
+        if parsed.path == "/sw.js":
+            self._send_bytes(
+                HTTPStatus.OK,
+                _pwa_service_worker().encode("utf-8"),
+                "application/javascript; charset=utf-8",
+            )
+            return
+        if parsed.path.startswith("/icons/"):
+            icon_name = parsed.path.rsplit("/", 1)[-1]
+            if icon_name in {"icon-192.png", "icon-512.png"}:
+                try:
+                    content = (PWA_ICONS_DIR / icon_name).read_bytes()
+                except OSError:
+                    self._send_json(HTTPStatus.NOT_FOUND, {"ok": False, "error": "icono no encontrado"})
+                    return
+                self._send_bytes(HTTPStatus.OK, content, "image/png")
+                return
+            self._send_json(HTTPStatus.NOT_FOUND, {"ok": False, "error": "icono no encontrado"})
             return
         if parsed.path == "/api/state":
             try:

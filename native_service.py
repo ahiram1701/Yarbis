@@ -25,6 +25,7 @@ SERVICE_SCRIPT = WORKSPACE_ROOT / "yarbis_service.py"
 
 MANAGER_SYSTEMD = "systemd"
 MANAGER_LAUNCHD = "launchd"
+MANAGER_TERMUX = "termux"
 MANAGER_NONE = "none"
 
 _RUN_TIMEOUT_SECONDS = 30
@@ -47,23 +48,39 @@ def _run(args: list[str], timeout_seconds: int = _RUN_TIMEOUT_SECONDS) -> subpro
     )
 
 
+def _is_termux() -> bool:
+    """Android/Termux: es Linux, pero sin systemd."""
+    try:
+        import device_profile
+
+        return device_profile.is_termux()
+    except Exception:
+        import os
+
+        return "com.termux" in os.environ.get("PREFIX", "")
+
+
 def service_manager_kind() -> str:
-    """Gestor de servicios del SO actual: systemd, launchd o none (Windows/otros)."""
+    """Gestor de servicios del dispositivo: systemd, launchd, termux o none."""
     system = platform.system().lower()
     if system == "linux":
-        return MANAGER_SYSTEMD
+        # Android/Termux no tiene systemd: usa runit (termux-services).
+        return MANAGER_TERMUX if _is_termux() else MANAGER_SYSTEMD
     if system == "darwin":
         return MANAGER_LAUNCHD
     return MANAGER_NONE
 
 
 def service_available() -> bool:
-    """True si el gestor nativo esta disponible (systemctl/launchctl en el PATH)."""
+    """True si el gestor nativo esta disponible en el PATH."""
     kind = service_manager_kind()
     if kind == MANAGER_SYSTEMD:
         return shutil.which("systemctl") is not None
     if kind == MANAGER_LAUNCHD:
         return shutil.which("launchctl") is not None
+    if kind == MANAGER_TERMUX:
+        # Con termux-services (runit) hay gestion real; sin el, proceso plano.
+        return True
     return False
 
 
@@ -126,6 +143,8 @@ def _unit_identifier(instance_id: object | None = None) -> str:
         return f"{_systemd_unit_stem(instance_id)}.service"
     if kind == MANAGER_LAUNCHD:
         return _launchd_label(instance_id)
+    if kind == MANAGER_TERMUX:
+        return _termux_service_name(instance_id)
     return yarbis_instance.service_name(instance_id)
 
 
@@ -135,6 +154,8 @@ def _unit_path(instance_id: object | None = None) -> Path:
         return _systemd_unit_path(instance_id)
     if kind == MANAGER_LAUNCHD:
         return _launchd_plist_path(instance_id)
+    if kind == MANAGER_TERMUX:
+        return _termux_run_script_path(instance_id)
     return Path()
 
 
@@ -450,6 +471,223 @@ def _launchd_set_autostart(instance_id: object | None, enabled: bool) -> str:
 
 
 # --------------------------------------------------------------------------- #
+# Termux (Android): runit via termux-services, o proceso plano con wake lock
+# --------------------------------------------------------------------------- #
+
+def _termux_prefix() -> Path:
+    import os
+
+    prefix = os.environ.get("PREFIX", "")
+    if prefix:
+        return Path(prefix)
+    return Path("/data/data/com.termux/files/usr")
+
+
+def _termux_service_name(instance_id: object | None = None) -> str:
+    return _systemd_unit_stem(instance_id)  # yarbis / yarbis-<id>
+
+
+def _termux_service_dir(instance_id: object | None = None) -> Path:
+    return _termux_prefix() / "var" / "service" / _termux_service_name(instance_id)
+
+
+def _termux_run_script_path(instance_id: object | None = None) -> Path:
+    return _termux_service_dir(instance_id) / "run"
+
+
+def _termux_has_runit() -> bool:
+    return shutil.which("sv") is not None
+
+
+def _termux_run_script_text(instance_id: object | None = None) -> str:
+    """Script `run` de runit. termux-wake-lock evita que Android mate el proceso."""
+    normalized = _normalized_id(instance_id)
+    wake = "termux-wake-lock 2>/dev/null || true"
+    return (
+        "#!/data/data/com.termux/files/usr/bin/sh\n"
+        f"cd {WORKSPACE_ROOT}\n"
+        f"export YARBIS_INSTANCE={normalized}\n"
+        f"{wake}\n"
+        f"exec {_python_executable()} {SERVICE_SCRIPT} 2>&1\n"
+    )
+
+
+def _termux_pid_file(instance_id: object | None = None) -> Path:
+    return yarbis_instance.runtime_dir(instance_id) / "service.pid"
+
+
+def _pid_alive(pid: int) -> bool:
+    import os
+
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except (OSError, ProcessLookupError, PermissionError):
+        return False
+    return True
+
+
+def _termux_running_pid(instance_id: object | None = None) -> int | None:
+    """PID vivo del servicio, leyendo el service.pid que escribe yarbis_service."""
+    try:
+        raw = _termux_pid_file(instance_id).read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    if not raw.isdigit():
+        return None
+    pid = int(raw)
+    return pid if _pid_alive(pid) else None
+
+
+def _termux_status(instance_id: object | None = None) -> dict:
+    status = _base_status(instance_id)
+    name = _termux_service_name(instance_id)
+    script_exists = _termux_run_script_path(instance_id).exists()
+
+    pid = _termux_running_pid(instance_id)
+    autostart = False
+    if _termux_has_runit() and script_exists:
+        # runit: el enlace en var/service ya implica arranque al iniciar el daemon.
+        autostart = True
+        listing = _run(["sv", "status", name])
+        out = (listing.stdout or "").strip()
+        if out.startswith("run:") and pid is None:
+            import re as _re
+
+            match = _re.search(r"\(pid (\d+)\)", out)
+            if match:
+                candidate = int(match.group(1))
+                pid = candidate if _pid_alive(candidate) else None
+
+    running = pid is not None
+    status.update({
+        "installed": script_exists,
+        "running": running,
+        "state": "running" if running else ("stopped" if script_exists else "not_installed"),
+        "pid": pid,
+        "autostart_enabled": autostart,
+        "start_type": "auto_start" if autostart else ("demand" if script_exists else "not_installed"),
+        "configured_binary": _service_binary(instance_id) if script_exists else "",
+    })
+    return status
+
+
+def _termux_install(instance_id: object | None, start_auto: bool) -> str:
+    script = _termux_run_script_path(instance_id)
+    script.parent.mkdir(parents=True, exist_ok=True)
+    script.write_text(_termux_run_script_text(instance_id), encoding="utf-8")
+    try:
+        script.chmod(0o755)
+    except OSError:
+        pass
+
+    if not _termux_has_runit():
+        return (
+            "Servicio de Yarbis preparado en Termux (script runit escrito), pero no "
+            "encontre `sv`. Instala termux-services para gestion real "
+            "(`pkg install termux-services`) o usa start/stop, que corren el proceso "
+            "directo con wake lock."
+        )
+
+    if start_auto and shutil.which("sv-enable"):
+        enabled = _run(["sv-enable", _termux_service_name(instance_id)])
+        if enabled.returncode != 0:
+            raise NativeServiceError(_fail_text("habilitar el servicio de Yarbis", enabled))
+    modo = "arranque automatico" if start_auto else "arranque manual"
+    return f"Servicio de Yarbis instalado en Termux (runit) con {modo}."
+
+
+def _termux_start(instance_id: object | None) -> str:
+    name = _termux_service_name(instance_id)
+    if _termux_has_runit():
+        started = _run(["sv", "up", name], timeout_seconds=45)
+        if started.returncode != 0:
+            raise NativeServiceError(_fail_text("iniciar el servicio de Yarbis", started))
+        pid = _termux_running_pid(instance_id)
+        if pid:
+            return f"Servicio de Yarbis iniciado en Termux (runit, PID {pid})."
+        return "runit recibio la orden de inicio; puede tardar un momento en confirmar el proceso."
+
+    # Sin runit: proceso plano con wake lock, en segundo plano.
+    import os
+    import subprocess as _sp
+
+    if shutil.which("termux-wake-lock"):
+        _run(["termux-wake-lock"])
+    env = dict(os.environ)
+    env["YARBIS_INSTANCE"] = _normalized_id(instance_id)
+    try:
+        _sp.Popen(
+            [_python_executable(), str(SERVICE_SCRIPT)],
+            cwd=str(WORKSPACE_ROOT),
+            env=env,
+            stdout=_sp.DEVNULL,
+            stderr=_sp.DEVNULL,
+            start_new_session=True,
+        )
+    except OSError as exc:
+        raise NativeServiceError(f"No pude iniciar el servicio de Yarbis: {exc}") from exc
+    return "Servicio de Yarbis iniciado en Termux como proceso con wake lock."
+
+
+def _termux_stop(instance_id: object | None) -> str:
+    name = _termux_service_name(instance_id)
+    if _termux_has_runit():
+        stopped = _run(["sv", "down", name], timeout_seconds=45)
+        if stopped.returncode != 0:
+            raise NativeServiceError(_fail_text("detener el servicio de Yarbis", stopped))
+        return "Servicio de Yarbis detenido en Termux (runit)."
+
+    import os
+    import signal
+
+    pid = _termux_running_pid(instance_id)
+    if pid is None:
+        return "El servicio de Yarbis ya estaba detenido."
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except OSError as exc:
+        raise NativeServiceError(f"No pude detener el servicio de Yarbis: {exc}") from exc
+    if shutil.which("termux-wake-unlock"):
+        _run(["termux-wake-unlock"])
+    return "Servicio de Yarbis detenido en Termux."
+
+
+def _termux_remove(instance_id: object | None) -> str:
+    name = _termux_service_name(instance_id)
+    if _termux_has_runit() and shutil.which("sv-disable"):
+        _run(["sv-disable", name])
+    try:
+        _termux_run_script_path(instance_id).unlink()
+    except FileNotFoundError:
+        pass
+    try:
+        _termux_service_dir(instance_id).rmdir()
+    except OSError:
+        pass
+    return "Servicio de Yarbis quitado de Termux."
+
+
+def _termux_set_autostart(instance_id: object | None, enabled: bool) -> str:
+    name = _termux_service_name(instance_id)
+    if not _termux_has_runit():
+        return (
+            "En Termux sin termux-services no hay arranque automatico. "
+            "Instala `termux-services` (`pkg install termux-services`) para habilitarlo."
+        )
+    tool = "sv-enable" if enabled else "sv-disable"
+    if not shutil.which(tool):
+        raise NativeServiceError(f"No encontre `{tool}` en Termux.")
+    result = _run([tool, name])
+    if result.returncode != 0:
+        raise NativeServiceError(_fail_text("cambiar el arranque del servicio de Yarbis", result))
+    if enabled:
+        return "Yarbis quedo configurado para arrancar con el daemon de runit en Termux."
+    return "Yarbis ya no arrancara automaticamente en Termux."
+
+
+# --------------------------------------------------------------------------- #
 # Fachada publica (dispatch por gestor)
 # --------------------------------------------------------------------------- #
 
@@ -464,7 +702,7 @@ def _require_available() -> str:
     kind = service_manager_kind()
     if kind == MANAGER_NONE:
         raise NativeServiceError(
-            "Este SO no usa systemd ni launchd. En Windows usa el gestor de servicios (SCM)."
+            "Este SO no usa systemd, launchd ni Termux. En Windows usa el gestor de servicios (SCM)."
         )
     if not service_available():
         tool = "systemctl" if kind == MANAGER_SYSTEMD else "launchctl"
@@ -478,6 +716,8 @@ def get_service_status(instance_id: object | None = None) -> dict:
         return _systemd_status(instance_id)
     if kind == MANAGER_LAUNCHD and service_available():
         return _launchd_status(instance_id)
+    if kind == MANAGER_TERMUX:
+        return _termux_status(instance_id)
     return _base_status(instance_id)
 
 
@@ -491,6 +731,8 @@ def install_service(start_auto: bool = True, instance_id: object | None = None) 
         raise NativeServiceError("No encontre yarbis_service.py para instalar el servicio.")
     if kind == MANAGER_SYSTEMD:
         return _systemd_install(instance_id, start_auto)
+    if kind == MANAGER_TERMUX:
+        return _termux_install(instance_id, start_auto)
     return _launchd_install(instance_id, start_auto)
 
 
@@ -503,6 +745,8 @@ def start_service(instance_id: object | None = None) -> str:
         return "El servicio de Yarbis ya estaba activo."
     if kind == MANAGER_SYSTEMD:
         return _systemd_start(instance_id)
+    if kind == MANAGER_TERMUX:
+        return _termux_start(instance_id)
     return _launchd_start(instance_id)
 
 
@@ -515,6 +759,8 @@ def stop_service(instance_id: object | None = None) -> str:
         return "El servicio de Yarbis ya estaba detenido."
     if kind == MANAGER_SYSTEMD:
         return _systemd_stop(instance_id)
+    if kind == MANAGER_TERMUX:
+        return _termux_stop(instance_id)
     return _launchd_stop(instance_id)
 
 
@@ -524,6 +770,8 @@ def remove_service(instance_id: object | None = None) -> str:
         return "El servicio de Yarbis no esta instalado."
     if kind == MANAGER_SYSTEMD:
         return _systemd_remove(instance_id)
+    if kind == MANAGER_TERMUX:
+        return _termux_remove(instance_id)
     return _launchd_remove(instance_id)
 
 
@@ -534,4 +782,6 @@ def set_autostart_enabled(enabled: bool, instance_id: object | None = None) -> s
         return install_service(start_auto=bool(enabled), instance_id=instance_id)
     if kind == MANAGER_SYSTEMD:
         return _systemd_set_autostart(instance_id, bool(enabled))
+    if kind == MANAGER_TERMUX:
+        return _termux_set_autostart(instance_id, bool(enabled))
     return _launchd_set_autostart(instance_id, bool(enabled))

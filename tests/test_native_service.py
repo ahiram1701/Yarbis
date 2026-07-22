@@ -157,6 +157,81 @@ class LaunchdTestCase(unittest.TestCase):
         self.assertFalse(status["autostart_enabled"])
 
 
+class TermuxTestCase(unittest.TestCase):
+    """Android/Termux: es Linux pero sin systemd (runit via termux-services)."""
+
+    def setUp(self):
+        self.prefix = Path(tempfile.mkdtemp())
+        self.calls = []
+
+        def fake_run(args, timeout_seconds=30):
+            self.calls.append(args)
+            if args[:2] == ["sv", "status"]:
+                return _cp(stdout="run: yarbis-trader: (pid 4321) 10s\n")
+            return _cp(0)
+
+        self._patches = [
+            patch.object(native_service.platform, "system", return_value="Linux"),
+            patch.object(native_service, "_is_termux", return_value=True),
+            patch.object(native_service, "_termux_prefix", return_value=self.prefix),
+            patch.object(native_service, "_run", side_effect=fake_run),
+        ]
+        for p in self._patches:
+            p.start()
+
+    def tearDown(self):
+        for p in self._patches:
+            p.stop()
+
+    def _joined(self):
+        return [" ".join(c) for c in self.calls]
+
+    def test_manager_kind_is_termux_not_systemd(self):
+        self.assertEqual(native_service.service_manager_kind(), native_service.MANAGER_TERMUX)
+        self.assertTrue(native_service.service_available())
+
+    def test_install_writes_runit_script_with_wake_lock(self):
+        with patch.object(native_service, "_termux_has_runit", return_value=True), \
+             patch.object(native_service.shutil, "which", return_value="/bin/sv-enable"):
+            msg = native_service.install_service(start_auto=True, instance_id="trader")
+
+        script = self.prefix / "var" / "service" / "yarbis-trader" / "run"
+        self.assertTrue(script.exists())
+        text = script.read_text(encoding="utf-8")
+        self.assertIn("YARBIS_INSTANCE=trader", text)
+        self.assertIn("termux-wake-lock", text)  # Android mata procesos sin wake lock
+        self.assertIn("yarbis_service.py", text)
+        self.assertTrue(any("sv-enable yarbis-trader" in j for j in self._joined()))
+        self.assertIn("Termux", msg)
+
+    def test_install_without_runit_explains_how_to_get_it(self):
+        with patch.object(native_service, "_termux_has_runit", return_value=False):
+            msg = native_service.install_service(start_auto=True, instance_id="trader")
+        self.assertIn("termux-services", msg)
+        self.assertTrue((self.prefix / "var" / "service" / "yarbis-trader" / "run").exists())
+
+    def test_status_reports_running_from_sv(self):
+        script = self.prefix / "var" / "service" / "yarbis-trader" / "run"
+        script.parent.mkdir(parents=True, exist_ok=True)
+        script.write_text("dummy", encoding="utf-8")
+        with patch.object(native_service, "_termux_has_runit", return_value=True), \
+             patch.object(native_service, "_termux_running_pid", return_value=4321):
+            status = native_service.get_service_status("trader")
+        self.assertTrue(status["installed"])
+        self.assertTrue(status["running"])
+        self.assertEqual(status["pid"], 4321)
+        self.assertEqual(status["manager"], native_service.MANAGER_TERMUX)
+
+    def test_stop_uses_sv_down_when_runit_available(self):
+        script = self.prefix / "var" / "service" / "yarbis-trader" / "run"
+        script.parent.mkdir(parents=True, exist_ok=True)
+        script.write_text("dummy", encoding="utf-8")
+        with patch.object(native_service, "_termux_has_runit", return_value=True), \
+             patch.object(native_service, "_termux_running_pid", return_value=4321):
+            native_service.stop_service("trader")
+        self.assertTrue(any("sv down yarbis-trader" in j for j in self._joined()))
+
+
 class FacadeTestCase(unittest.TestCase):
     def test_status_formats_native_off_windows(self):
         import tools

@@ -67,6 +67,36 @@ _SERVICE_STATUS_CACHE = {
 RUNTIME_DEPENDENCY_MODULES = ("ollama", "win11toast", "pystray", "PIL")
 
 
+def _runtime_dependency_modules(provider: str = "") -> tuple[str, ...]:
+    """Dependencias que cuentan como faltantes, segun el dispositivo y el proveedor.
+
+    Fuera de Windows `win11toast` no se instala (marcador sys_platform) y las
+    notificaciones salen por notify-send/osascript/termux-notification, asi que
+    exigirlo daba un falso "faltan modulos". `pystray`/`PIL` son de la bandeja y
+    la UI de escritorio: en un equipo sin pantalla no aplican. `ollama` solo hace
+    falta con el proveedor Ollama (local o cloud); los proveedores openai_compat,
+    puter y openrouter van sobre la stdlib.
+    """
+    modules = ["ollama", "win11toast", "pystray", "PIL"]
+    if os.name != "nt":
+        modules.remove("win11toast")
+
+    cleaned_provider = str(provider).strip()
+    if cleaned_provider and cleaned_provider != MODEL_PROVIDER_OLLAMA:
+        modules.remove("ollama")
+
+    try:
+        import device_profile
+
+        if not device_profile.capability_allows(device_profile.CAP_GUI)[0]:
+            for optional in ("pystray", "PIL"):
+                if optional in modules:
+                    modules.remove(optional)
+    except Exception:
+        pass
+    return tuple(modules)
+
+
 class ServiceLogonFailure(RuntimeError):
     pass
 
@@ -769,23 +799,39 @@ def readiness_status(force: bool = False) -> dict:
         "Instala Python 3.11 o superior." if not version_ok else "",
     ))
 
-    python_path = WORKSPACE_ROOT / ".venv" / "Scripts" / "python.exe"
+    # La ruta del venv y el instalador dependen del SO.
+    if os.name == "nt":
+        python_path = WORKSPACE_ROOT / ".venv" / "Scripts" / "python.exe"
+        venv_missing_text = "No existe .venv\\Scripts\\python.exe."
+        venv_hint = ".\\scripts\\setup.ps1 puede crearlo."
+        pip_hint = ".\\.venv\\Scripts\\python.exe -m pip install -r requirements.txt"
+    else:
+        python_path = WORKSPACE_ROOT / ".venv" / "bin" / "python"
+        venv_missing_text = "No existe .venv/bin/python."
+        venv_hint = "python3 -m venv .venv puede crearlo."
+        pip_hint = ".venv/bin/python -m pip install -r requirements.txt"
+
     venv_ok = python_path.exists()
     items.append(_readiness_item(
         "venv",
         "Entorno virtual",
         "ok" if venv_ok else "missing",
-        str(python_path) if venv_ok else "No existe .venv\\Scripts\\python.exe.",
-        ".\\scripts\\setup.ps1 puede crearlo." if not venv_ok else "",
+        str(python_path) if venv_ok else venv_missing_text,
+        venv_hint if not venv_ok else "",
     ))
 
-    missing_modules = [module_name for module_name in RUNTIME_DEPENDENCY_MODULES if not _dependency_available(module_name)]
+    configured_provider = str(state.get("model_provider", {}).get("provider", "")).strip()
+    missing_modules = [
+        module_name
+        for module_name in _runtime_dependency_modules(configured_provider)
+        if not _dependency_available(module_name)
+    ]
     items.append(_readiness_item(
         "dependencies",
         "Dependencias Python",
         "ok" if not missing_modules else "missing",
         "Dependencias Python disponibles." if not missing_modules else "Faltan: " + ", ".join(missing_modules),
-        ".\\.venv\\Scripts\\python.exe -m pip install -r requirements.txt" if missing_modules else "",
+        pip_hint if missing_modules else "",
     ))
 
     provider, active_model, ollama, openrouter = _model_provider_settings(state)

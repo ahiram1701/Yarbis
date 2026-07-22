@@ -193,18 +193,42 @@ def _send_linux_notification(title: str, body: str) -> bool:
         return False
 
 
+def _send_termux_notification(title: str, body: str) -> bool:
+    """Notificacion local en Android/Termux via termux-notification (termux-api)."""
+    if not shutil.which("termux-notification"):
+        return False
+    try:
+        result = subprocess.run(
+            [
+                "termux-notification",
+                "--title", str(title),
+                "--content", str(body),
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=8,
+        )
+        return result.returncode == 0
+    except Exception:
+        return False
+
+
 def _send_local_desktop_notification(title: str, body: str) -> bool:
     """Notificacion de escritorio local, por sistema operativo.
 
-    Windows conserva su comportamiento exacto (win11toast). macOS usa osascript
-    y Linux usa notify-send. En cualquier otro caso devuelve False (el evento
-    igual queda en la actividad de Yarbis via otros canales/registro).
+    Windows conserva su comportamiento exacto (win11toast). macOS usa osascript,
+    Android/Termux usa termux-notification y Linux usa notify-send. En cualquier
+    otro caso devuelve False (el evento igual queda en la actividad de Yarbis via
+    otros canales/registro).
     """
     if sys.platform == "win32":
         return _send_windows_notification(title, body)
     if sys.platform == "darwin":
         return _send_macos_notification(title, body)
     if sys.platform.startswith("linux"):
+        # Android/Termux es Linux, pero no tiene notify-send ni escritorio.
+        if shutil.which("termux-notification"):
+            return _send_termux_notification(title, body)
         return _send_linux_notification(title, body)
     return False
 

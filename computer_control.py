@@ -24,6 +24,18 @@ class ComputerControlError(RuntimeError):
 
 
 def _pyautogui():
+    # Punto unico de todos los tools desktop_*: si el dispositivo no tiene
+    # escritorio (servidor headless, contenedor, Android/Termux, servicio en la
+    # sesion 0), fallar aqui con el motivo real en vez de un error opaco de X11.
+    try:
+        import device_profile
+
+        allowed, reason = device_profile.capability_allows(device_profile.CAP_DESKTOP_CONTROL)
+    except Exception:
+        allowed, reason = True, ""
+    if not allowed:
+        raise ComputerControlError(f"No puedo controlar el escritorio: {reason}.")
+
     try:
         import pyautogui
     except Exception as exc:  # pragma: no cover - depende del entorno

@@ -3,6 +3,7 @@ import ctypes.wintypes as wintypes
 import json
 import os
 import platform
+import re
 import shutil
 import subprocess
 import time
@@ -359,6 +360,116 @@ def _get_foreground_context(settings: dict) -> dict:
     return result
 
 
+def _termux_power_status(result: dict) -> dict:
+    """Bateria en Android/Termux: `termux-battery-status` (JSON).
+
+    En Android sin root no hay acceso a /sys/class/power_supply, asi que la unica
+    via es termux-api. Si no esta instalado, se degrada a "no disponible".
+    """
+    if not shutil.which("termux-battery-status"):
+        return result
+    raw = _run_capture(["termux-battery-status"], timeout=4)
+    if not raw:
+        return result
+    try:
+        data = json.loads(raw)
+    except (ValueError, TypeError):
+        return result
+    if not isinstance(data, dict):
+        return result
+
+    plugged = str(data.get("plugged", "")).upper()
+    status = str(data.get("status", "")).upper()
+    if plugged and plugged != "UNPLUGGED":
+        ac_line_status = "plugged"
+    elif status == "CHARGING" or status == "FULL":
+        ac_line_status = "plugged"
+    elif status:
+        ac_line_status = "battery"
+    else:
+        ac_line_status = "unknown"
+
+    percentage = data.get("percentage")
+    result.update({
+        "available": True,
+        "ac_line_status": ac_line_status,
+        "battery_percent": int(percentage) if isinstance(percentage, (int, float)) else None,
+        "battery_life_seconds": None,
+    })
+    return result
+
+
+def _linux_power_status(result: dict) -> dict:
+    """Bateria en Linux via /sys/class/power_supply/BAT*."""
+    base = Path("/sys/class/power_supply")
+    try:
+        batteries = sorted(p for p in base.iterdir() if p.name.upper().startswith("BAT"))
+    except OSError:
+        return result
+    if not batteries:
+        return result
+
+    battery = batteries[0]
+
+    def _read(name: str) -> str:
+        try:
+            return (battery / name).read_text(encoding="utf-8", errors="replace").strip()
+        except OSError:
+            return ""
+
+    capacity = _read("capacity")
+    status = _read("status").lower()
+    if not capacity and not status:
+        return result
+
+    if status in ("charging", "full"):
+        ac_line_status = "plugged"
+    elif status == "discharging":
+        ac_line_status = "battery"
+    else:
+        ac_line_status = "unknown"
+
+    result.update({
+        "available": True,
+        "ac_line_status": ac_line_status,
+        "battery_percent": int(capacity) if capacity.isdigit() else None,
+        "battery_life_seconds": None,
+    })
+    return result
+
+
+def _macos_power_status(result: dict) -> dict:
+    """Bateria en macOS via `pmset -g batt`."""
+    if not shutil.which("pmset"):
+        return result
+    out = _run_capture(["pmset", "-g", "batt"], timeout=4)
+    if not out:
+        return result
+
+    lowered = out.lower()
+    if "ac power" in lowered:
+        ac_line_status = "plugged"
+    elif "battery power" in lowered:
+        ac_line_status = "battery"
+    else:
+        ac_line_status = "unknown"
+
+    percent = None
+    match = re.search(r"(\d{1,3})%", out)
+    if match:
+        percent = int(match.group(1))
+    if percent is None and ac_line_status == "unknown":
+        return result
+
+    result.update({
+        "available": True,
+        "ac_line_status": ac_line_status,
+        "battery_percent": percent,
+        "battery_life_seconds": None,
+    })
+    return result
+
+
 def _get_power_status() -> dict:
     result = {
         "available": False,
@@ -366,7 +477,15 @@ def _get_power_status() -> dict:
         "battery_percent": None,
         "battery_life_seconds": None,
     }
-    if platform.system().lower() != "windows":
+    system = platform.system().lower()
+    if system != "windows":
+        # Android/Termux primero: es Linux, pero sin acceso a /sys.
+        if shutil.which("termux-battery-status"):
+            return _termux_power_status(result)
+        if system == "linux":
+            return _linux_power_status(result)
+        if system == "darwin":
+            return _macos_power_status(result)
         return result
 
     class SYSTEM_POWER_STATUS(ctypes.Structure):
@@ -402,6 +521,66 @@ def _get_power_status() -> dict:
     return result
 
 
+def _linux_memory_status(result: dict) -> dict:
+    """Memoria en Linux/Termux via /proc/meminfo (MemTotal / MemAvailable)."""
+    try:
+        raw = Path("/proc/meminfo").read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return result
+
+    values = {}
+    for line in raw.splitlines():
+        key, _, rest = line.partition(":")
+        parts = rest.strip().split()
+        if parts and parts[0].isdigit():
+            values[key.strip()] = int(parts[0]) * 1024  # viene en kB
+
+    total = values.get("MemTotal", 0)
+    available = values.get("MemAvailable", values.get("MemFree", 0))
+    if not total:
+        return result
+
+    used_percent = int(round(((total - available) / total) * 100)) if available else None
+    result.update({
+        "available": True,
+        "load_percent": used_percent,
+        "total": _format_bytes(total),
+        "available_memory": _format_bytes(available),
+    })
+    return result
+
+
+def _macos_memory_status(result: dict) -> dict:
+    """Memoria en macOS via `sysctl hw.memsize` + `vm_stat`."""
+    total_raw = _run_capture(["sysctl", "-n", "hw.memsize"], timeout=4)
+    if not total_raw.strip().isdigit():
+        return result
+    total = int(total_raw.strip())
+
+    available = 0
+    vm_out = _run_capture(["vm_stat"], timeout=4)
+    if vm_out:
+        page_size = 4096
+        page_match = re.search(r"page size of (\d+) bytes", vm_out)
+        if page_match:
+            page_size = int(page_match.group(1))
+        free_pages = 0
+        for label in ("Pages free", "Pages inactive", "Pages speculative"):
+            match = re.search(rf"{label}:\s+(\d+)", vm_out)
+            if match:
+                free_pages += int(match.group(1))
+        available = free_pages * page_size
+
+    used_percent = int(round(((total - available) / total) * 100)) if available else None
+    result.update({
+        "available": True,
+        "load_percent": used_percent,
+        "total": _format_bytes(total),
+        "available_memory": _format_bytes(available) if available else "",
+    })
+    return result
+
+
 def _get_memory_status() -> dict:
     result = {
         "available": False,
@@ -409,7 +588,12 @@ def _get_memory_status() -> dict:
         "total": "",
         "available_memory": "",
     }
-    if platform.system().lower() != "windows":
+    system = platform.system().lower()
+    if system != "windows":
+        if system == "linux":  # incluye Android/Termux
+            return _linux_memory_status(result)
+        if system == "darwin":
+            return _macos_memory_status(result)
         return result
 
     class MEMORYSTATUSEX(ctypes.Structure):

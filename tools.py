@@ -3188,6 +3188,24 @@ def browser_automation(
     Returns:
         str: Resumen de navegacion, URL final, texto/capturas solicitadas y errores.
     """
+    device_note = ""
+    try:
+        import device_profile
+
+        can_browser, browser_reason = device_profile.capability_allows(device_profile.CAP_BROWSER)
+        if not can_browser:
+            return f"No puedo usar el navegador: {browser_reason}."
+        if not headless:
+            can_visible, visible_reason = device_profile.capability_allows(
+                device_profile.CAP_VISIBLE_BROWSER
+            )
+            if not can_visible:
+                # Degradar en vez de fallar: la tarea se puede completar sin ventana.
+                headless = True
+                device_note = f"\n(Nota: use el navegador sin ventana porque {visible_reason}.)"
+    except Exception:
+        pass
+
     try:
         return run_browser_automation(
             start_url=start_url,
@@ -3198,7 +3216,7 @@ def browser_automation(
             storage_state_path=storage_state_path,
             screenshot_path=screenshot_path,
             workspace_root=WORKSPACE_ROOT,
-        )
+        ) + device_note
     except Exception as exc:
         return f"No pude completar la automatizacion del navegador: {exc}"
 
@@ -7403,6 +7421,116 @@ def remove_background_service() -> str:
         return backend.remove_service()
     except Exception as exc:
         return f"No pude quitar el servicio ({label}): {exc}"
+
+
+def device_profile_overview() -> str:
+    """
+    Describe el dispositivo donde corre Yarbis y que puede hacer realmente aqui.
+
+    Detecta la clase de equipo (workstation, laptop, servidor sin pantalla, SBC,
+    contenedor, VM o Android/Termux), su hardware y las capacidades disponibles.
+    Util para saber por que una accion no esta disponible en este dispositivo.
+
+    Returns:
+        str: Perfil del dispositivo y capacidades.
+    """
+    try:
+        import device_profile
+    except Exception as exc:
+        return f"No pude leer el perfil del dispositivo: {exc}"
+
+    profile = device_profile.get_profile(refresh=True)
+    caps = profile["capabilities"]
+    disponibles = sorted(name for name, ok in caps.items() if ok)
+    faltantes = sorted(name for name, ok in caps.items() if not ok)
+
+    lines = [
+        device_profile.render_profile_summary(profile),
+        "",
+        f"- Clase: {profile['device_class']}",
+        f"- Sistema: {profile['system']} {profile['release']} ({profile['machine']})",
+        f"- CPU logicas: {profile['cpu_count']}",
+        f"- RAM total: {device_profile._format_bytes(profile['total_memory_bytes'])}",
+    ]
+    if profile.get("available_memory"):
+        lines.append(f"- RAM disponible: {profile['available_memory']}")
+    if profile.get("battery_present"):
+        estado = "en bateria" if profile["on_battery"] else "conectado a corriente"
+        lines.append(f"- Energia: {estado}")
+    if profile.get("virtualization"):
+        lines.append(f"- Virtualizacion: {profile['virtualization']}")
+    if profile.get("sbc_model"):
+        lines.append(f"- Placa: {profile['sbc_model']}")
+    lines.append(f"- Capacidades disponibles: {', '.join(disponibles) or 'ninguna'}")
+    if faltantes:
+        lines.append(f"- No disponibles aqui: {', '.join(faltantes)}")
+    return "\n".join(lines)
+
+
+def device_adaptation_suggestions() -> str:
+    """
+    Sugiere ajustes de configuracion acordes al dispositivo (sin aplicarlos).
+
+    Nunca cambia settings por su cuenta: solo compara el perfil del equipo con la
+    configuracion actual y propone mejoras opcionales (proveedor de modelo en la
+    nube si hay poca RAM, pulso proactivo mas espaciado con bateria, menos pasos
+    por ciclo en equipos limitados). Lo que el dispositivo simplemente no puede
+    hacer ya se rechaza solo al intentarlo.
+
+    Returns:
+        str: Lista de sugerencias o confirmacion de que la configuracion encaja.
+    """
+    try:
+        import device_profile
+    except Exception as exc:
+        return f"No pude leer el perfil del dispositivo: {exc}"
+
+    profile = device_profile.get_profile(refresh=True)
+    state = load_state()
+    sugerencias: list[str] = []
+
+    provider = str(state.get("model_provider", {}).get("provider", "")).strip()
+    if not profile["capabilities"].get(device_profile.CAP_LOCAL_LLM) and provider == "ollama":
+        ollama_host = str(state.get("model_provider", {}).get("ollama", {}).get("host", ""))
+        if "localhost" in ollama_host or "127.0.0.1" in ollama_host:
+            sugerencias.append(
+                "Este equipo no tiene RAM suficiente para un modelo local, pero el proveedor "
+                "es Ollama local. Conviene un proveedor en la nube (openai_compat, puter u "
+                "Ollama Cloud): usa update_openai_compat_settings o update_puter_settings."
+            )
+
+    if profile.get("power_constrained"):
+        interval = state.get("service", {}).get("proactive", {}).get("interval_minutes")
+        sugerencias.append(
+            "El dispositivo esta en bateria: conviene espaciar el pulso proactivo"
+            + (f" (ahora {interval} min)" if interval else "")
+            + " para no gastar carga."
+        )
+
+    if profile.get("low_memory"):
+        max_steps = state.get("autonomy", {}).get("max_steps_per_cycle")
+        sugerencias.append(
+            "Poca RAM disponible: conviene bajar max_steps_per_cycle"
+            + (f" (ahora {max_steps})" if max_steps else "")
+            + " y evitar tareas pesadas en paralelo."
+        )
+
+    if profile["device_class"] == device_profile.CLASS_ANDROID_TERMUX:
+        sugerencias.append(
+            "En Android/Termux instala `termux-api` (notificaciones y bateria) y "
+            "`termux-services` si quieres que Yarbis arranque solo."
+        )
+
+    if not sugerencias:
+        return (
+            f"{device_profile.render_profile_summary(profile)}\n\n"
+            "La configuracion actual encaja con este dispositivo; no tengo sugerencias."
+        )
+    return (
+        f"{device_profile.render_profile_summary(profile)}\n\n"
+        "Sugerencias (no aplique ningun cambio):\n"
+        + "\n".join(f"- {item}" for item in sugerencias)
+    )
 
 
 def set_background_service_autostart(enabled: bool = True) -> str:

@@ -12,7 +12,28 @@ from types import SimpleNamespace
 from urllib import error as urllib_error, request
 from urllib.parse import urlparse
 
-from ollama import Client as OllamaClient
+try:
+    from ollama import Client as OllamaClient
+
+    OLLAMA_AVAILABLE = True
+except ImportError:
+    # El paquete `ollama` es la UNICA dependencia de terceros del core. Hacerlo
+    # opcional permite correr Yarbis con solo la stdlib usando un proveedor en la
+    # nube (openai_compat / puter / openrouter usan urllib), que es lo que hace
+    # viable Android/Termux, una Raspberry o un VPS minimo donde ese paquete y
+    # sus dependencias no se pueden instalar.
+    OLLAMA_AVAILABLE = False
+
+    class OllamaClient:  # type: ignore[no-redef]
+        """Stub: falla con un mensaje claro solo si se intenta usar Ollama."""
+
+        def __init__(self, *args, **kwargs):
+            raise RuntimeError(
+                "El proveedor 'ollama' necesita el paquete `ollama` "
+                "(pip install ollama). En dispositivos limitados usa un proveedor "
+                "en la nube: openai_compat, puter u openrouter (solo stdlib)."
+            )
+
 
 import mcp_client
 from intent_text import (
@@ -178,6 +199,8 @@ from tools import (
     stop_background_service,
     remove_background_service,
     set_background_service_autostart,
+    device_profile_overview,
+    device_adaptation_suggestions,
 )
 
 
@@ -893,12 +916,18 @@ def _build_puter_client(host: str, timeout_seconds: int, api_key_env_var: str, a
     return PuterClient(host, timeout_seconds, api_key_env_var, api_key=api_key)
 
 
-client = _build_ollama_client(
-    OLLAMA_HOST,
-    OLLAMA_TIMEOUT_SECONDS,
-    OLLAMA_API_KEY_ENV_VAR,
-    OLLAMA_API_KEY,
-)
+try:
+    client = _build_ollama_client(
+        OLLAMA_HOST,
+        OLLAMA_TIMEOUT_SECONDS,
+        OLLAMA_API_KEY_ENV_VAR,
+        OLLAMA_API_KEY,
+    )
+except RuntimeError:
+    # Sin el paquete `ollama` no hay cliente por defecto: el proveedor
+    # configurado (openai_compat/puter/openrouter, solo stdlib) construye el
+    # suyo en la primera resolucion de runtime.
+    client = None
 _client_signature = (
     MODEL_PROVIDER_OLLAMA,
     *_ollama_client_signature(
@@ -1039,6 +1068,8 @@ tool_definitions = [
     stop_background_service,
     remove_background_service,
     set_background_service_autostart,
+    device_profile_overview,
+    device_adaptation_suggestions,
 ]
 
 available_functions = {
@@ -1170,6 +1201,8 @@ available_functions = {
     "stop_background_service": stop_background_service,
     "remove_background_service": remove_background_service,
     "set_background_service_autostart": set_background_service_autostart,
+    "device_profile_overview": device_profile_overview,
+    "device_adaptation_suggestions": device_adaptation_suggestions,
 }
 
 PROACTIVE_SAFE_TOOL_NAMES = {
@@ -1235,6 +1268,8 @@ PROACTIVE_SAFE_TOOL_NAMES = {
     "analyze_image",
     "vision_status",
     "background_service_status",
+    "device_profile_overview",
+    "device_adaptation_suggestions",
     "social_accounts_overview",
     "save_social_draft",
     "list_social_drafts",
@@ -1365,6 +1400,21 @@ def _close_ollama_client(ollama_client) -> None:
     close = getattr(raw_client, "close", None)
     if callable(close):
         close()
+
+
+def _render_device_line() -> str:
+    """Capacidades reales del equipo donde corre Yarbis.
+
+    Va al prompt para que el agente planee dentro de lo posible y no proponga
+    acciones que este dispositivo no puede hacer (control de escritorio sin
+    pantalla, voz sin audio, navegador en Android/Termux).
+    """
+    try:
+        import device_profile
+
+        return device_profile.render_profile_summary()
+    except Exception:
+        return ""
 
 
 def _close_model_client(model_client) -> None:
@@ -1891,6 +1941,9 @@ def build_messages(state):
         f"Contexto actual del agente:\n{state_summary}\n\n"
         f"Autoconocimiento de Yarbis:\n{self_summary}"
     )
+    device_line = _render_device_line()
+    if device_line:
+        second_system += f"\n\n{device_line}"
     if learned_directives:
         second_system += f"\n\n{learned_directives}"
 

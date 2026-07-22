@@ -287,9 +287,34 @@ El proveedor por defecto y su modelo tambien se pueden cambiar desde la app con 
 
 Cuando Yarbis aparece como `Pensando`, el boton `Detener pensando` solicita parar la operacion en curso. Si hay una llamada activa al proveedor de modelo, Yarbis cierra o reemplaza el cliente y el ciclo termina como detenido en cuanto la llamada libera el control.
 
-## Correr en Linux/macOS (experimental)
+## Yarbis en cualquier dispositivo
 
-El core de Yarbis es un agente Python; ademas del servicio SCM de Windows puede correr como **proceso plano** en Linux/macOS. Las capas dependientes del sistema tienen backend por SO (Windows sin cambios): notificaciones (`notify-send`/`osascript`), credenciales (`keyring` del sistema, o base64 si no hay backend), contexto de PC (`xprintidle`/`xdotool` en Linux, `ioreg`/`osascript` en macOS) y apagado/reinicio (`shutdown`). El mutex de instancia unica de Windows se vuelve no-op; las instancias se distinguen por `YARBIS_INSTANCE`.
+Yarbis se adapta al equipo donde corre. Al arrancar detecta la **clase de dispositivo** (`workstation`, `laptop`, `server-headless`, `sbc`, `container`, `vm` o `android-termux`), su hardware (RAM, CPU, GPU, bateria) y su entorno (pantalla, contenedor, WSL), y de ahi deriva **que puede hacer realmente ahi**.
+
+Principio importante: **la adaptacion nunca cambia tu configuracion**. El `state.json` guarda tu intencion; el dispositivo decide que es posible *ahora*. Asi puedes trasplantar la memoria entre maquinas y la adaptacion se recalcula sola en vez de viajar apagada. Lo que el equipo no puede hacer se rechaza al intentarlo, con el motivo:
+
+- sin pantalla -> se rechaza el control de escritorio y el navegador visible **degrada a headless** (la tarea se completa igual);
+- sin audio -> se rechazan microfono y voz hablada;
+- en Android/Termux -> se rechaza el navegador (Playwright no publica binarios para esa plataforma).
+
+Las mejoras *opcionales* no se aplican solas: se proponen. Tools disponibles:
+
+- `device_profile_overview` — clase de dispositivo, hardware y capacidades disponibles aqui.
+- `device_adaptation_suggestions` — sugiere (sin aplicar) proveedor en la nube si hay poca RAM, pulso mas espaciado con bateria, menos pasos por ciclo en equipos limitados.
+
+La pestana **Estado** de la TUI muestra la linea de dispositivo.
+
+### Core sin dependencias de terceros
+
+Usando un proveedor de modelo **en la nube** (`openai_compat`, `puter` u `openrouter`, todos sobre `urllib` de la stdlib), el core de Yarbis corre **sin instalar ninguna dependencia de terceros**. El paquete `ollama` solo hace falta con el proveedor Ollama. Para equipos limitados hay un `requirements-min.txt`; voz, vision local, navegador, control de escritorio y bandeja quedan desactivados y Yarbis lo dice al intentarlos.
+
+```bash
+pip install -r requirements-min.txt   # o ni eso, si tu sistema ya trae tzdata
+```
+
+## Correr en Linux/macOS/Android
+
+El core de Yarbis es un agente Python; ademas del servicio SCM de Windows puede correr como **proceso plano** en Linux/macOS/Android. Las capas dependientes del sistema tienen backend por dispositivo (Windows sin cambios): notificaciones (`notify-send` / `osascript` / `termux-notification`), credenciales (`keyring` del sistema, o base64 si no hay backend), contexto de PC (`xprintidle`/`xdotool` en Linux, `ioreg`/`osascript` en macOS), bateria y memoria (`/sys` + `/proc` en Linux, `pmset`/`vm_stat` en macOS, `termux-battery-status` en Android) y apagado/reinicio (`shutdown`). El mutex de instancia unica de Windows se vuelve no-op; las instancias se distinguen por `YARBIS_INSTANCE`.
 
 Instalacion y arranque:
 
@@ -337,6 +362,33 @@ sudo systemctl enable --now yarbis@default yarbis@trader
 ```
 
 La app de escritorio Tkinter y el host de servicio .NET siguen siendo solo-Windows; en Linux/macOS se usa la TUI y el servicio nativo systemd/launchd. La integracion continua (`.github/workflows/ci.yml`) corre la suite en Windows y en Linux (`ubuntu-latest`); los tests que dependen de Tkinter o del SCM de Windows se auto-omiten fuera de Windows.
+
+### Android (Termux)
+
+Yarbis corre **en el telefono** con [Termux](https://termux.dev), que es un userland Linux real con Python. No hace falta instalar dependencias si usas un proveedor de modelo en la nube:
+
+```bash
+pkg install python git
+git clone <tu-repo-yarbis> && cd yarbis
+python yarbis_service.py            # o abre la TUI: python yarbis_tui.py
+```
+
+Recomendado: `pkg install termux-api` (notificaciones y bateria) y `pkg install termux-services` (para que Yarbis arranque solo). Con eso, las tools `install_background_service` / `start_background_service` gestionan el servicio con **runit**, escribiendo `$PREFIX/var/service/yarbis[-<instancia>]/run` con `termux-wake-lock` para que Android no mate el proceso. Sin `termux-services`, `start_background_service` lanza el proceso con wake lock igualmente.
+
+En Android quedan fuera, por el dispositivo: control de escritorio, navegador y voz. Todo lo demas (memoria, tareas, internet, Telegram, instancias, MCP) funciona igual.
+
+**En iPhone/iPad no es posible correr el core**: Apple no permite procesos Python de fondo y no existe equivalente a Termux. Ahi el telefono es un cliente completo — ver la PWA abajo.
+
+### Instalar la UI movil como app (PWA)
+
+La UI movil es una **PWA instalable**: se agrega a la pantalla de inicio y se abre a pantalla completa, sin barra del navegador, en iPhone, iPad, Android o escritorio. El core sigue corriendo en tu PC/servidor y el telefono lo controla por completo.
+
+Requisito: los service workers exigen **HTTPS**, que ya tienes con `tailscale serve` (ver la seccion de UI movil). Abre `https://<tu-host>.ts.net/` y:
+
+- **iPhone/iPad (Safari)**: Compartir -> "Anadir a pantalla de inicio".
+- **Android (Chrome)**: menu -> "Instalar aplicacion".
+
+El service worker es deliberadamente conservador: solo cachea el shell estatico (iconos y manifest) y **nunca** cachea `/api/` ni el HTML, para que jamas veas estado viejo del agente.
 
 ## Uso por terminal
 

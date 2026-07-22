@@ -138,6 +138,23 @@ class VoiceError(RuntimeError):
     pass
 
 
+def _require_device_audio(capability: str) -> None:
+    """Falla con el motivo real si el dispositivo no tiene audio utilizable.
+
+    Un servidor headless, un contenedor o Android/Termux no tienen entrada ni
+    salida de audio: mejor decirlo que fallar con un error opaco de PortAudio.
+    No toca el estado; `voice.enabled` sigue siendo la intencion del usuario.
+    """
+    try:
+        import device_profile
+
+        allowed, reason = device_profile.capability_allows(capability)
+    except Exception:
+        return
+    if not allowed:
+        raise VoiceError(f"No puedo usar el audio: {reason}.")
+
+
 def get_voice_settings(settings: dict | None = None) -> dict:
     if settings is None:
         return load_state().get("voice", {})
@@ -626,6 +643,7 @@ def _wav_duration_seconds(path: Path) -> float:
 def speak_text(text: str, settings: dict | None = None, cancellable: bool = True) -> None:
     global _TTS_ENGINE
     voice_settings = ensure_voice_enabled(settings)
+    _require_device_audio("audio_out")
     cleaned_text = _clean_text_for_tts(text)
     if not cleaned_text:
         raise VoiceError("No hay texto para leer.")
@@ -900,6 +918,7 @@ def record_microphone_to_file(
     channels: int = DEFAULT_RECORD_CHANNELS,
 ) -> Path:
     voice_settings = ensure_voice_enabled(settings)
+    _require_device_audio("audio_in")
     max_seconds = int(voice_settings.get("max_audio_seconds", DEFAULT_VOICE_MAX_AUDIO_SECONDS))
     try:
         import sounddevice as sd
@@ -966,6 +985,7 @@ def record_microphone_until_silence(
     silence_threshold: int = DEFAULT_SILENCE_THRESHOLD,
 ) -> Path:
     voice_settings = ensure_voice_enabled(settings)
+    _require_device_audio("audio_in")
     configured_max = int(voice_settings.get("max_audio_seconds", DEFAULT_VOICE_MAX_AUDIO_SECONDS))
     max_seconds = int(max_seconds or configured_max)
     max_seconds = max(1, min(configured_max, max_seconds))

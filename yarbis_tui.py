@@ -105,6 +105,12 @@ def _render_health() -> str:
     if not isinstance(data, dict):
         return str(data)
     lines = []
+    try:
+        import device_profile
+
+        lines.append(device_profile.render_profile_summary())
+    except Exception:
+        pass
     for key, value in data.items():
         if isinstance(value, dict):
             inner = ", ".join(f"{k}={v}" for k, v in value.items())

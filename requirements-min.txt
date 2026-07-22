@@ -1,0 +1,21 @@
+# Instalacion MINIMA para dispositivos limitados: Android/Termux, Raspberry Pi,
+# contenedores o un VPS pequeno, donde faster-whisper, pyautogui, sounddevice y
+# las dependencias de GUI no compilan o no tienen sentido sin pantalla.
+#
+# El core de Yarbis NO necesita ninguna dependencia de terceros si usas un
+# proveedor de modelo en la nube: openai_compat, puter y openrouter van sobre
+# urllib de la stdlib. Por eso este archivo esta casi vacio a proposito.
+#
+#   pip install -r requirements-min.txt
+#
+# Lo que queda desactivado en una instalacion minima (y Yarbis lo dice solo al
+# intentarlo): voz, vision local, navegador, control de escritorio y bandeja.
+
+# zoneinfo necesita una base de zonas horarias; en Android/Termux y en algunas
+# imagenes minimas de Linux no viene con el sistema.
+tzdata>=2024.1
+
+# --- Opcionales, agrega solo lo que vayas a usar ---
+# ollama>=0.6         # SOLO si usas el proveedor Ollama (local o cloud)
+# textual>=1,<2       # SOLO si quieres la TUI (yarbis_tui.py)
+# keyring>=24,<26     # guarda secretos en el llavero del sistema; sin el, base64

@@ -60,6 +60,7 @@ py-modules = [
   "browser_automation",
   "credential_store",
   "conversation_ux",
+  "device_profile",
   "integrations",
   "intent_text",
   "internet",
