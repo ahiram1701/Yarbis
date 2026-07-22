@@ -7700,6 +7700,151 @@ def mesh_deploy_help() -> str:
     )
 
 
+def mesh_enroll() -> str:
+    """
+    Enrola este nodo en la malla y activa la sincronizacion con el relay.
+
+    Requiere haber creado la red (mesh_create_network) y fijado el relay
+    (mesh_configure_relay). A partir de aqui el nodo se anuncia en el roster con
+    sus capacidades y empieza a recibir mensajes/tareas de la malla.
+
+    Returns:
+        str: Confirmacion del enrolamiento.
+    """
+    import mesh
+
+    state = load_state()
+    mesh_settings = state.get("mesh", {})
+    if not str(mesh_settings.get("relay_url", "")).strip():
+        return "Primero fija el relay con mesh_configure_relay."
+    if not str(mesh_settings.get("secret_ref", "")).strip():
+        return "Primero crea la red con mesh_create_network."
+
+    try:
+        node_id = mesh.enroll_self(state)
+    except mesh.MeshError as exc:
+        return f"No pude enrolar el nodo: {exc}"
+    except Exception as exc:
+        return f"No pude enrolar el nodo (relay inalcanzable?): {exc}"
+
+    def mutate(state):
+        state.setdefault("mesh", {})["enabled"] = True
+
+    state_transaction("mesh_enroll", mutate)
+    return f"Nodo '{node_id}' enrolado en la malla. Sincronizacion activada."
+
+
+def mesh_list_nodes() -> str:
+    """
+    Lista los nodos de la malla (roster) con sus capacidades.
+
+    Returns:
+        str: Nodos conocidos o un aviso si la malla no esta lista.
+    """
+    import mesh
+
+    if not str(load_state().get("mesh", {}).get("relay_url", "")).strip():
+        return "La malla no tiene relay configurado (mesh_configure_relay)."
+    try:
+        nodes = mesh.list_nodes()
+    except mesh.MeshError as exc:
+        return f"No pude leer el roster: {exc}"
+    except Exception as exc:
+        return f"No pude contactar el relay: {exc}"
+
+    if not nodes:
+        return "La malla no tiene nodos enrolados todavia."
+    lines = ["Nodos de la malla:"]
+    for node in nodes:
+        caps = node.get("capabilities", {}) or {}
+        disponibles = sorted(k for k, v in caps.items() if v is True)
+        lines.append(
+            f"- {node.get('node_id', '?')} ({caps.get('device_class', '?')}): "
+            f"{', '.join(disponibles) or 'sin capacidades anunciadas'}"
+        )
+    return "\n".join(lines)
+
+
+def mesh_send(to_node: str, message: str) -> str:
+    """
+    Envia un mensaje a otro nodo de la malla.
+
+    Args:
+        to_node (str): node_id destino (velo con mesh_list_nodes).
+        message (str): Contenido para ese nodo.
+
+    Returns:
+        str: Confirmacion o error.
+    """
+    import mesh
+
+    if not str(message).strip():
+        return "El mensaje no puede ir vacio."
+    try:
+        mesh.send_to_node(str(to_node), str(message))
+    except mesh.MeshError as exc:
+        return f"No pude enviar: {exc}"
+    except Exception as exc:
+        return f"No pude contactar el relay: {exc}"
+    return f"Mensaje enviado al nodo '{str(to_node).strip()}'. Respondera por la malla."
+
+
+def mesh_delegate(need_capability: str, task: str) -> str:
+    """
+    Delega una tarea a un nodo de la malla que tenga la capacidad requerida.
+
+    Util cuando ESTE dispositivo no puede hacer algo: p. ej. un servidor sin
+    pantalla delega 'desktop_control' o 'visible_browser' a un nodo con escritorio.
+    Capacidades: gui, desktop_control, visible_browser, browser, audio_in,
+    audio_out, local_llm.
+
+    Args:
+        need_capability (str): Capacidad que el nodo destino debe tener.
+        task (str): La tarea a realizar alla.
+
+    Returns:
+        str: A que nodo se delego, o por que no se pudo.
+    """
+    import mesh
+
+    if not str(task).strip():
+        return "Indica la tarea a delegar."
+    try:
+        node_id = mesh.delegate(str(need_capability), str(task))
+    except mesh.MeshError as exc:
+        return f"No pude delegar: {exc}"
+    except Exception as exc:
+        return f"No pude contactar el relay: {exc}"
+    return f"Tarea delegada al nodo '{node_id}' (tiene '{str(need_capability).strip()}'). Respondera por la malla."
+
+
+def mesh_leave() -> str:
+    """
+    Saca este nodo de la malla: lo quita del roster y apaga la sincronizacion.
+
+    Returns:
+        str: Confirmacion.
+    """
+    import mesh_relay
+
+    state = load_state()
+    mesh_settings = state.get("mesh", {})
+    relay = str(mesh_settings.get("relay_url", "")).strip()
+    node_id = str(mesh_settings.get("node_id", "")).strip()
+    if relay and node_id and str(mesh_settings.get("secret_ref", "")).strip():
+        try:
+            secret = load_secret(str(mesh_settings.get("secret_ref", "")).strip())
+            mesh_relay.leave(relay, secret, node_id)
+        except Exception:
+            pass  # apagamos localmente aunque el relay no responda
+
+    def mutate(state):
+        state.setdefault("mesh", {})["enabled"] = False
+
+    state_transaction("mesh_leave", mutate)
+    return "Nodo sacado de la malla. Sincronizacion apagada (la red y el secreto siguen guardados)."
+
+
 def probe_device() -> str:
     """
     Sondea por comportamiento que puede hacer este entorno, sin importar el SO.

@@ -1023,6 +1023,15 @@ def run_service_loop(should_stop=None):
                 _log("Error procesando mensajes directos entre Yarbis:\n" + traceback.format_exc())
 
             try:
+                import mesh
+
+                synced = mesh.maybe_sync()
+                if synced:
+                    _log(f"Mensajes de la malla procesados: {synced}.")
+            except Exception:
+                _log("Error sincronizando la malla de Yarbis:\n" + traceback.format_exc())
+
+            try:
                 recovered_output = _recover_unanswered_user_message()
                 if recovered_output:
                     _log(recovered_output)

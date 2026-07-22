@@ -746,6 +746,16 @@ Puesta en marcha (por lenguaje natural o tools):
 
 `mesh_status` muestra la configuracion y si el relay es alcanzable. El core de un nodo no necesita dependencias: el cliente del relay ([mesh_relay.py](mesh_relay.py)) usa solo `urllib`.
 
+Con el relay listo, en cada nodo:
+
+- `mesh_enroll` — el nodo se anuncia en el roster con **sus capacidades** (las del perfil de dispositivo) y activa la sincronizacion. El servicio hace `mesh.maybe_sync()` en su loop (con throttle) para jalar y procesar mensajes; un mensaje entrante se corre por el agente y la respuesta vuelve al nodo origen.
+- `mesh_list_nodes` — el roster con las capacidades de cada nodo.
+- `mesh_send(to_node, message)` — mensaje directo a otro nodo.
+- `mesh_delegate(need_capability, task)` — **el pago de la malla**: delega una tarea a un nodo que tenga la capacidad. Un servidor sin pantalla puede delegar `visible_browser` o `desktop_control` a un nodo con escritorio, que la ejecuta y responde por la malla. Capacidades: `gui`, `desktop_control`, `visible_browser`, `browser`, `audio_in`, `audio_out`, `local_llm`.
+- `mesh_leave` — saca el nodo del roster y apaga la sincronizacion (la red y el secreto siguen guardados).
+
+La sincronizacion es ligera (un GET periodico; solo corre un ciclo del agente si hay un mensaje, bajo el lock de sesion) y nunca rompe el servicio si el relay se cae.
+
 ## Servidores MCP (cliente MCP)
 
 Yarbis puede actuar como **cliente MCP** (Model Context Protocol) y usar las herramientas de servidores MCP arbitrarios como si fueran propias. **Apagado por defecto** (conectar servidores MCP ejecuta comandos locales o llama endpoints).
