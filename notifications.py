@@ -2,6 +2,9 @@ import os
 import importlib
 import json
 import mimetypes
+import shutil
+import subprocess
+import sys
 from pathlib import Path
 from urllib import request
 from uuid import uuid4
@@ -151,6 +154,59 @@ def _send_windows_notification(title: str, body: str) -> bool:
         return False
 
     return True
+
+
+def _send_macos_notification(title: str, body: str) -> bool:
+    """Notificacion local en macOS via osascript."""
+    if not shutil.which("osascript"):
+        return False
+
+    def esc(text: str) -> str:
+        return str(text).replace("\\", "\\\\").replace('"', '\\"')
+
+    script = f'display notification "{esc(body)}" with title "{esc(title)}"'
+    try:
+        result = subprocess.run(
+            ["osascript", "-e", script],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=8,
+        )
+        return result.returncode == 0
+    except Exception:
+        return False
+
+
+def _send_linux_notification(title: str, body: str) -> bool:
+    """Notificacion local en Linux via notify-send."""
+    if not shutil.which("notify-send"):
+        return False
+    try:
+        result = subprocess.run(
+            ["notify-send", "-a", "Yarbis", str(title), str(body)],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=8,
+        )
+        return result.returncode == 0
+    except Exception:
+        return False
+
+
+def _send_local_desktop_notification(title: str, body: str) -> bool:
+    """Notificacion de escritorio local, por sistema operativo.
+
+    Windows conserva su comportamiento exacto (win11toast). macOS usa osascript
+    y Linux usa notify-send. En cualquier otro caso devuelve False (el evento
+    igual queda en la actividad de Yarbis via otros canales/registro).
+    """
+    if sys.platform == "win32":
+        return _send_windows_notification(title, body)
+    if sys.platform == "darwin":
+        return _send_macos_notification(title, body)
+    if sys.platform.startswith("linux"):
+        return _send_linux_notification(title, body)
+    return False
 
 
 def _ntfy_payload(title: str, body: str, settings: dict | None = None) -> dict:
@@ -758,8 +814,10 @@ def send_notification(title: str, body: str = "") -> bool:
     channels = _configured_channels(settings)
     sent = False
 
+    # El canal "windows" es la notificacion de escritorio LOCAL; en Windows usa
+    # win11toast (identico), en macOS/Linux usa el backend nativo por-SO.
     if "windows" in channels:
-        sent = _send_windows_notification(safe_title, safe_body) or sent
+        sent = _send_local_desktop_notification(safe_title, safe_body) or sent
 
     if "ntfy" in channels:
         sent = _send_ntfy_notification(safe_title, safe_body, settings=settings) or sent
