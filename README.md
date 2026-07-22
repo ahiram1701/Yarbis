@@ -731,6 +731,21 @@ El Worker usa `me.puter.ai.chat` (tus recursos Puter). Manten el secreto privado
 ### Fallbacks y overrides
 Cada proveedor acepta **modelos de respaldo** (fallbacks): si el principal devuelve vacio/falla, Yarbis rota al siguiente. Variables de entorno como `YARBIS_MODEL_PROVIDER`, `YARBIS_<PROVEEDOR>_MODEL`, `YARBIS_<PROVEEDOR>_HOST`, etc. sirven como override avanzado sobre lo guardado en la UI.
 
+## Malla de nodos (red propia de Yarbis)
+
+Yarbis puede formar una **red de sus propios nodos** — instancias en distintas maquinas **tuyas** que se descubren y se pasan mensajes y trabajo. Modelo, a proposito: **no es un virus**. No se propaga ni se copia a maquinas ajenas; cada nodo lo enrolas tu, con el **secreto de la red**, y es revocable. Todos los nodos enrolados comparten ese secreto y se confian mutuamente: enrola solo lo que controlas.
+
+El **relay** es el punto de encuentro: un buzon + roster siempre encendido y publicamente alcanzable, para que nodos tras NAT se encuentren. Se despliega en **Puter** como Worker ([yarbis_mesh_worker.js](yarbis_mesh_worker.js)), que guarda el estado en `puter.kv`. No corre codigo de agente: solo guarda y reenvia, gateado por el secreto de red; los mensajes van firmados con HMAC (integridad).
+
+Puesta en marcha (por lenguaje natural o tools):
+
+1. `mesh_create_network("mi-red")` — genera el secreto (se muestra **una vez**; en el estado solo queda una referencia via credential_store) y prepara este nodo.
+2. `mesh_deploy_help` — te entrega el codigo del Worker **con el secreto ya inyectado**. Guardalo en tu Puter drive y crea el Worker desde el Dev Center (el token MCP no tiene acceso de desarrollador, asi que el despliegue lo haces tu).
+3. `mesh_configure_relay("https://<tu-worker>.puter.work")` — fija la URL y comprueba que el relay responde.
+4. En cada otro dispositivo, crea el nodo con el **mismo secreto** y enrolalo.
+
+`mesh_status` muestra la configuracion y si el relay es alcanzable. El core de un nodo no necesita dependencias: el cliente del relay ([mesh_relay.py](mesh_relay.py)) usa solo `urllib`.
+
 ## Servidores MCP (cliente MCP)
 
 Yarbis puede actuar como **cliente MCP** (Model Context Protocol) y usar las herramientas de servidores MCP arbitrarios como si fueran propias. **Apagado por defecto** (conectar servidores MCP ejecuta comandos locales o llama endpoints).

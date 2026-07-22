@@ -425,6 +425,17 @@ def default_state():
             "enabled": False,
             "servers": [],
         },
+        "mesh": {
+            # Malla de nodos de Yarbis (federacion entre maquinas del usuario).
+            # Off por defecto; el secreto de red NO vive aqui (va en credential_store).
+            "enabled": False,
+            "network_name": "",
+            "relay_url": "",
+            "node_id": "",
+            "node_name": "",
+            "secret_ref": "",
+            "last_sync_at": "",
+        },
         "memory_protection": {
             "enabled": DEFAULT_MEMORY_PROTECTION_ENABLED,
             "backup_on_every_change": DEFAULT_MEMORY_PROTECTION_BACKUP_ON_EVERY_CHANGE,
@@ -1511,6 +1522,20 @@ def _normalize_mcp(mcp):
     return {
         "enabled": bool(mcp.get("enabled", False)),
         "servers": servers,
+    }
+
+
+def _normalize_mesh(mesh):
+    if not isinstance(mesh, dict):
+        mesh = {}
+    return {
+        "enabled": bool(mesh.get("enabled", False)),
+        "network_name": _coerce_text(mesh.get("network_name", ""), 120).strip()[:120],
+        "relay_url": _coerce_text(mesh.get("relay_url", ""), 400).strip()[:400],
+        "node_id": _coerce_text(mesh.get("node_id", ""), 80).strip()[:80],
+        "node_name": _coerce_text(mesh.get("node_name", ""), 120).strip()[:120],
+        "secret_ref": _coerce_text(mesh.get("secret_ref", ""), 200).strip()[:200],
+        "last_sync_at": _coerce_text(mesh.get("last_sync_at", ""), 40).strip()[:40],
     }
 
 
@@ -2893,6 +2918,7 @@ def normalize_state(state):
     normalized["vision"] = _normalize_vision(state.get("vision", {}))
     normalized["computer_control"] = _normalize_computer_control(state.get("computer_control", {}))
     normalized["mcp"] = _normalize_mcp(state.get("mcp", {}))
+    normalized["mesh"] = _normalize_mesh(state.get("mesh", {}))
     normalized["memory_protection"] = _normalize_memory_protection(state.get("memory_protection", {}))
     normalized["model_provider"] = _normalize_model_provider(state)
     normalized["ollama"] = dict(normalized["model_provider"][MODEL_PROVIDER_OLLAMA])

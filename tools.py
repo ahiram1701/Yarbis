@@ -7558,6 +7558,148 @@ def device_profile_overview() -> str:
     return "\n".join(lines)
 
 
+def _mesh_default_node_id() -> str:
+    """node_id estable derivado del host + instancia (persistido luego en estado)."""
+    import platform
+
+    host = re.sub(r"[^a-z0-9-]+", "-", str(platform.node() or "nodo").lower()).strip("-") or "nodo"
+    instance = yarbis_instance.current_instance_id()
+    return f"{host}-{instance}"[:80]
+
+
+def mesh_create_network(network_name: str = "yarbis") -> str:
+    """
+    Crea una red de malla de Yarbis: genera el secreto y prepara este nodo.
+
+    La malla conecta nodos de Yarbis en distintas maquinas TUYAS. El secreto se
+    muestra UNA vez (se guarda solo su referencia via credential_store, nunca en
+    claro en el estado). Con el, despliega el relay en Puter (mesh_deploy_help) y
+    enrola otros nodos. No hay auto-propagacion: cada nodo lo enrolas tu.
+
+    Args:
+        network_name (str): Nombre corto de la red.
+
+    Returns:
+        str: El secreto (una vez) y los siguientes pasos.
+    """
+    import mesh_relay
+
+    secret = mesh_relay.generate_network_secret()
+    try:
+        ref = save_secret(secret, kind="mesh")
+    except CredentialStoreError as exc:
+        return f"No pude guardar el secreto de la red: {exc}"
+
+    node_id = _mesh_default_node_id()
+    name = str(network_name).strip()[:120] or "yarbis"
+
+    def mutate(state):
+        mesh = state.setdefault("mesh", {})
+        mesh["network_name"] = name
+        mesh["secret_ref"] = ref
+        if not str(mesh.get("node_id", "")).strip():
+            mesh["node_id"] = node_id
+        if not str(mesh.get("node_name", "")).strip():
+            mesh["node_name"] = node_id
+
+    state_transaction("mesh_create_network", mutate)
+    return (
+        f"Red de malla '{name}' creada. Copia el secreto AHORA (no se vuelve a mostrar):\n\n"
+        f"Secreto de red: {secret}\n\n"
+        "Siguientes pasos:\n"
+        "1. Despliega el relay en Puter: usa mesh_deploy_help para el codigo con el secreto ya inyectado.\n"
+        "2. Cuando tengas la URL del worker, corre mesh_configure_relay(url).\n"
+        "3. En cada otro dispositivo, crea el nodo con el mismo secreto y enrolalo."
+    )
+
+
+def mesh_configure_relay(relay_url: str) -> str:
+    """
+    Fija la URL del relay de la malla (el Puter Worker ya desplegado).
+
+    Args:
+        relay_url (str): URL publica del worker relay (https://...puter.work).
+
+    Returns:
+        str: Confirmacion y si el relay responde.
+    """
+    import mesh_relay
+
+    url = str(relay_url).strip().rstrip("/")
+    if not url.startswith("http"):
+        return "La URL del relay debe empezar con http(s)://"
+
+    def mutate(state):
+        state.setdefault("mesh", {})["relay_url"] = url[:400]
+
+    state_transaction("mesh_configure_relay", mutate)
+    reachable = mesh_relay.health(url)
+    estado = "responde" if reachable else "no respondio (revisa la URL o el despliegue)"
+    return f"Relay de la malla configurado: {url}\nEl relay {estado}."
+
+
+def mesh_status() -> str:
+    """
+    Muestra la configuracion de la malla de Yarbis en este nodo.
+
+    Returns:
+        str: Estado de la malla (red, relay, nodo, activo).
+    """
+    state = load_state()
+    mesh = state.get("mesh", {})
+    configured = bool(str(mesh.get("secret_ref", "")).strip())
+    relay = str(mesh.get("relay_url", "")).strip()
+
+    lines = [
+        f"Malla de Yarbis: {'configurada' if configured else 'sin configurar'}.",
+        f"- Red: {mesh.get('network_name', '') or '(sin nombre)'}",
+        f"- Nodo: {mesh.get('node_id', '') or '(sin id)'}",
+        f"- Relay: {relay or '(sin URL)'}",
+        f"- Activa: {'si' if mesh.get('enabled') else 'no'}",
+    ]
+    if relay:
+        import mesh_relay
+
+        lines.append(f"- Relay alcanzable: {'si' if mesh_relay.health(relay) else 'no'}")
+    if not configured:
+        lines.append("Crea la red con mesh_create_network.")
+    return "\n".join(lines)
+
+
+def mesh_deploy_help() -> str:
+    """
+    Entrega el codigo del worker relay con el secreto de la red ya inyectado.
+
+    Despliegalo en Puter (tu cuenta) como Worker: guarda el codigo en un archivo
+    de tu Puter drive y crea el worker desde el Dev Center. Como el token MCP no
+    tiene acceso de desarrollador, el despliegue lo haces tu.
+
+    Returns:
+        str: Codigo del worker y pasos de despliegue.
+    """
+    import mesh_relay
+
+    state = load_state()
+    ref = str(state.get("mesh", {}).get("secret_ref", "")).strip()
+    if not ref:
+        return "Primero crea la red con mesh_create_network."
+    try:
+        secret = load_secret(ref)
+    except CredentialStoreError as exc:
+        return f"No pude leer el secreto de la red: {exc}"
+
+    source = mesh_relay.worker_source_with_secret(secret)
+    return (
+        "Despliega este Worker en Puter (tu cuenta):\n"
+        "1. Guarda el codigo de abajo como, p.ej., /TU_USUARIO/yarbis/mesh_relay.js en tu Puter drive.\n"
+        "2. En el Dev Center de Puter, crea un Worker desde ese archivo.\n"
+        "3. Copia la URL publica del worker y corre mesh_configure_relay(esa_url).\n"
+        "El secreto de la red YA esta inyectado en el codigo; no lo compartas.\n\n"
+        "----- yarbis_mesh_worker.js (con secreto) -----\n"
+        f"{source}"
+    )
+
+
 def probe_device() -> str:
     """
     Sondea por comportamiento que puede hacer este entorno, sin importar el SO.
