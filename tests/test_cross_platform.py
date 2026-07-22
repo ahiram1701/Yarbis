@@ -62,21 +62,93 @@ class LocalNotificationRoutingTestCase(unittest.TestCase):
             self.assertFalse(notifications._send_local_desktop_notification("t", "b"))
 
 
-class GracefulDegradationTestCase(unittest.TestCase):
-    def test_power_shutdown_degrades_off_windows(self):
-        with patch.object(power.sys, "platform", "linux"):
-            msg = power.request_system_shutdown()
-        self.assertIsInstance(msg, str)
-        self.assertTrue(msg)  # devuelve un mensaje, no crashea
+class PowerPerOsTestCase(unittest.TestCase):
+    def test_command_windows_unchanged(self):
+        with patch.object(power.sys, "platform", "win32"):
+            cmd = power._power_command("shutdown", 60)
+            rcmd = power._power_command("restart", 0)
+        self.assertIn("/s", cmd)
+        self.assertIn("/t", cmd)
+        self.assertIn("/r", rcmd)
 
-    def test_pc_context_idle_none_off_windows(self):
-        with patch.object(pc_context.platform, "system", return_value="Linux"):
+    def test_command_posix_uses_shutdown(self):
+        with patch.object(power.sys, "platform", "linux"):
+            self.assertEqual(power._power_command("shutdown", 60), ["shutdown", "-h", "+1"])
+            self.assertEqual(power._power_command("shutdown", 0), ["shutdown", "-h", "now"])
+            self.assertEqual(power._power_command("restart", 120), ["shutdown", "-r", "+2"])
+
+    def test_request_shutdown_runs_posix_command_without_executing(self):
+        # MOCK de la ejecucion: nunca se corre shutdown de verdad en el test.
+        from types import SimpleNamespace
+        captured = {}
+
+        def fake_run(cmd):
+            captured["cmd"] = cmd
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        with patch.object(power.sys, "platform", "linux"), \
+             patch.object(power, "_run_shutdown_command", side_effect=fake_run):
+            msg = power.request_system_shutdown(0)
+        self.assertEqual(captured["cmd"], ["shutdown", "-h", "now"])
+        self.assertIsInstance(msg, str)
+
+
+class PcContextPerOsTestCase(unittest.TestCase):
+    def _run_ok(self, stdout):
+        from types import SimpleNamespace
+        return SimpleNamespace(returncode=0, stdout=stdout, stderr="")
+
+    def test_linux_idle_parses_xprintidle_ms(self):
+        with patch.object(pc_context.shutil, "which", return_value="/usr/bin/xprintidle"), \
+             patch.object(pc_context.subprocess, "run", return_value=self._run_ok("5000\n")):
+            self.assertEqual(pc_context._linux_idle_seconds(), 5)
+
+    def test_linux_idle_none_without_tool(self):
+        with patch.object(pc_context.shutil, "which", return_value=None):
+            self.assertIsNone(pc_context._linux_idle_seconds())
+
+    def test_macos_idle_parses_ioreg_hididletime(self):
+        ioreg = '  "HIDIdleTime" = 3000000000\n  "HIDIdleTime" = 9000000000\n'
+        with patch.object(pc_context.shutil, "which", return_value="/usr/sbin/ioreg"), \
+             patch.object(pc_context.subprocess, "run", return_value=self._run_ok(ioreg)):
+            self.assertEqual(pc_context._macos_idle_seconds(), 3)  # el menor -> mas reciente
+
+    def test_linux_foreground_uses_xdotool(self):
+        settings = {"include_process_name": True, "include_window_title": True}
+        outputs = {"getactivewindow": "12345", "getwindowname": "Mi Ventana", "getwindowpid": "0"}
+
+        def fake_run(args, **kw):
+            from types import SimpleNamespace
+            key = args[1] if len(args) > 1 else ""
+            return SimpleNamespace(returncode=0, stdout=outputs.get(key, ""), stderr="")
+
+        with patch.object(pc_context.shutil, "which", return_value="/usr/bin/xdotool"), \
+             patch.object(pc_context.subprocess, "run", side_effect=fake_run):
+            ctx = pc_context._linux_foreground({"available": False, "process_name": "", "title": ""}, settings)
+        self.assertTrue(ctx["available"])
+        self.assertEqual(ctx["title"], "Mi Ventana")
+
+    def test_macos_foreground_uses_osascript(self):
+        settings = {"include_process_name": True, "include_window_title": True}
+        with patch.object(pc_context.shutil, "which", return_value="/usr/bin/osascript"), \
+             patch.object(pc_context.subprocess, "run", return_value=self._run_ok("Safari\n")):
+            ctx = pc_context._macos_foreground({"available": False, "process_name": "", "title": ""}, settings)
+        self.assertTrue(ctx["available"])
+        self.assertEqual(ctx["process_name"], "Safari")
+
+
+class GracefulDegradationTestCase(unittest.TestCase):
+    def test_pc_context_idle_none_off_windows_without_tools(self):
+        with patch.object(pc_context.platform, "system", return_value="Linux"), \
+             patch.object(pc_context.shutil, "which", return_value=None):
             self.assertIsNone(pc_context._get_idle_seconds())
 
-    def test_pc_context_foreground_empty_off_windows(self):
-        with patch.object(pc_context.platform, "system", return_value="Darwin"):
-            ctx = pc_context._get_foreground_context({})
+    def test_pc_context_foreground_empty_off_windows_without_tools(self):
+        with patch.object(pc_context.platform, "system", return_value="Darwin"), \
+             patch.object(pc_context.shutil, "which", return_value=None):
+            ctx = pc_context._get_foreground_context({"include_process_name": True, "include_window_title": True})
         self.assertIsInstance(ctx, dict)
+        self.assertFalse(ctx["available"])
 
 
 class _FakeKeyring:

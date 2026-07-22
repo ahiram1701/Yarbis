@@ -29,6 +29,22 @@ def _run_shutdown_command(args: list[str]) -> subprocess.CompletedProcess:
     )
 
 
+def _power_command(kind: str, delay: int) -> list[str]:
+    """Comando de apagado/reinicio por sistema operativo. kind: 'shutdown'|'restart'.
+
+    Windows conserva el comando exacto de siempre (shutdown.exe /s|/r /t <seg> /c).
+    En Linux/macOS usa `shutdown -h|-r +<min>|now` (requiere privilegios; si no los
+    hay, el error se reporta con gracia).
+    """
+    if sys.platform == "win32":
+        flag = "/s" if kind == "shutdown" else "/r"
+        comment = SHUTDOWN_COMMENT if kind == "shutdown" else RESTART_COMMENT
+        return [_shutdown_executable(), flag, "/t", str(delay), "/c", comment]
+    flag = "-h" if kind == "shutdown" else "-r"
+    when = "now" if delay <= 0 else f"+{max(1, (int(delay) + 59) // 60)}"
+    return ["shutdown", flag, when]
+
+
 def normalize_shutdown_delay(delay_seconds: int | str | None = None) -> int:
     if delay_seconds is None or str(delay_seconds).strip() == "":
         return DEFAULT_SHUTDOWN_DELAY_SECONDS
@@ -38,22 +54,12 @@ def normalize_shutdown_delay(delay_seconds: int | str | None = None) -> int:
 
 
 def request_system_shutdown(delay_seconds: int | str | None = None) -> str:
-    if sys.platform != "win32":
-        return "El apagado remoto solo esta disponible en Windows."
-
     try:
         delay = normalize_shutdown_delay(delay_seconds)
     except (TypeError, ValueError):
         return "No pude programar el apagado: el tiempo indicado no es valido."
 
-    command = [
-        _shutdown_executable(),
-        "/s",
-        "/t",
-        str(delay),
-        "/c",
-        SHUTDOWN_COMMENT,
-    ]
+    command = _power_command("shutdown", delay)
     try:
         completed = _run_shutdown_command(command)
     except subprocess.TimeoutExpired:
@@ -76,22 +82,12 @@ def request_system_shutdown(delay_seconds: int | str | None = None) -> str:
 
 
 def request_system_restart(delay_seconds: int | str | None = None) -> str:
-    if sys.platform != "win32":
-        return "El reinicio remoto solo esta disponible en Windows."
-
     try:
         delay = normalize_shutdown_delay(delay_seconds)
     except (TypeError, ValueError):
         return "No pude programar el reinicio: el tiempo indicado no es valido."
 
-    command = [
-        _shutdown_executable(),
-        "/r",
-        "/t",
-        str(delay),
-        "/c",
-        RESTART_COMMENT,
-    ]
+    command = _power_command("restart", delay)
     try:
         completed = _run_shutdown_command(command)
     except subprocess.TimeoutExpired:
@@ -127,11 +123,12 @@ def _looks_like_no_pending_shutdown(details: str) -> bool:
 
 def cancel_system_shutdown(action_label: str = "apagado") -> str:
     label = _normalize_power_action_label(action_label)
-    if sys.platform != "win32":
-        return f"La cancelacion de {label} solo esta disponible en Windows."
+    cancel_command = (
+        [_shutdown_executable(), "/a"] if sys.platform == "win32" else ["shutdown", "-c"]
+    )
 
     try:
-        completed = _run_shutdown_command([_shutdown_executable(), "/a"])
+        completed = _run_shutdown_command(cancel_command)
     except subprocess.TimeoutExpired:
         return f"No pude cancelar el {label}: shutdown.exe no respondio a tiempo."
     except OSError as exc:

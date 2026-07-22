@@ -42,11 +42,14 @@ class PowerTestCase(unittest.TestCase):
             power.RESTART_COMMENT,
         ])
 
-    def test_request_system_shutdown_reports_non_windows(self):
+    def test_request_system_shutdown_uses_posix_shutdown_off_windows(self):
+        # Fuera de Windows usa `shutdown -h`. MOCK de la ejecucion: nunca corre de verdad.
+        completed = subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
         with patch.object(power.sys, "platform", "linux"):
-            result = power.request_system_shutdown()
-
-        self.assertIn("solo esta disponible en Windows", result)
+            with patch.object(power, "_run_shutdown_command", return_value=completed) as run_mock:
+                result = power.request_system_shutdown(delay_seconds=60)
+        run_mock.assert_called_once_with(["shutdown", "-h", "+1"])
+        self.assertIsInstance(result, str)
 
     def test_cancel_system_shutdown_aborts_pending_shutdown(self):
         completed = subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")

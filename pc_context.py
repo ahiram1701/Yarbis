@@ -153,8 +153,53 @@ def _safe_run_command(args: list[str], timeout_seconds: float = 2.0) -> str:
     return completed.stdout.strip()
 
 
+def _linux_idle_seconds() -> int | None:
+    """Segundos de inactividad en Linux (X11) via xprintidle (milisegundos)."""
+    if not shutil.which("xprintidle"):
+        return None
+    try:
+        out = subprocess.run(
+            ["xprintidle"], capture_output=True, text=True, timeout=3,
+        )
+        if out.returncode != 0:
+            return None
+        return max(0, int(int(out.stdout.strip()) / 1000))
+    except (OSError, ValueError):
+        return None
+
+
+def _macos_idle_seconds() -> int | None:
+    """Segundos de inactividad en macOS via ioreg (HIDIdleTime en nanosegundos)."""
+    if not shutil.which("ioreg"):
+        return None
+    try:
+        out = subprocess.run(
+            ["ioreg", "-c", "IOHIDSystem"], capture_output=True, text=True, timeout=3,
+        )
+        if out.returncode != 0:
+            return None
+        best = None
+        for line in out.stdout.splitlines():
+            if "HIDIdleTime" in line and "=" in line:
+                try:
+                    value = int(line.split("=", 1)[1].strip())
+                except ValueError:
+                    continue
+                best = value if best is None else min(best, value)
+        if best is None:
+            return None
+        return max(0, int(best / 1_000_000_000))
+    except (OSError, ValueError):
+        return None
+
+
 def _get_idle_seconds() -> int | None:
-    if platform.system().lower() != "windows":
+    system = platform.system().lower()
+    if system == "linux":
+        return _linux_idle_seconds()
+    if system == "darwin":
+        return _macos_idle_seconds()
+    if system != "windows":
         return None
 
     class LASTINPUTINFO(ctypes.Structure):
@@ -231,13 +276,68 @@ def _get_window_title(hwnd) -> str:
         return ""
 
 
+def _run_capture(args: list[str], timeout: float = 3) -> str:
+    try:
+        out = subprocess.run(args, capture_output=True, text=True, timeout=timeout)
+        if out.returncode != 0:
+            return ""
+        return out.stdout.strip()
+    except (OSError, ValueError):
+        return ""
+
+
+def _linux_foreground(result: dict, settings: dict) -> dict:
+    """Ventana activa en Linux (X11) via xdotool. Best-effort."""
+    if not shutil.which("xdotool"):
+        return result
+    wid = _run_capture(["xdotool", "getactivewindow"])
+    if not wid:
+        return result
+    result["available"] = True
+    if settings["include_window_title"]:
+        title = _run_capture(["xdotool", "getwindowname", wid])
+        result["title"] = _clean_text(title, 160)
+    if settings["include_process_name"]:
+        pid = _run_capture(["xdotool", "getwindowpid", wid])
+        name = ""
+        if pid.isdigit():
+            try:
+                name = Path(f"/proc/{pid}/comm").read_text(encoding="utf-8", errors="replace").strip()
+            except OSError:
+                name = ""
+        result["process_name"] = _clean_text(name, 80)
+    return result
+
+
+def _macos_foreground(result: dict, settings: dict) -> dict:
+    """App en primer plano en macOS via osascript. Best-effort (el titulo de la
+    ventana suele requerir permisos de accesibilidad, asi que puede quedar vacio)."""
+    if not shutil.which("osascript"):
+        return result
+    app = _run_capture([
+        "osascript", "-e",
+        'tell application "System Events" to get name of first application process whose frontmost is true',
+    ])
+    if not app:
+        return result
+    result["available"] = True
+    if settings["include_process_name"]:
+        result["process_name"] = _clean_text(app, 80)
+    return result
+
+
 def _get_foreground_context(settings: dict) -> dict:
     result = {
         "available": False,
         "process_name": "",
         "title": "",
     }
-    if platform.system().lower() != "windows":
+    system = platform.system().lower()
+    if system == "linux":
+        return _linux_foreground(result, settings)
+    if system == "darwin":
+        return _macos_foreground(result, settings)
+    if system != "windows":
         return result
 
     try:
