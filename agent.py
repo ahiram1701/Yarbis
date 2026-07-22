@@ -1966,6 +1966,108 @@ def _render_learned_directives(state) -> str:
     )
 
 
+def _render_messages_transcript(messages: list) -> str:
+    """Convierte turnos crudos en un transcripto compacto para resumir."""
+    lines = []
+    for message in messages:
+        if not isinstance(message, dict):
+            continue
+        role = str(message.get("role", "")).strip()
+        content = str(message.get("content", "")).strip()
+        if not content:
+            continue
+        who = {"user": "Usuario", "assistant": "Yarbis", "tool": "Herramienta"}.get(role, role or "?")
+        lines.append(f"{who}: {content[:1500]}")
+    return "\n".join(lines)
+
+
+def _summarize_conversation(old_messages: list, previous_summary: str) -> str:
+    """Resumen incremental de turnos viejos, via una llamada toolless al modelo.
+
+    Best-effort: cualquier fallo devuelve "" y el llamador NO poda (no se pierde
+    historial). No usa herramientas ni recursion.
+    """
+    from memory import MAX_CONVERSATION_SUMMARY_CHARS
+
+    transcript = _render_messages_transcript(old_messages)
+    if not transcript.strip():
+        return ""
+
+    instruction = (
+        "Eres el modulo de memoria de Yarbis. Resume de forma fiel y compacta la "
+        "siguiente parte ANTIGUA de una conversacion, para conservar continuidad de "
+        "largo plazo. Integra el resumen previo si lo hay, sin repetir. Conserva: "
+        "hechos y preferencias del usuario, decisiones tomadas, compromisos y "
+        "pendientes, y el hilo del objetivo. Omite saludos y relleno. Escribe en "
+        "espanol, en prosa breve con vinetas cuando ayude. Devuelve SOLO el resumen."
+    )
+    prev = f"\n\nResumen previo:\n{previous_summary}" if str(previous_summary).strip() else ""
+    user_content = f"{instruction}{prev}\n\nConversacion antigua a resumir:\n{transcript}"
+
+    try:
+        _settings, model_client = _apply_model_runtime_settings(load_state())
+        response = model_client.chat(
+            model=_settings["model"],
+            messages=[{"role": "user", "content": user_content}],
+        )
+    except Exception:
+        return ""
+
+    try:
+        content = response.message.content
+    except AttributeError:
+        content = ""
+    return str(content or "").strip()[:MAX_CONVERSATION_SUMMARY_CHARS]
+
+
+def maybe_compact_history() -> bool:
+    """Si el historial supera el umbral, resume lo viejo y poda los turnos crudos.
+
+    Se llama al inicio de cada ciclo (choke point unico). Barato cuando no hay que
+    hacer nada (solo mide longitud). Nunca rompe el ciclo: ante un fallo del
+    resumen, deja el historial intacto.
+    """
+    from memory import (
+        HISTORY_COMPACT_THRESHOLD,
+        HISTORY_KEEP_RECENT,
+        MAX_CONVERSATION_SUMMARY_CHARS,
+    )
+
+    state = load_state()
+    messages = state.get("messages", [])
+    if not isinstance(messages, list) or len(messages) <= HISTORY_COMPACT_THRESHOLD:
+        return False
+
+    old = messages[:-HISTORY_KEEP_RECENT]
+    if not old:
+        return False
+
+    previous = str(state.get("conversation_summary", {}).get("text", "")).strip()
+    summary = _summarize_conversation(old, previous)
+    if not summary:
+        return False  # sin resumen valido no se poda: no se pierde historial
+
+    prior_count = 0
+    try:
+        prior_count = int(state.get("conversation_summary", {}).get("summarized_count", 0) or 0)
+    except (TypeError, ValueError):
+        prior_count = 0
+
+    def mutate(mutable_state):
+        mutable_state["conversation_summary"] = {
+            "text": summary[:MAX_CONVERSATION_SUMMARY_CHARS],
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+            "summarized_count": prior_count + len(old),
+        }
+        # Poda: conserva solo los recientes literales.
+        current = mutable_state.get("messages", [])
+        if isinstance(current, list) and len(current) > HISTORY_KEEP_RECENT:
+            mutable_state["messages"] = current[-HISTORY_KEEP_RECENT:]
+
+    state_transaction("compact_history", mutate)
+    return True
+
+
 def build_messages(state):
     user_name = str(state.get("profile", {}).get("name", "")).strip()
     user_line = (
@@ -1993,6 +2095,7 @@ def build_messages(state):
         include_last_result=False,
     )
     recall_block = _render_recall_block(state)
+    conversation_summary = str(state.get("conversation_summary", {}).get("text", "")).strip()
     self_knowledge = state.get("self_knowledge", {})
     if not isinstance(self_knowledge, dict):
         self_knowledge = {}
@@ -2026,6 +2129,11 @@ def build_messages(state):
     device_line = _render_device_line()
     if device_line:
         second_system += f"\n\n{device_line}"
+    if conversation_summary:
+        second_system += (
+            "\n\nResumen de la conversacion previa (turnos antiguos ya compactados; "
+            f"usalo como memoria de largo plazo del hilo):\n{conversation_summary}"
+        )
     if recall_block:
         second_system += f"\n\n{recall_block}"
     if learned_directives:
@@ -2832,6 +2940,14 @@ def run_one_cycle(max_steps=None, model_override: str | None = None):
 
     if _is_waiting_for_user_input(state):
         return _build_waiting_for_user_input_result(state)
+
+    # Compacta el historial largo antes de construir el contexto: resume y poda
+    # los turnos viejos para no perder el hilo ni inflar state.json. Best-effort.
+    try:
+        if maybe_compact_history():
+            state = load_state()
+    except Exception:
+        pass
 
     state_transaction(
         "run_one_cycle_increment",

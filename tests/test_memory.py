@@ -203,11 +203,12 @@ class MemoryTestCase(unittest.TestCase):
         state_path = TEST_RUNTIME_DIR / "memory_complete_messages_state.json"
         lock_path = TEST_RUNTIME_DIR / "memory_complete_messages_state.lock"
         long_message = "x" * (memory.MAX_MESSAGE_CHARS + 10)
+        message_count = 45
         oversized_state = {
             "goal": "demo",
             "messages": [
                 {"role": "assistant", "content": long_message}
-                for _ in range(memory.MAX_MESSAGES + 5)
+                for _ in range(message_count)
             ],
             "last_result": "ok",
             "cycle_count": 3,
@@ -218,7 +219,8 @@ class MemoryTestCase(unittest.TestCase):
                 memory.save_state(oversized_state)
             stored_state = json.loads(state_path.read_text(encoding="utf-8"))
 
-        self.assertEqual(len(stored_state["messages"]), memory.MAX_MESSAGES + 5)
+        # save_state NO recorta ni trunca: la compactacion vive en el ciclo.
+        self.assertEqual(len(stored_state["messages"]), message_count)
         self.assertEqual(stored_state["messages"][-1]["content"], long_message)
         self.assertNotIn("[truncado", stored_state["messages"][-1]["content"])
 

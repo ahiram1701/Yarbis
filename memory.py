@@ -46,8 +46,13 @@ DEFAULT_GOAL = ""
 LEGACY_DEFAULT_GOALS = {
     "Ayudar al usuario de forma autonoma con tareas locales.",
 }
-MAX_MESSAGES = 40
 MAX_MESSAGE_CHARS = 4_000
+# Compactacion del historial (resumen rodante). Al superar el umbral, los turnos
+# mas viejos se resumen y se podan; se conservan los recientes literales. Esto
+# preserva la continuidad y evita que state.json crezca sin limite.
+HISTORY_COMPACT_THRESHOLD = 60
+HISTORY_KEEP_RECENT = 30
+MAX_CONVERSATION_SUMMARY_CHARS = 6_000
 MAX_LAST_RESULT_CHARS = 4_000
 MAX_PROFILE_ITEMS = 12
 MAX_PROFILE_ITEM_CHARS = 140
@@ -358,6 +363,11 @@ def default_state():
         "state_schema_version": STATE_SCHEMA_VERSION,
         "goal": DEFAULT_GOAL,
         "messages": [],
+        "conversation_summary": {
+            "text": "",
+            "updated_at": "",
+            "summarized_count": 0,
+        },
         "last_result": "",
         "cycle_count": 0,
         "profile": {
@@ -1533,6 +1543,20 @@ def _normalize_mcp(mcp):
     return {
         "enabled": bool(mcp.get("enabled", False)),
         "servers": servers,
+    }
+
+
+def _normalize_conversation_summary(summary):
+    if not isinstance(summary, dict):
+        summary = {}
+    try:
+        count = int(summary.get("summarized_count", 0) or 0)
+    except (TypeError, ValueError):
+        count = 0
+    return {
+        "text": _coerce_text(summary.get("text", ""), MAX_CONVERSATION_SUMMARY_CHARS).strip(),
+        "updated_at": _coerce_text(summary.get("updated_at", ""), 40).strip()[:40],
+        "summarized_count": max(0, count),
     }
 
 
@@ -2947,6 +2971,9 @@ def normalize_state(state):
     normalized["mcp"] = _normalize_mcp(state.get("mcp", {}))
     normalized["mesh"] = _normalize_mesh(state.get("mesh", {}))
     normalized["recall"] = _normalize_recall(state.get("recall", {}))
+    normalized["conversation_summary"] = _normalize_conversation_summary(
+        state.get("conversation_summary", {})
+    )
     normalized["memory_protection"] = _normalize_memory_protection(state.get("memory_protection", {}))
     normalized["model_provider"] = _normalize_model_provider(state)
     normalized["ollama"] = dict(normalized["model_provider"][MODEL_PROVIDER_OLLAMA])
