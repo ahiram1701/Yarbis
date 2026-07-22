@@ -845,6 +845,15 @@ Los ajustes guardados en `state.json` se usan cuando no hay una variable de ento
 
 El proyecto original vive en la carpeta donde esta este README. Si usas una copia para pruebas o como instancia activa, sincroniza los cambios de codigo desde el original antes de arrancar el servicio o la app. Cada copia mantiene su propio `state.json`, `.yarbis_runtime/`, configuracion de Telegram y log del servicio.
 
+## Memoria profesional
+
+La memoria de Yarbis va mas alla de un historial plano:
+
+- **Recuperacion por relevancia:** en cada turno, en vez de volcar las notas mas recientes, Yarbis **recupera los recuerdos pertinentes** (notas, aprendizajes, ideas) con un buscador **BM25 en Python puro** (sin dependencias; corre hasta en Termux). Opcionalmente, con un proveedor de embeddings (Ollama/nube) reordena por similitud semantica. Tool `memory_search(query)` para recall explicito.
+- **Compactacion del historial:** al superar ~60 mensajes, los turnos viejos se **resumen** (resumen rodante incremental) y se podan, conservando los recientes literales. Nunca se pierde el hilo largo y `state.json` deja de crecer sin limite. Si el resumen falla, no se poda nada.
+- **Notas ricas:** cada nota tiene `importance` (0-3), `tags`, `pinned`, fecha y contador de accesos. `save_note` acepta esos campos. El **desalojo es inteligente** (por importancia/fijado/recencia/accesos): una nota trivial nueva no expulsa una importante. `memory_consolidate` fusiona notas casi-duplicadas.
+- **Auditoria:** `memory_audit` revisa integridad (BOM/esquema), respaldos (cuantos validos y su frescura), tamanos y metricas de notas, y reporta problemas accionables.
+
 ## Memoria y configuracion
 
 El archivo `state.json` guarda:

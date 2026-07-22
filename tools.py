@@ -7928,6 +7928,110 @@ def memory_search(query: str, limit: int = 5) -> str:
     return block
 
 
+def memory_audit() -> str:
+    """
+    Audita la salud de la memoria de Yarbis: integridad, respaldos y tamanos.
+
+    Revisa que el state.json este sano (sin BOM, parseable, esquema valido),
+    cuenta el volumen (mensajes/notas/tareas/ideas y bytes), evalua los respaldos
+    (cuantos validos y que tan fresco es el ultimo) y da metricas de la memoria de
+    notas (fijadas, importantes, con tags, accesos). Reporta problemas accionables.
+
+    Returns:
+        str: Reporte de salud de la memoria.
+    """
+    import atomic_io
+    import memory
+    import memory_backup
+    from datetime import timezone as _tz
+
+    lines = ["Auditoria de memoria de Yarbis:"]
+    warnings = []
+
+    # 1) Integridad del state.json
+    state_path = memory.STATE_FILE
+    try:
+        size_bytes = state_path.stat().st_size if state_path.exists() else 0
+    except OSError:
+        size_bytes = 0
+    if not state_path.exists():
+        lines.append("- Estado: no existe todavia (se creara al primer guardado).")
+    else:
+        has_bom = False
+        parse_ok = True
+        schema_ok = True
+        try:
+            has_bom = atomic_io.file_has_bom(state_path)
+            data = atomic_io.read_json_bom_safe(state_path)
+            memory.normalize_state(data)
+        except Exception as exc:
+            parse_ok = False
+            schema_ok = False
+            warnings.append(f"El state.json no se pudo leer/normalizar: {exc}")
+        lines.append(
+            f"- Integridad: {'OK' if (parse_ok and not has_bom) else 'REVISAR'} "
+            f"(BOM={'si' if has_bom else 'no'}, parse={'ok' if parse_ok else 'falla'}, "
+            f"esquema={'ok' if schema_ok else 'falla'})"
+        )
+        if has_bom:
+            warnings.append("El state.json tiene BOM (probable trasplante por PowerShell). Se auto-sana al cargar; usa import_memory de Yarbis para evitarlo.")
+
+    # 2) Volumen
+    try:
+        state = load_state()
+    except Exception as exc:
+        return "\n".join(lines + [f"- No pude cargar el estado: {exc}"])
+    counts = memory_backup.state_counts(state)
+    summary_len = len(str(state.get("conversation_summary", {}).get("text", "")))
+    lines.append(
+        f"- Volumen: {counts['messages']} mensajes, {counts['notes']} notas, "
+        f"{counts['tasks']} tareas, {counts['idea_projects']} ideas; "
+        f"state.json={size_bytes // 1024} KB; resumen={summary_len} chars"
+    )
+
+    # 3) Respaldos
+    backups_dir = memory._memory_backups_dir()
+    try:
+        verification = memory_backup.verify_backups(backup_dirs=[backups_dir], normalizer=memory.normalize_state)
+    except Exception:
+        verification = {}
+    valid_count = verification.get("valid_count", 0) if isinstance(verification, dict) else 0
+    latest = verification.get("latest") if isinstance(verification, dict) else None
+    if latest:
+        created = str(latest.get("created_at", ""))
+        age_txt = created
+        try:
+            when = memory_backup.parse_created_at(created)
+            age_days = (memory_backup.utc_now().replace(tzinfo=_tz.utc) - when).days
+            age_txt = f"{created} (~{age_days} dia(s))"
+            if age_days > 7:
+                warnings.append(f"El ultimo respaldo valido tiene ~{age_days} dias. Considera un respaldo fresco.")
+        except Exception:
+            pass
+        lines.append(f"- Respaldos: {valid_count} validos; ultimo: {age_txt}")
+    else:
+        lines.append(f"- Respaldos: {valid_count} validos; sin respaldo valido reciente.")
+        warnings.append("No hay un respaldo valido. Crea uno con las herramientas de respaldo de memoria.")
+
+    # 4) Metricas de la memoria de notas
+    notes = state.get("notes", [])
+    pinned = sum(1 for n in notes if n.get("pinned"))
+    important = sum(1 for n in notes if int(n.get("importance", 0) or 0) >= 2)
+    with_tags = sum(1 for n in notes if n.get("tags"))
+    accessed = sum(1 for n in notes if int(n.get("access_count", 0) or 0) > 0)
+    lines.append(
+        f"- Notas: {len(notes)}/{memory.MAX_NOTES} (fijadas={pinned}, importantes={important}, "
+        f"con_tags={with_tags}, accedidas={accessed})"
+    )
+
+    if warnings:
+        lines.append("Avisos:")
+        lines.extend(f"  ! {w}" for w in warnings)
+    else:
+        lines.append("Sin problemas detectados.")
+    return "\n".join(lines)
+
+
 def memory_consolidate(threshold: float = 0.6) -> str:
     """
     Consolida la memoria: fusiona notas casi-duplicadas para reducir ruido.
