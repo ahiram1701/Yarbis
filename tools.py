@@ -7845,6 +7845,38 @@ def mesh_leave() -> str:
     return "Nodo sacado de la malla. Sincronizacion apagada (la red y el secreto siguen guardados)."
 
 
+def memory_search(query: str, limit: int = 5) -> str:
+    """
+    Busca en la memoria por RELEVANCIA (no por recencia): notas, aprendizajes e ideas.
+
+    A diferencia de list_notes (que solo filtra por categoria), esto recupera los
+    recuerdos mas pertinentes a la consulta, con un buscador lexico que funciona
+    sin dependencias. Usalo para recordar algo especifico antes de responder o
+    actuar.
+
+    Args:
+        query (str): Lo que quieres recordar (tema, pregunta, palabra clave).
+        limit (int): Maximo de recuerdos a devolver.
+
+    Returns:
+        str: Recuerdos relevantes, o aviso si no hay coincidencias.
+    """
+    import memory_recall
+
+    cleaned = str(query).strip()
+    if not cleaned:
+        return "Indica que quieres recordar."
+    try:
+        k = max(1, min(20, int(limit)))
+    except (TypeError, ValueError):
+        k = 5
+    items = memory_recall.recall(load_state(), cleaned, k=k)
+    if not items:
+        return f"No encontre nada relevante para: {cleaned}"
+    block = memory_recall.render_recall_block(items, header=f"Recuerdos para '{cleaned}'")
+    return block
+
+
 def probe_device() -> str:
     """
     Sondea por comportamiento que puede hacer este entorno, sin importar el SO.

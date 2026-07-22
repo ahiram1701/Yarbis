@@ -436,6 +436,17 @@ def default_state():
             "secret_ref": "",
             "last_sync_at": "",
         },
+        "recall": {
+            # Recuperacion de memoria por relevancia. El motor lexico (BM25) es
+            # el default y no necesita nada. Los embeddings son una mejora
+            # OPCIONAL (rerank semantico) y estan apagados por defecto.
+            "embeddings": {
+                "enabled": False,
+                "provider": "",   # "" = usa el proveedor de modelo por defecto
+                "model": "",      # p. ej. nomic-embed-text
+                "host": "",
+            },
+        },
         "memory_protection": {
             "enabled": DEFAULT_MEMORY_PROTECTION_ENABLED,
             "backup_on_every_change": DEFAULT_MEMORY_PROTECTION_BACKUP_ON_EVERY_CHANGE,
@@ -1522,6 +1533,22 @@ def _normalize_mcp(mcp):
     return {
         "enabled": bool(mcp.get("enabled", False)),
         "servers": servers,
+    }
+
+
+def _normalize_recall(recall):
+    if not isinstance(recall, dict):
+        recall = {}
+    embeddings = recall.get("embeddings", {})
+    if not isinstance(embeddings, dict):
+        embeddings = {}
+    return {
+        "embeddings": {
+            "enabled": bool(embeddings.get("enabled", False)),
+            "provider": _coerce_text(embeddings.get("provider", ""), 40).strip()[:40],
+            "model": _coerce_text(embeddings.get("model", ""), 120).strip()[:120],
+            "host": _coerce_text(embeddings.get("host", ""), 400).strip()[:400],
+        },
     }
 
 
@@ -2919,6 +2946,7 @@ def normalize_state(state):
     normalized["computer_control"] = _normalize_computer_control(state.get("computer_control", {}))
     normalized["mcp"] = _normalize_mcp(state.get("mcp", {}))
     normalized["mesh"] = _normalize_mesh(state.get("mesh", {}))
+    normalized["recall"] = _normalize_recall(state.get("recall", {}))
     normalized["memory_protection"] = _normalize_memory_protection(state.get("memory_protection", {}))
     normalized["model_provider"] = _normalize_model_provider(state)
     normalized["ollama"] = dict(normalized["model_provider"][MODEL_PROVIDER_OLLAMA])
@@ -3259,16 +3287,20 @@ def render_state_summary(
     if done_tasks:
         lines.append(f"Tareas completadas registradas: {len(done_tasks)}")
 
-    recent_notes = normalized["notes"][-note_limit:]
-    if recent_notes:
-        lines.append("Notas recientes:")
-        for note in recent_notes:
-            preview = note["content"][:140] if note["content"] else ""
-            if note["content"] and len(note["content"]) > 140:
-                preview += "..."
-            lines.append(f"- [{note['id']}] {note['title']} ({note['category']}): {preview}")
-    else:
-        lines.append("Notas recientes: ninguna.")
+    # note_limit<=0 omite el bloque de notas por recencia (p. ej. cuando el
+    # prompt usa recuperacion por relevancia en su lugar). Evita el bug de
+    # [-0:], que devolveria TODAS las notas.
+    recent_notes = normalized["notes"][-note_limit:] if note_limit > 0 else []
+    if note_limit > 0:
+        if recent_notes:
+            lines.append("Notas recientes:")
+            for note in recent_notes:
+                preview = note["content"][:140] if note["content"] else ""
+                if note["content"] and len(note["content"]) > 140:
+                    preview += "..."
+                lines.append(f"- [{note['id']}] {note['title']} ({note['category']}): {preview}")
+        else:
+            lines.append("Notas recientes: ninguna.")
 
     return "\n".join(lines)
 

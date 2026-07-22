@@ -67,6 +67,8 @@ py-modules = [
   "main",
   "memory",
   "memory_backup",
+  "memory_embeddings",
+  "memory_recall",
   "memory_transfer",
   "mesh",
   "mesh_relay",

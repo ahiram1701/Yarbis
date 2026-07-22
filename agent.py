@@ -202,6 +202,7 @@ from tools import (
     device_profile_overview,
     device_adaptation_suggestions,
     probe_device,
+    memory_search,
     mesh_create_network,
     mesh_configure_relay,
     mesh_status,
@@ -1084,6 +1085,7 @@ tool_definitions = [
     device_profile_overview,
     device_adaptation_suggestions,
     probe_device,
+    memory_search,
     mesh_create_network,
     mesh_configure_relay,
     mesh_status,
@@ -1230,6 +1232,7 @@ available_functions = {
     "device_profile_overview": device_profile_overview,
     "device_adaptation_suggestions": device_adaptation_suggestions,
     "probe_device": probe_device,
+    "memory_search": memory_search,
     "mesh_create_network": mesh_create_network,
     "mesh_configure_relay": mesh_configure_relay,
     "mesh_status": mesh_status,
@@ -1311,6 +1314,7 @@ PROACTIVE_SAFE_TOOL_NAMES = {
     "device_adaptation_suggestions",
     "shortcuts_status",
     "probe_device",
+    "memory_search",
     "mesh_status",
     "mesh_list_nodes",
     "social_accounts_overview",
@@ -1443,6 +1447,40 @@ def _close_ollama_client(ollama_client) -> None:
     close = getattr(raw_client, "close", None)
     if callable(close):
         close()
+
+
+def _recall_query_from_state(state: dict) -> str:
+    """Consulta para el recall: ultimo mensaje real del usuario + objetivo."""
+    goal = str(state.get("goal", "")).strip()
+    messages = state.get("messages", []) if isinstance(state, dict) else []
+    last_user = ""
+    if isinstance(messages, list):
+        for message in reversed(messages):
+            if isinstance(message, dict) and message.get("role") == "user":
+                content = str(message.get("content", "")).strip()
+                # Ignora los ticks proactivos/autoevolucion: no son la intencion real.
+                if content and not content.startswith("Pulso proactivo") and not content.startswith("Autoevolucion"):
+                    last_user = content[:500]
+                    break
+    return f"{last_user} {goal}".strip()
+
+
+def _render_recall_block(state: dict) -> str:
+    """Recuerdos relevantes al turno (notas/insights/ideas), por relevancia.
+
+    Reemplaza el volcado de "notas recientes": recupera lo pertinente a lo que el
+    usuario esta pidiendo ahora. Best-effort: nunca rompe el armado del prompt.
+    """
+    try:
+        import memory_recall
+
+        query = _recall_query_from_state(state)
+        if not query:
+            return ""
+        items = memory_recall.recall(state, query, k=5)
+        return memory_recall.render_recall_block(items)
+    except Exception:
+        return ""
 
 
 def _render_device_line() -> str:
@@ -1950,10 +1988,11 @@ def build_messages(state):
     state_summary = render_state_summary(
         state,
         task_limit=10,
-        note_limit=10,
+        note_limit=0,  # las notas entran por relevancia (recall), no por recencia
         include_runtime=False,
         include_last_result=False,
     )
+    recall_block = _render_recall_block(state)
     self_knowledge = state.get("self_knowledge", {})
     if not isinstance(self_knowledge, dict):
         self_knowledge = {}
@@ -1987,6 +2026,8 @@ def build_messages(state):
     device_line = _render_device_line()
     if device_line:
         second_system += f"\n\n{device_line}"
+    if recall_block:
+        second_system += f"\n\n{recall_block}"
     if learned_directives:
         second_system += f"\n\n{learned_directives}"
 
