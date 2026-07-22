@@ -32,6 +32,11 @@ CLASS_SBC = "sbc"
 CLASS_CONTAINER = "container"
 CLASS_VM = "vm"
 CLASS_ANDROID_TERMUX = "android-termux"
+# Para un SO que no reconocemos (incluso uno que aun no exista): en vez de asumir
+# Windows, Yarbis prueba COMPORTAMIENTO (ver probe_capabilities) y sigue.
+CLASS_UNKNOWN = "unknown"
+
+_KNOWN_SYSTEMS = {"windows", "linux", "darwin"}
 
 # Umbrales. Un equipo con menos de esto no deberia cargar un modelo local.
 # 6 GB deja pasar equipos de 8 GB nominales (que reportan ~7.8 GB utiles).
@@ -212,6 +217,9 @@ def _derive_device_class(signals: dict) -> str:
         return CLASS_VM
     if signals["battery_present"]:
         return CLASS_LAPTOP
+    # SO no reconocido y con pantalla: no asumas Windows, marca desconocido.
+    if not signals.get("known_system", True):
+        return CLASS_UNKNOWN
     return CLASS_WORKSTATION
 
 
@@ -235,6 +243,7 @@ def _build_profile() -> dict:
         "sbc_model": sbc_model(),
         "display": display,
         "battery_present": battery_present,
+        "known_system": system.lower() in _KNOWN_SYSTEMS,
     }
 
     device_class = _derive_device_class(signals)
@@ -262,6 +271,7 @@ def _build_profile() -> dict:
     return {
         "device_class": device_class,
         "system": system,
+        "known_system": signals["known_system"],
         "release": platform.release(),
         "machine": platform.machine(),
         "python": platform.python_version(),
@@ -314,6 +324,97 @@ def capability_allows(name: str) -> tuple[bool, str]:
         return True, ""
     reason = _CAPABILITY_REASONS.get(name, "no disponible en este dispositivo")
     return False, f"{reason} (perfil: {profile['device_class']})"
+
+
+# --------------------------------------------------------------------------- #
+# Sonda de comportamiento: prueba lo que el dispositivo PUEDE hacer, no como se
+# llama su SO. Sirve para entornos desconocidos (incluso los que aun no existen):
+# si Python corre ahi, estas pruebas responden. Es explicita (no se corre en cada
+# get_profile) porque lanza un subproceso y, opcionalmente, toca la red.
+# --------------------------------------------------------------------------- #
+
+def _probe_write_files() -> bool:
+    import tempfile
+
+    try:
+        with tempfile.NamedTemporaryFile(prefix="yarbis-probe-", delete=True) as handle:
+            handle.write(b"probe")
+            handle.flush()
+        return True
+    except (OSError, ValueError):
+        return False
+
+
+def _probe_spawn_process() -> bool:
+    import sys
+
+    executable = sys.executable
+    if not executable:
+        return False
+    try:
+        completed = subprocess.run(
+            [executable, "-c", "pass"],
+            capture_output=True,
+            timeout=10,
+            check=False,
+        )
+        return completed.returncode == 0
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return False
+
+
+def _probe_network(timeout: float = 2.5) -> bool:
+    """Egress best-effort: intenta abrir un socket a endpoints publicos comunes.
+
+    No envia datos ni identifica al usuario; solo comprueba si hay salida. Ante la
+    minima duda (bloqueo, error) devuelve False sin ruido.
+    """
+    import socket
+
+    for host, port in (("1.1.1.1", 443), ("8.8.8.8", 53)):
+        try:
+            with socket.create_connection((host, port), timeout=timeout):
+                return True
+        except OSError:
+            continue
+    return False
+
+
+def _service_manager_label() -> str:
+    if os.name == "nt":
+        return "scm"
+    try:
+        from native_service import service_manager_kind
+
+        return service_manager_kind()
+    except Exception:
+        return "none"
+
+
+def probe_capabilities(check_network: bool = True) -> dict:
+    """Prueba de comportamiento del entorno actual, agnostica al nombre del SO."""
+    probes = {
+        "can_write_files": _probe_write_files(),
+        "can_spawn_process": _probe_spawn_process(),
+        "service_manager": _service_manager_label(),
+    }
+    if check_network:
+        probes["can_network"] = _probe_network()
+    return probes
+
+
+def render_probe_summary(probes: dict | None = None) -> str:
+    probes = probes if probes is not None else probe_capabilities()
+    partes = []
+    if "can_write_files" in probes:
+        partes.append("archivos:" + ("si" if probes["can_write_files"] else "no"))
+    if "can_spawn_process" in probes:
+        partes.append("procesos:" + ("si" if probes["can_spawn_process"] else "no"))
+    if "can_network" in probes:
+        partes.append("red:" + ("si" if probes["can_network"] else "no"))
+    if probes.get("service_manager"):
+        partes.append(f"servicio:{probes['service_manager']}")
+    return "Sonda del entorno -> " + ", ".join(partes) if partes else "Sonda del entorno sin datos."
 
 
 def _format_bytes(value: int) -> str:

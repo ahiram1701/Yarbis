@@ -12,8 +12,10 @@ sistema es la funcion `_run`, que los tests mockean para no tocar systemd/launch
 reales.
 """
 
+import os
 import platform
 import shutil
+import signal
 import subprocess
 import sys
 from pathlib import Path
@@ -26,6 +28,9 @@ SERVICE_SCRIPT = WORKSPACE_ROOT / "yarbis_service.py"
 MANAGER_SYSTEMD = "systemd"
 MANAGER_LAUNCHD = "launchd"
 MANAGER_TERMUX = "termux"
+# Fallback para un SO sin gestor conocido (incluso uno que aun no exista): Yarbis
+# se supervisa a si mismo como proceso plano con relanzamiento.
+MANAGER_PORTABLE = "portable"
 MANAGER_NONE = "none"
 
 _RUN_TIMEOUT_SECONDS = 30
@@ -61,14 +66,18 @@ def _is_termux() -> bool:
 
 
 def service_manager_kind() -> str:
-    """Gestor de servicios del dispositivo: systemd, launchd, termux o none."""
+    """Gestor de servicios del dispositivo: systemd, launchd, termux, portable o none."""
     system = platform.system().lower()
     if system == "linux":
         # Android/Termux no tiene systemd: usa runit (termux-services).
         return MANAGER_TERMUX if _is_termux() else MANAGER_SYSTEMD
     if system == "darwin":
         return MANAGER_LAUNCHD
-    return MANAGER_NONE
+    # Windows usa SCM (service_manager.py), no este modulo. Cualquier otro SO
+    # -incluido uno desconocido donde Python corre- cae al supervisor portable.
+    if os.name == "nt":
+        return MANAGER_NONE
+    return MANAGER_PORTABLE
 
 
 def service_available() -> bool:
@@ -78,8 +87,8 @@ def service_available() -> bool:
         return shutil.which("systemctl") is not None
     if kind == MANAGER_LAUNCHD:
         return shutil.which("launchctl") is not None
-    if kind == MANAGER_TERMUX:
-        # Con termux-services (runit) hay gestion real; sin el, proceso plano.
+    if kind in (MANAGER_TERMUX, MANAGER_PORTABLE):
+        # Runit/proceso plano: siempre podemos intentar supervisar el proceso.
         return True
     return False
 
@@ -688,6 +697,115 @@ def _termux_set_autostart(instance_id: object | None, enabled: bool) -> str:
 
 
 # --------------------------------------------------------------------------- #
+# Portable: SO sin gestor conocido. Yarbis se supervisa como proceso plano con
+# relanzamiento. Es el "corre aunque no sepamos que SO es esto".
+# --------------------------------------------------------------------------- #
+
+def _portable_marker_path(instance_id: object | None = None) -> Path:
+    return yarbis_instance.runtime_dir(instance_id) / "portable_service.json"
+
+
+def _portable_running_pid(instance_id: object | None = None) -> int | None:
+    try:
+        raw = (yarbis_instance.runtime_dir(instance_id) / "service.pid").read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    if not raw.isdigit():
+        return None
+    pid = int(raw)
+    return pid if _pid_alive(pid) else None
+
+
+def _portable_status(instance_id: object | None = None) -> dict:
+    status = _base_status(instance_id)
+    installed = _portable_marker_path(instance_id).exists()
+    pid = _portable_running_pid(instance_id)
+    running = pid is not None
+    status.update({
+        "installed": installed or running,
+        "running": running,
+        "state": "running" if running else ("stopped" if installed else "not_installed"),
+        "pid": pid,
+        "autostart_enabled": False,
+        "start_type": "demand",
+        "configured_binary": _service_binary(instance_id) if (installed or running) else "",
+    })
+    return status
+
+
+def _portable_install(instance_id: object | None, start_auto: bool) -> str:
+    import json
+
+    marker = _portable_marker_path(instance_id)
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    marker.write_text(
+        json.dumps({
+            "instance": _normalized_id(instance_id),
+            "python": _python_executable(),
+            "script": str(SERVICE_SCRIPT),
+            "workdir": str(WORKSPACE_ROOT),
+        }),
+        encoding="utf-8",
+    )
+    nota = ""
+    if start_auto:
+        nota = (
+            " Este SO no tiene un gestor de arranque conocido, asi que el arranque "
+            "automatico depende de ti (agrega `start_background_service` al inicio del sistema)."
+        )
+    return f"Servicio de Yarbis registrado como proceso portable.{nota}"
+
+
+def _portable_start(instance_id: object | None) -> str:
+    if _portable_running_pid(instance_id) is not None:
+        return "El servicio de Yarbis ya estaba activo."
+    env = dict(os.environ)
+    env["YARBIS_INSTANCE"] = _normalized_id(instance_id)
+    kwargs = {}
+    if hasattr(os, "setsid"):
+        kwargs["start_new_session"] = True
+    try:
+        subprocess.Popen(
+            [_python_executable(), str(SERVICE_SCRIPT)],
+            cwd=str(WORKSPACE_ROOT),
+            env=env,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            **kwargs,
+        )
+    except OSError as exc:
+        raise NativeServiceError(f"No pude iniciar el servicio de Yarbis: {exc}") from exc
+    return "Servicio de Yarbis iniciado como proceso portable (se relanza yarbis_service.py)."
+
+
+def _portable_stop(instance_id: object | None) -> str:
+    pid = _portable_running_pid(instance_id)
+    if pid is None:
+        return "El servicio de Yarbis ya estaba detenido."
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except OSError as exc:
+        raise NativeServiceError(f"No pude detener el servicio de Yarbis: {exc}") from exc
+    return "Servicio de Yarbis detenido."
+
+
+def _portable_remove(instance_id: object | None) -> str:
+    _portable_stop(instance_id)
+    try:
+        _portable_marker_path(instance_id).unlink()
+    except FileNotFoundError:
+        pass
+    return "Servicio de Yarbis (portable) quitado."
+
+
+def _portable_set_autostart(instance_id: object | None, enabled: bool) -> str:
+    return (
+        "Este SO no tiene un gestor de arranque conocido; no puedo configurar el "
+        "arranque automatico. Agrega `start_background_service` al inicio del sistema."
+    )
+
+
+# --------------------------------------------------------------------------- #
 # Fachada publica (dispatch por gestor)
 # --------------------------------------------------------------------------- #
 
@@ -718,6 +836,8 @@ def get_service_status(instance_id: object | None = None) -> dict:
         return _launchd_status(instance_id)
     if kind == MANAGER_TERMUX:
         return _termux_status(instance_id)
+    if kind == MANAGER_PORTABLE:
+        return _portable_status(instance_id)
     return _base_status(instance_id)
 
 
@@ -733,6 +853,8 @@ def install_service(start_auto: bool = True, instance_id: object | None = None) 
         return _systemd_install(instance_id, start_auto)
     if kind == MANAGER_TERMUX:
         return _termux_install(instance_id, start_auto)
+    if kind == MANAGER_PORTABLE:
+        return _portable_install(instance_id, start_auto)
     return _launchd_install(instance_id, start_auto)
 
 
@@ -747,6 +869,8 @@ def start_service(instance_id: object | None = None) -> str:
         return _systemd_start(instance_id)
     if kind == MANAGER_TERMUX:
         return _termux_start(instance_id)
+    if kind == MANAGER_PORTABLE:
+        return _portable_start(instance_id)
     return _launchd_start(instance_id)
 
 
@@ -761,6 +885,8 @@ def stop_service(instance_id: object | None = None) -> str:
         return _systemd_stop(instance_id)
     if kind == MANAGER_TERMUX:
         return _termux_stop(instance_id)
+    if kind == MANAGER_PORTABLE:
+        return _portable_stop(instance_id)
     return _launchd_stop(instance_id)
 
 
@@ -772,6 +898,8 @@ def remove_service(instance_id: object | None = None) -> str:
         return _systemd_remove(instance_id)
     if kind == MANAGER_TERMUX:
         return _termux_remove(instance_id)
+    if kind == MANAGER_PORTABLE:
+        return _portable_remove(instance_id)
     return _launchd_remove(instance_id)
 
 
@@ -784,4 +912,6 @@ def set_autostart_enabled(enabled: bool, instance_id: object | None = None) -> s
         return _systemd_set_autostart(instance_id, bool(enabled))
     if kind == MANAGER_TERMUX:
         return _termux_set_autostart(instance_id, bool(enabled))
+    if kind == MANAGER_PORTABLE:
+        return _portable_set_autostart(instance_id, bool(enabled))
     return _launchd_set_autostart(instance_id, bool(enabled))

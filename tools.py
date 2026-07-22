@@ -7558,6 +7558,38 @@ def device_profile_overview() -> str:
     return "\n".join(lines)
 
 
+def probe_device() -> str:
+    """
+    Sondea por comportamiento que puede hacer este entorno, sin importar el SO.
+
+    A diferencia de device_profile_overview (que deriva del SO conocido), esto
+    PRUEBA en runtime: escribir archivos, lanzar procesos, salir a internet y que
+    gestor de servicio hay. Sirve en entornos nuevos o desconocidos, incluso uno
+    que aun no exista: si Python corre ahi, la sonda responde.
+
+    Returns:
+        str: Resultado del sondeo y la clase de dispositivo detectada.
+    """
+    try:
+        import device_profile
+    except Exception as exc:
+        return f"No pude sondear el dispositivo: {exc}"
+
+    profile = device_profile.get_profile(refresh=True)
+    probes = device_profile.probe_capabilities()
+    lines = [
+        device_profile.render_profile_summary(profile),
+        device_profile.render_probe_summary(probes),
+        f"- SO reconocido: {'si' if profile.get('known_system') else 'no (modo adaptable)'}",
+    ]
+    if not profile.get("known_system"):
+        lines.append(
+            "- Aunque no reconozco este SO, opero por capacidades probadas y me "
+            "superviso como proceso portable."
+        )
+    return "\n".join(lines)
+
+
 def device_adaptation_suggestions() -> str:
     """
     Sugiere ajustes de configuracion acordes al dispositivo (sin aplicarlos).

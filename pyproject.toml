@@ -94,5 +94,6 @@ py-modules = [
   "yarbis_desktop",
   "yarbis_instance",
   "yarbis_mobile",
+  "yarbis_node",
   "yarbis_service",
 ]
