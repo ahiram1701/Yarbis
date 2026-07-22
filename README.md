@@ -303,7 +303,18 @@ chmod +x run_yarbis_service.sh abrir_yarbis_tui.sh
 ./abrir_yarbis_tui.sh                   # la TUI es la UI multiplataforma
 ```
 
-Arranque gestionado con systemd (Linux), un unit por instancia:
+### Servicio nativo gestionado (systemd / launchd)
+
+Yarbis puede instalarse y administrarse a si mismo como servicio nativo, el equivalente multiplataforma del SCM de Windows. En Linux usa **systemd** (unidad de usuario `~/.config/systemd/user/yarbis[-<instancia>].service`), en macOS usa **launchd** (LaunchAgent `~/Library/LaunchAgents/org.yarbis.<instancia>.plist`), y en Windows sigue usando SCM sin cambios. Se controla por lenguaje natural o desde la TUI, con las mismas tools en cualquier SO:
+
+- `background_service_status` — instalado, activo, PID, arranque automatico (equivalente por SO).
+- `install_background_service` / `remove_background_service`
+- `start_background_service` / `stop_background_service`
+- `set_background_service_autostart`
+
+Por ejemplo, pidiendole a Yarbis *"instala tu servicio de fondo y que arranque solo"* en Linux escribe la unit de systemd (`--user`), corre `daemon-reload` y `enable`. La pestana **Estado** de la TUI muestra el estado del servicio nativo. En systemd `--user`, para que el servicio siga vivo sin tu sesion iniciada habilita el lingering: `sudo loginctl enable-linger $USER`.
+
+Tambien puedes escribir la unit a mano (util para servicios de sistema en `/etc/systemd/system`, un template por instancia):
 
 ```ini
 # /etc/systemd/system/yarbis@.service
@@ -325,7 +336,7 @@ WantedBy=default.target
 sudo systemctl enable --now yarbis@default yarbis@trader
 ```
 
-En macOS el equivalente es un `launchd` plist con `EnvironmentVariables > YARBIS_INSTANCE` y `ProgramArguments` apuntando al mismo comando. La app de escritorio Tkinter y el host de servicio .NET siguen siendo solo-Windows; en Linux/macOS se usa la TUI y el proceso plano/systemd. La integracion continua (`.github/workflows/ci.yml`) corre la suite en Windows y en Linux (`ubuntu-latest`); los tests que dependen de Tkinter o del SCM de Windows se auto-omiten fuera de Windows.
+La app de escritorio Tkinter y el host de servicio .NET siguen siendo solo-Windows; en Linux/macOS se usa la TUI y el servicio nativo systemd/launchd. La integracion continua (`.github/workflows/ci.yml`) corre la suite en Windows y en Linux (`ubuntu-latest`); los tests que dependen de Tkinter o del SCM de Windows se auto-omiten fuera de Windows.
 
 ## Uso por terminal
 

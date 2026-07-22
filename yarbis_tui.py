@@ -111,6 +111,21 @@ def _render_health() -> str:
             lines.append(f"{key}: {inner}")
         else:
             lines.append(f"{key}: {value}")
+    # En Linux/macOS el servicio vive en systemd/launchd, no en SCM: agregarlo.
+    if os.name != "nt":
+        try:
+            import native_service
+
+            st = native_service.get_service_status()
+            if st["installed"]:
+                estado = "activo" if st["running"] else "detenido"
+                pid = f" PID {st['pid']}" if st.get("pid") else ""
+                auto = "si" if st["autostart_enabled"] else "no"
+                lines.append(f"servicio_nativo ({st['manager']}): {estado}{pid}, autostart={auto}")
+            else:
+                lines.append(f"servicio_nativo ({st['manager']}): no instalado")
+        except Exception:
+            pass
     return "\n".join(lines)
 
 

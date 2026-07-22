@@ -172,6 +172,12 @@ from tools import (
     analyze_image,
     vision_status,
     vision_set_model,
+    background_service_status,
+    install_background_service,
+    start_background_service,
+    stop_background_service,
+    remove_background_service,
+    set_background_service_autostart,
 )
 
 
@@ -1027,6 +1033,12 @@ tool_definitions = [
     analyze_image,
     vision_status,
     vision_set_model,
+    background_service_status,
+    install_background_service,
+    start_background_service,
+    stop_background_service,
+    remove_background_service,
+    set_background_service_autostart,
 ]
 
 available_functions = {
@@ -1152,6 +1164,12 @@ available_functions = {
     "analyze_image": analyze_image,
     "vision_status": vision_status,
     "vision_set_model": vision_set_model,
+    "background_service_status": background_service_status,
+    "install_background_service": install_background_service,
+    "start_background_service": start_background_service,
+    "stop_background_service": stop_background_service,
+    "remove_background_service": remove_background_service,
+    "set_background_service_autostart": set_background_service_autostart,
 }
 
 PROACTIVE_SAFE_TOOL_NAMES = {
@@ -1216,6 +1234,7 @@ PROACTIVE_SAFE_TOOL_NAMES = {
     "list_self_code_changes",
     "analyze_image",
     "vision_status",
+    "background_service_status",
     "social_accounts_overview",
     "save_social_draft",
     "list_social_drafts",

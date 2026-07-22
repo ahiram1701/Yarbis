@@ -7285,3 +7285,138 @@ def vision_set_model(model: str) -> str:
 
     state_transaction("vision_set_model", mutate)
     return f"Modelo de vision configurado: {cleaned}"
+
+
+# --------------------------------------------------------------------------- #
+# Servicio de fondo multiplataforma (SCM en Windows; systemd/launchd en
+# Linux/macOS). La fachada elige el backend por SO; Windows sigue usando
+# service_manager (SCM) sin cambios.
+# --------------------------------------------------------------------------- #
+
+def _background_service_backend():
+    """Devuelve (modulo_backend, etiqueta) segun el SO: SCM/systemd/launchd."""
+    if os.name == "nt":
+        import service_manager
+        return service_manager, "SCM"
+    import native_service
+    kind = native_service.service_manager_kind()
+    label = {"systemd": "systemd", "launchd": "launchd"}.get(kind, "servicio nativo")
+    return native_service, label
+
+
+def _format_background_service_status(status: dict, label: str) -> str:
+    if not status.get("installed"):
+        return f"Servicio de Yarbis ({label}): no instalado."
+    estado = "activo" if status.get("running") else "detenido"
+    pid = status.get("pid")
+    pid_txt = f" (PID {pid})" if pid else ""
+    auto = "si" if status.get("autostart_enabled") else "no"
+    lines = [
+        f"Servicio de Yarbis ({label}): {estado}{pid_txt}.",
+        f"- Arranque automatico: {auto}",
+    ]
+    log_file = status.get("log_file") or ""
+    if log_file:
+        lines.append(f"- Log: {log_file}")
+    if status.get("workspace_mismatch"):
+        lines.append("- Aviso: el binario registrado apunta a otra carpeta de trabajo.")
+    return "\n".join(lines)
+
+
+def background_service_status() -> str:
+    """
+    Muestra el estado del servicio de fondo de Yarbis en este SO.
+
+    Windows usa el gestor de servicios (SCM); Linux usa systemd (--user) y macOS
+    usa launchd (LaunchAgent). Informa si esta instalado, activo, su PID y si
+    arranca automaticamente.
+
+    Returns:
+        str: Resumen del estado del servicio.
+    """
+    backend, label = _background_service_backend()
+    try:
+        status = backend.get_service_status()
+    except Exception as exc:
+        return f"No pude consultar el servicio ({label}): {exc}"
+    return _format_background_service_status(status, label)
+
+
+def install_background_service(autostart: bool = True) -> str:
+    """
+    Instala el servicio de fondo de Yarbis en este SO (SCM/systemd/launchd).
+
+    En Linux escribe una unit de systemd (--user); en macOS un LaunchAgent de
+    launchd; en Windows crea el servicio en SCM (puede requerir privilegios de
+    administrador y compilar el host .NET).
+
+    Args:
+        autostart (bool): Si arranca automaticamente al iniciar sesion/sistema.
+
+    Returns:
+        str: Resultado de la instalacion.
+    """
+    backend, label = _background_service_backend()
+    try:
+        return backend.install_service(start_auto=bool(autostart))
+    except Exception as exc:
+        return f"No pude instalar el servicio ({label}): {exc}"
+
+
+def start_background_service() -> str:
+    """
+    Arranca el servicio de fondo de Yarbis (lo instala antes si hace falta).
+
+    Returns:
+        str: Resultado del arranque.
+    """
+    backend, label = _background_service_backend()
+    try:
+        return backend.start_service()
+    except Exception as exc:
+        return f"No pude iniciar el servicio ({label}): {exc}"
+
+
+def stop_background_service() -> str:
+    """
+    Detiene el servicio de fondo de Yarbis.
+
+    Returns:
+        str: Resultado de la parada.
+    """
+    backend, label = _background_service_backend()
+    try:
+        return backend.stop_service()
+    except Exception as exc:
+        return f"No pude detener el servicio ({label}): {exc}"
+
+
+def remove_background_service() -> str:
+    """
+    Quita el servicio de fondo de Yarbis del gestor del SO (SCM/systemd/launchd).
+
+    Returns:
+        str: Resultado de la desinstalacion.
+    """
+    backend, label = _background_service_backend()
+    try:
+        return backend.remove_service()
+    except Exception as exc:
+        return f"No pude quitar el servicio ({label}): {exc}"
+
+
+def set_background_service_autostart(enabled: bool = True) -> str:
+    """
+    Configura si el servicio de fondo de Yarbis arranca automaticamente.
+
+    Args:
+        enabled (bool): True para arranque automatico, False para manual.
+
+    Returns:
+        str: Resultado del cambio.
+    """
+    backend, label = _background_service_backend()
+    try:
+        return backend.set_autostart_enabled(bool(enabled))
+    except Exception as exc:
+        return f"No pude cambiar el arranque del servicio ({label}): {exc}"

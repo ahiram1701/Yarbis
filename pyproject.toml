@@ -67,6 +67,7 @@ py-modules = [
   "memory",
   "memory_backup",
   "memory_transfer",
+  "native_service",
   "notifications",
   "pc_context",
   "pc_context_runtime",
