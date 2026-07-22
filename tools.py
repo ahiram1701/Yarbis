@@ -7423,6 +7423,97 @@ def remove_background_service() -> str:
         return f"No pude quitar el servicio ({label}): {exc}"
 
 
+def _shortcuts_base_url(state: dict) -> str:
+    """URL a usar en el atajo: la de Tailscale si existe, si no la local."""
+    mobile = state.get("ui", {}).get("mobile_ui", {})
+    target = str(mobile.get("tailscale_serve_target", "")).strip()
+    if target.startswith("http"):
+        return target.rstrip("/")
+    try:
+        import yarbis_mobile
+
+        https_url = yarbis_mobile.current_tailscale_serve_targets()
+        if https_url:
+            return str(https_url[0]).rstrip("/")
+    except Exception:
+        pass
+    port = mobile.get("port") or ""
+    return f"http://<ip-de-esta-pc>:{port}" if port else "http://<ip-de-esta-pc>:<puerto>"
+
+
+def shortcuts_create_token() -> str:
+    """
+    Genera un token para los Atajos de iOS (Shortcuts) y clientes de un disparo.
+
+    El token se muestra UNA SOLA VEZ: solo se guarda su hash. Sirve para que
+    Siri, el Share Sheet o una automatizacion del telefono hablen con Yarbis.
+    Si ya habia uno, este lo reemplaza (el anterior deja de servir).
+
+    Returns:
+        str: El token y la URL base para configurar el atajo.
+    """
+    import yarbis_mobile
+
+    token = yarbis_mobile.generate_shortcut_token()
+    token_hash, token_salt = yarbis_mobile.hash_shortcut_token(token)
+
+    def mutate(state):
+        mobile = state.setdefault("ui", {}).setdefault("mobile_ui", {})
+        mobile["shortcut_token_hash"] = token_hash
+        mobile["shortcut_token_salt"] = token_salt
+
+    state_transaction("shortcuts_create_token", mutate)
+    base_url = _shortcuts_base_url(load_state())
+    return (
+        "Token de Atajos creado. Copialo AHORA: no se vuelve a mostrar "
+        "(Yarbis solo guarda su hash).\n\n"
+        f"Token: {token}\n"
+        f"URL base: {base_url}\n\n"
+        "En el atajo usa 'Obtener contenido de URL' con metodo POST, la cabecera "
+        "Authorization con el valor 'Bearer' seguido del token, y cuerpo JSON.\n"
+        "Endpoints: /api/shortcut/ask, /status, /note, /task, /image."
+    )
+
+
+def shortcuts_revoke_token() -> str:
+    """
+    Revoca el token de Atajos: los atajos del telefono dejan de funcionar.
+
+    Returns:
+        str: Confirmacion.
+    """
+    def mutate(state):
+        mobile = state.setdefault("ui", {}).setdefault("mobile_ui", {})
+        mobile["shortcut_token_hash"] = ""
+        mobile["shortcut_token_salt"] = ""
+
+    state_transaction("shortcuts_revoke_token", mutate)
+    return "Token de Atajos revocado. Crea uno nuevo con shortcuts_create_token si lo necesitas."
+
+
+def shortcuts_status() -> str:
+    """
+    Indica si los Atajos de iOS estan configurados y con que URL usarlos.
+
+    Returns:
+        str: Estado de la integracion con Atajos.
+    """
+    state = load_state()
+    mobile = state.get("ui", {}).get("mobile_ui", {})
+    configured = bool(str(mobile.get("shortcut_token_hash", "")).strip())
+    ui_enabled = bool(mobile.get("enabled"))
+
+    lines = [
+        f"Atajos de iOS: {'configurados' if configured else 'sin configurar'}.",
+        f"UI movil: {'activa' if ui_enabled else 'apagada'} (los atajos la necesitan encendida).",
+        f"URL base: {_shortcuts_base_url(state)}",
+    ]
+    if not configured:
+        lines.append("Crea el token con shortcuts_create_token.")
+    lines.append("Endpoints: /api/shortcut/ask, /status, /note, /task, /image.")
+    return "\n".join(lines)
+
+
 def device_profile_overview() -> str:
     """
     Describe el dispositivo donde corre Yarbis y que puede hacer realmente aqui.

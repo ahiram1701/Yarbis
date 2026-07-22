@@ -390,6 +390,39 @@ Requisito: los service workers exigen **HTTPS**, que ya tienes con `tailscale se
 
 El service worker es deliberadamente conservador: solo cachea el shell estatico (iconos y manifest) y **nunca** cachea `/api/` ni el HTML, para que jamas veas estado viejo del agente.
 
+### Atajos de iOS (Shortcuts): Siri, Share Sheet y automatizaciones
+
+Una PWA solo sirve cuando la abres. Los **Atajos** enganchan Yarbis al sistema del telefono: hablarle a Siri, compartirle algo desde cualquier app, un boton de accion, o automatizaciones por hora/lugar. Es lo mas cercano a "Yarbis nativo" que permite iOS.
+
+**1. Crear el token** (una vez). Pidele a Yarbis: *"crea un token para Atajos"* (`shortcuts_create_token`). Te lo muestra **una sola vez** — Yarbis guarda solo el hash. `shortcuts_status` te recuerda la URL base; `shortcuts_revoke_token` lo invalida.
+
+**2. Armar el atajo.** Todos usan la accion **"Obtener contenido de URL"**:
+
+| Campo | Valor |
+|---|---|
+| URL | `https://<tu-host>.ts.net/api/shortcut/ask` |
+| Metodo | `POST` |
+| Cabecera | `Authorization` = `Bearer <tu-token>` |
+| Cuerpo | JSON con los campos de abajo |
+
+Endpoints disponibles:
+
+- `POST /api/shortcut/ask` — `{"text": "...", "esperar": true}`. Con `esperar: true` la peticion aguarda la respuesta (tope 90 s configurable con `wait_seconds`) y devuelve `reply`; si se agota, Yarbis **sigue trabajando** y te avisa por notificacion/Telegram. Con `esperar: false` responde al instante. Tambien sirve para **contestar una pregunta pendiente** de Yarbis desde el telefono.
+- `GET /api/shortcut/status` — devuelve `text` con el estado del agente.
+- `POST /api/shortcut/note` — `{"text": "..."}` (si no mandas `title`, usa la primera linea).
+- `POST /api/shortcut/task` — `{"text": "...", "prioridad": "alta"}`.
+- `POST /api/shortcut/image` — `{"image_b64": "...", "question": "..."}` para analizar una foto.
+
+**Recetas utiles:**
+
+- **"Preguntale a Yarbis"** — *Dictar texto* -> Obtener contenido de URL (`ask`, `esperar: true`) -> *Obtener valor del diccionario* `reply` -> *Hablar texto*. Con eso dices **"Oye Siri, preguntale a Yarbis"** y te contesta hablando.
+- **"Guardar en Yarbis"** — activa *Mostrar en la hoja de compartir*: comparte un texto o enlace desde cualquier app -> `note` -> notificacion de confirmacion.
+- **"Analizar con Yarbis"** — hoja de compartir con una foto -> *Codificar en Base64* -> `image` -> muestra el resultado.
+- **"Estado de Yarbis"** — asignalo al **boton de accion**, un widget o Back Tap -> `status` -> notificacion.
+- **Automatizacion** — a las 8:00 a.m. -> `status` -> notificacion; o al llegar a casa -> `ask` con `esperar: false`.
+
+**Seguridad**: el token permite ejecutar ciclos del agente, asi que es una credencial sensible. Esta **apagado por defecto**, se guarda solo hasheado (PBKDF2 con salt, igual que el PIN), se redacta en los logs y es revocable. Usa la URL **HTTPS de Tailscale** para que funcione fuera de casa. La UI movil debe estar encendida.
+
 ## Uso por terminal
 
 ```powershell

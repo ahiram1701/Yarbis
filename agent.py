@@ -201,6 +201,9 @@ from tools import (
     set_background_service_autostart,
     device_profile_overview,
     device_adaptation_suggestions,
+    shortcuts_create_token,
+    shortcuts_revoke_token,
+    shortcuts_status,
 )
 
 
@@ -1070,6 +1073,9 @@ tool_definitions = [
     set_background_service_autostart,
     device_profile_overview,
     device_adaptation_suggestions,
+    shortcuts_create_token,
+    shortcuts_revoke_token,
+    shortcuts_status,
 ]
 
 available_functions = {
@@ -1203,6 +1209,9 @@ available_functions = {
     "set_background_service_autostart": set_background_service_autostart,
     "device_profile_overview": device_profile_overview,
     "device_adaptation_suggestions": device_adaptation_suggestions,
+    "shortcuts_create_token": shortcuts_create_token,
+    "shortcuts_revoke_token": shortcuts_revoke_token,
+    "shortcuts_status": shortcuts_status,
 }
 
 PROACTIVE_SAFE_TOOL_NAMES = {
@@ -1270,6 +1279,7 @@ PROACTIVE_SAFE_TOOL_NAMES = {
     "background_service_status",
     "device_profile_overview",
     "device_adaptation_suggestions",
+    "shortcuts_status",
     "social_accounts_overview",
     "save_social_draft",
     "list_social_drafts",

@@ -54,6 +54,7 @@ from service_manager import (
     stop_service,
 )
 from session import (
+    SessionOperationBusy,
     add_task_text,
     coding_apply_and_validate_text,
     coding_apply_proposal_text,
@@ -315,6 +316,38 @@ def verify_mobile_pin(pin: str, pin_hash: str, pin_salt: str) -> bool:
     except ValueError:
         return False
     return hmac.compare_digest(candidate, str(pin_hash).strip())
+
+
+SHORTCUT_TOKEN_BYTES = 32
+
+
+def generate_shortcut_token() -> str:
+    """Token de un solo disparo para Atajos de iOS y clientes similares."""
+    return secrets.token_urlsafe(SHORTCUT_TOKEN_BYTES)
+
+
+def hash_shortcut_token(token: str, salt: str | None = None) -> tuple[str, str]:
+    cleaned_token = str(token)
+    if not 16 <= len(cleaned_token) <= 256:
+        raise ValueError("El token de Atajos debe tener entre 16 y 256 caracteres.")
+    cleaned_salt = str(salt or secrets.token_hex(16)).strip() or secrets.token_hex(16)
+    digest = hashlib.pbkdf2_hmac(
+        "sha256",
+        cleaned_token.encode("utf-8"),
+        cleaned_salt.encode("utf-8"),
+        PIN_HASH_ITERATIONS,
+    )
+    return _b64_encode(digest), cleaned_salt
+
+
+def verify_shortcut_token(token: str, token_hash: str, token_salt: str) -> bool:
+    if not str(token_hash).strip() or not str(token_salt).strip():
+        return False
+    try:
+        candidate, _salt = hash_shortcut_token(str(token), salt=str(token_salt).strip())
+    except ValueError:
+        return False
+    return hmac.compare_digest(candidate, str(token_hash).strip())
 
 
 def _sign_value(value: str, secret: str) -> str:
@@ -1530,6 +1563,111 @@ def _public_state(view: str = "") -> dict:
 
 def _payload_text(payload: dict, key: str, default: str = "") -> str:
     return str(payload.get(key, default) if isinstance(payload, dict) else default).strip()
+
+
+SHORTCUT_DEFAULT_WAIT_SECONDS = 90
+SHORTCUT_MAX_WAIT_SECONDS = 240
+SHORTCUT_POLL_SECONDS = 0.5
+
+
+def _shortcut_bool(payload: dict, key: str, default: bool) -> bool:
+    """Atajos manda booleanos como texto ('true'/'si'/'1') con frecuencia."""
+    if not isinstance(payload, dict) or key not in payload:
+        return default
+    value = payload.get(key)
+    if isinstance(value, bool):
+        return value
+    text = str(value).strip().lower()
+    if text in {"1", "true", "si", "sí", "yes", "y"}:
+        return True
+    if text in {"0", "false", "no", "n"}:
+        return False
+    return default
+
+
+def _shortcut_status_text() -> str:
+    """Resumen corto y hablable para Siri/notificaciones."""
+    state = load_state()
+    health = _mobile_health_status_from_state(state, get_service_status())
+    return format_health_status(health)
+
+
+def _shortcut_ask(payload: dict) -> dict:
+    """Conversa con Yarbis. `esperar` decide si devuelve la respuesta o encola.
+
+    Siempre arranca un job (un solo camino de codigo). Con `esperar` hace polling
+    hasta un tope; si se agota, el trabajo SIGUE corriendo y el resultado llega
+    por los canales de notificacion.
+    """
+    text = _payload_text(payload, "text") or _payload_text(payload, "texto")
+    if not text:
+        raise ValueError("Indica el texto para Yarbis.")
+
+    wait = _shortcut_bool(payload, "esperar", _shortcut_bool(payload, "wait", True))
+    try:
+        wait_seconds = int(payload.get("wait_seconds", SHORTCUT_DEFAULT_WAIT_SECONDS))
+    except (TypeError, ValueError):
+        wait_seconds = SHORTCUT_DEFAULT_WAIT_SECONDS
+    wait_seconds = max(1, min(SHORTCUT_MAX_WAIT_SECONDS, wait_seconds))
+
+    job = _start_job("Atajo", "submit_user_reply", {"reply_text": text})
+    job_id = job["id"]
+    if not wait:
+        return {
+            "ok": True,
+            "queued": True,
+            "job_id": job_id,
+            "reply": "Voy a eso. Te aviso cuando termine.",
+        }
+
+    deadline = time.monotonic() + wait_seconds
+    while time.monotonic() < deadline:
+        current = _get_job(job_id) or {}
+        status = str(current.get("status", ""))
+        if status == "finished":
+            return {"ok": True, "job_id": job_id, "reply": str(current.get("result", ""))}
+        if status == "failed":
+            return {
+                "ok": False,
+                "job_id": job_id,
+                "error": str(current.get("error", "")) or "La operacion fallo.",
+            }
+        time.sleep(SHORTCUT_POLL_SECONDS)
+
+    # No se cancela: sigue trabajando y avisara por notificacion/Telegram.
+    return {
+        "ok": True,
+        "pending": True,
+        "job_id": job_id,
+        "reply": "Sigo trabajando en eso. Te aviso en cuanto termine.",
+    }
+
+
+def _shortcut_note(payload: dict) -> str:
+    content = _payload_text(payload, "text") or _payload_text(payload, "texto")
+    if not content:
+        raise ValueError("Indica el texto de la nota.")
+    title = _payload_text(payload, "title") or _payload_text(payload, "titulo")
+    if not title:
+        # Sin titulo (captura rapida desde el Share Sheet): usar la primera linea.
+        first_line = content.splitlines()[0].strip()
+        title = (first_line[:60] or "Nota desde el telefono")
+    result = save_note_text(title, content, _payload_text(payload, "category") or "general")
+    activity.append_activity("Atajo nota", result)
+    return result
+
+
+def _shortcut_task(payload: dict) -> str:
+    title = _payload_text(payload, "text") or _payload_text(payload, "texto")
+    if not title:
+        raise ValueError("Indica la tarea.")
+    result = add_task_text(
+        title,
+        _payload_text(payload, "details") or _payload_text(payload, "detalles"),
+        _payload_text(payload, "priority") or _payload_text(payload, "prioridad") or "media",
+    )
+    activity.append_activity("Atajo tarea", result)
+    return result
 
 
 def _copy_social_confirmation(publication_id: str) -> str:
@@ -5364,6 +5502,70 @@ class MobileRequestHandler(BaseHTTPRequestHandler):
             raise PermissionError("Token CSRF invalido.")
         return settings, session
 
+    # --- Atajos de iOS (Shortcuts) y clientes de un solo disparo ------------ #
+
+    def _presented_shortcut_token(self) -> str:
+        """Token del header: `Authorization: Bearer <token>` o `X-Yarbis-Token`."""
+        authorization = str(self.headers.get("Authorization", "")).strip()
+        if authorization.lower().startswith("bearer "):
+            return authorization[7:].strip()
+        return str(self.headers.get("X-Yarbis-Token", "")).strip()
+
+    def _require_shortcut_token(self) -> dict:
+        """Autentica por token. Sin CSRF: el token ES la credencial.
+
+        Desactivado por defecto: sin token configurado nadie entra, aunque
+        mande cabecera.
+        """
+        settings = self._settings()
+        token_hash = str(settings.get("shortcut_token_hash", "")).strip()
+        token_salt = str(settings.get("shortcut_token_salt", "")).strip()
+        if not token_hash or not token_salt:
+            raise PermissionError(
+                "Atajos no esta configurado. Pide a Yarbis un token con shortcuts_create_token."
+            )
+        presented = self._presented_shortcut_token()
+        if not presented or not verify_shortcut_token(presented, token_hash, token_salt):
+            raise PermissionError("Token de Atajos invalido.")
+        return settings
+
+    def _handle_shortcut(self, path: str, payload: dict) -> None:
+        try:
+            self._require_shortcut_token()
+        except PermissionError as exc:
+            self._send_json(HTTPStatus.UNAUTHORIZED, {"ok": False, "error": str(exc)})
+            return
+
+        try:
+            if path == "/api/shortcut/status":
+                self._send_json(HTTPStatus.OK, {"ok": True, "text": _shortcut_status_text()})
+                return
+            if path == "/api/shortcut/ask":
+                self._send_json(HTTPStatus.OK, _shortcut_ask(payload))
+                return
+            if path == "/api/shortcut/note":
+                self._send_json(HTTPStatus.OK, {"ok": True, "result": _shortcut_note(payload)})
+                return
+            if path == "/api/shortcut/task":
+                self._send_json(HTTPStatus.OK, {"ok": True, "result": _shortcut_task(payload)})
+                return
+            if path == "/api/shortcut/image":
+                result = _analyze_mobile_image(payload)
+                activity.append_activity("Atajo imagen", result)
+                self._send_json(HTTPStatus.OK, {"ok": True, "result": result})
+                return
+        except SessionOperationBusy as exc:
+            self._send_json(HTTPStatus.CONFLICT, {"ok": False, "error": str(exc)})
+            return
+        except (ValueError, MobileUiError) as exc:
+            self._send_json(HTTPStatus.BAD_REQUEST, {"ok": False, "error": str(exc)})
+            return
+        except Exception as exc:
+            self._send_json(HTTPStatus.INTERNAL_SERVER_ERROR, {"ok": False, "error": str(exc)})
+            return
+
+        self._send_json(HTTPStatus.NOT_FOUND, {"ok": False, "error": "Atajo desconocido."})
+
     def do_GET(self):
         parsed = urlparse(self.path)
         if parsed.path == "/":
@@ -5384,6 +5586,9 @@ class MobileRequestHandler(BaseHTTPRequestHandler):
                 _pwa_service_worker().encode("utf-8"),
                 "application/javascript; charset=utf-8",
             )
+            return
+        if parsed.path == "/api/shortcut/status":
+            self._handle_shortcut(parsed.path, {})
             return
         if parsed.path.startswith("/icons/"):
             icon_name = parsed.path.rsplit("/", 1)[-1]
@@ -5473,7 +5678,7 @@ class MobileRequestHandler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         try:
-            if self.path == "/api/image/analyze":
+            if self.path in {"/api/image/analyze", "/api/shortcut/image"}:
                 max_bytes = MAX_IMAGE_REQUEST_BYTES
             elif self.path in {"/api/voice/transcribe", "/api/voice/live/chunk", "/api/voice/live/selftest"}:
                 max_bytes = MAX_VOICE_REQUEST_BYTES
@@ -5486,6 +5691,11 @@ class MobileRequestHandler(BaseHTTPRequestHandler):
 
         if self.path == "/api/login":
             self._handle_login(payload)
+            return
+
+        # Atajos de iOS: autenticacion por token, sin cookie ni CSRF.
+        if self.path.startswith("/api/shortcut/"):
+            self._handle_shortcut(self.path, payload)
             return
 
         try:

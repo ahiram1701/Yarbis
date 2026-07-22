@@ -503,6 +503,10 @@ def default_state():
                 "last_bind_error": "",
                 "https_last_error": "",
                 "tailscale_serve_target": "",
+                # Token de acceso para Atajos de iOS (Shortcuts) y otros
+                # clientes de un solo disparo: se guarda solo el hash.
+                "shortcut_token_hash": "",
+                "shortcut_token_salt": "",
             },
         },
         "ui": {
@@ -1871,6 +1875,14 @@ def _normalize_service(service, *, migrate_legacy_cycles: bool = False):
             ).strip()[:MAX_MOBILE_UI_HASH_CHARS],
             "pin_salt": _coerce_text(
                 mobile_ui.get("pin_salt", mobile_defaults["pin_salt"]),
+                MAX_MOBILE_UI_SALT_CHARS,
+            ).strip()[:MAX_MOBILE_UI_SALT_CHARS],
+            "shortcut_token_hash": _coerce_text(
+                mobile_ui.get("shortcut_token_hash", mobile_defaults["shortcut_token_hash"]),
+                MAX_MOBILE_UI_HASH_CHARS,
+            ).strip()[:MAX_MOBILE_UI_HASH_CHARS],
+            "shortcut_token_salt": _coerce_text(
+                mobile_ui.get("shortcut_token_salt", mobile_defaults["shortcut_token_salt"]),
                 MAX_MOBILE_UI_SALT_CHARS,
             ).strip()[:MAX_MOBILE_UI_SALT_CHARS],
             "session_secret": _coerce_text(
