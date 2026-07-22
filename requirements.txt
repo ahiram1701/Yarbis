@@ -1,5 +1,7 @@
 ollama==0.6.1
-win11toast==0.36.3
+# win11toast solo existe en Windows (usa winsdk/winrt). En Linux/macOS las
+# notificaciones de escritorio salen por notify-send/osascript (notifications.py).
+win11toast==0.36.3; sys_platform == "win32"
 playwright>=1.45,<2
 pystray>=0.19
 Pillow>=10

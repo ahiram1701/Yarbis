@@ -1,4 +1,9 @@
+import sys
 import unittest
+
+if sys.platform != "win32":
+    raise unittest.SkipTest("requiere Windows (UI de escritorio tkinter)")
+
 import tkinter as tk
 from tkinter import ttk
 

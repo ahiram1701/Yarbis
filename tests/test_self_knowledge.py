@@ -57,7 +57,7 @@ class CapabilitiesCatalogTestCase(unittest.TestCase):
         with patch.dict("sys.modules", {"agent": None}):
             lines = self_knowledge._render_capabilities_catalog()
         # Con agent=None el import lanza y cae al fallback, sin romper.
-        self.assertTrue(any("Capacidades base" in l or "No pude derivar" in l for l in lines))
+        self.assertTrue(any("Capacidades base" in ln or "No pude derivar" in ln for ln in lines))
 
     def test_source_inventory_richer_cap(self):
         # El tope subio de 36 a 90: se listan mas archivos que antes.

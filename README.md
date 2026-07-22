@@ -287,6 +287,46 @@ El proveedor por defecto y su modelo tambien se pueden cambiar desde la app con 
 
 Cuando Yarbis aparece como `Pensando`, el boton `Detener pensando` solicita parar la operacion en curso. Si hay una llamada activa al proveedor de modelo, Yarbis cierra o reemplaza el cliente y el ciclo termina como detenido en cuanto la llamada libera el control.
 
+## Correr en Linux/macOS (experimental)
+
+El core de Yarbis es un agente Python; ademas del servicio SCM de Windows puede correr como **proceso plano** en Linux/macOS. Las capas dependientes del sistema tienen backend por SO (Windows sin cambios): notificaciones (`notify-send`/`osascript`), credenciales (`keyring` del sistema, o base64 si no hay backend), contexto de PC (`xprintidle`/`xdotool` en Linux, `ioreg`/`osascript` en macOS) y apagado/reinicio (`shutdown`). El mutex de instancia unica de Windows se vuelve no-op; las instancias se distinguen por `YARBIS_INSTANCE`.
+
+Instalacion y arranque:
+
+```bash
+python3 -m venv .venv
+.venv/bin/pip install -r requirements.txt   # win11toast se omite fuera de Windows
+chmod +x run_yarbis_service.sh abrir_yarbis_tui.sh
+
+./run_yarbis_service.sh                 # instancia "default", primer plano
+./run_yarbis_service.sh trader --bg     # instancia "trader" en segundo plano (nohup + log)
+./abrir_yarbis_tui.sh                   # la TUI es la UI multiplataforma
+```
+
+Arranque gestionado con systemd (Linux), un unit por instancia:
+
+```ini
+# /etc/systemd/system/yarbis@.service
+[Unit]
+Description=Yarbis (instancia %i)
+After=network-online.target
+
+[Service]
+WorkingDirectory=/ruta/a/yarbis
+Environment=YARBIS_INSTANCE=%i
+ExecStart=/ruta/a/yarbis/.venv/bin/python yarbis_service.py
+Restart=on-failure
+
+[Install]
+WantedBy=default.target
+```
+
+```bash
+sudo systemctl enable --now yarbis@default yarbis@trader
+```
+
+En macOS el equivalente es un `launchd` plist con `EnvironmentVariables > YARBIS_INSTANCE` y `ProgramArguments` apuntando al mismo comando. La app de escritorio Tkinter y el host de servicio .NET siguen siendo solo-Windows; en Linux/macOS se usa la TUI y el proceso plano/systemd. La integracion continua (`.github/workflows/ci.yml`) corre la suite en Windows y en Linux (`ubuntu-latest`); los tests que dependen de Tkinter o del SCM de Windows se auto-omiten fuera de Windows.
+
 ## Uso por terminal
 
 ```powershell

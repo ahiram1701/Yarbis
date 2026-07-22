@@ -207,7 +207,7 @@ def process_voice_turn(
     wake_phrase = str(live.get("wake_phrase", "Yarbis")).strip() or "Yarbis"
     cleaned_turn = text_after_wake_phrase(transcript, wake_phrase).strip()
     if not cleaned_turn:
-        prompt = f"Te escucho. Dime lo que necesitas."
+        prompt = "Te escucho. Dime lo que necesitas."
         if speaker is None:
             speaker = yarbis_voice.speak_text
         if speak and live.get("auto_speak", True):

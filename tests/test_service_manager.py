@@ -1,7 +1,11 @@
 import subprocess
+import sys
 import unittest
 from pathlib import Path
 from unittest.mock import call, patch
+
+if sys.platform != "win32":
+    raise unittest.SkipTest("requiere Windows (gestor de servicios SCM)")
 
 import memory
 import service_manager

@@ -20,8 +20,8 @@ class AgentTestCase(unittest.TestCase):
         tokyo = agent._format_local_temporal_context(timezone_str="Asia/Tokyo")
         self.assertIn("America/Mexico_City".split("/")[0], "America")  # sanity
         # La hora local difiere entre zonas.
-        mx_hour = [l for l in mx.split("\n") if "Hora local" in l][0]
-        tokyo_hour = [l for l in tokyo.split("\n") if "Hora local" in l][0]
+        mx_hour = [line for line in mx.split("\n") if "Hora local" in line][0]
+        tokyo_hour = [line for line in tokyo.split("\n") if "Hora local" in line][0]
         self.assertNotEqual(mx_hour, tokyo_hour)
         # Zona invalida cae al sistema sin romper.
         fallback = agent._format_local_temporal_context(timezone_str="Fake/Zone")

@@ -252,11 +252,9 @@ def _load_whisper_model(settings: dict):
                 fallback_chain.append(ct)
         last_exc = None
         model = None
-        loaded_ct = compute_type
         for ct in fallback_chain:
             try:
                 model = WhisperModel(model_name, device="cpu", compute_type=ct)
-                loaded_ct = ct
                 if ct != compute_type:
                     import logging
                     logging.getLogger(__name__).warning(

@@ -1,10 +1,14 @@
 import json
 import os
+import sys
 import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 from uuid import uuid4
+
+if sys.platform != "win32":
+    raise unittest.SkipTest("requiere Windows (app de escritorio tkinter)")
 
 import memory
 import yarbis_bus

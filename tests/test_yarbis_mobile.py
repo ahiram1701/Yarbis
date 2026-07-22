@@ -5,10 +5,14 @@ import os
 import socket
 import subprocess
 import threading
+import sys
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
+
+if sys.platform != "win32":
+    raise unittest.SkipTest("requiere Windows (dialogos de ajustes tkinter)")
 
 import memory
 import tools

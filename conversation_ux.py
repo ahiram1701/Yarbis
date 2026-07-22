@@ -375,20 +375,6 @@ def format_channel_reply(channel: str, label: str, content: str, state: dict | N
         body = f"{body}\n\nPregunta pendiente: {pending['question']}".strip()
 
     title = "Yarbis" if operation_label == "Yarbis" else f"Yarbis | {operation_label}"
-    status = "esperando tu respuesta" if pending.get("active") else "listo para seguir"
-    if operation.get("active"):
-        status = f"trabajando en {operation['label']}"
-    continuity = (
-        f"Continuidad: {state.get('cycle_count', 0)} ciclo(s) | "
-        f"{open_tasks} tarea(s) abierta(s) | {status}."
-    )
-    telegram_next_step = next_step
-    if pending.get("active"):
-        telegram_next_step = "responde por este chat y Yarbis retomara los ciclos."
-    elif open_tasks:
-        telegram_next_step = "puedes mandar /run o /auto para continuar desde este mismo punto."
-    elif channel == "telegram":
-        telegram_next_step = "manda contexto nuevo, /status o /auto cuando quieras seguir."
 
     if channel == "telegram":
         # Respuesta + estado minimo: solo el cuerpo (que ya incluye la pregunta
