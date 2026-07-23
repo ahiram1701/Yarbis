@@ -105,6 +105,26 @@ class PuterClientTestCase(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 c.chat(model="m", messages=[{"role": "user", "content": "x"}])
 
+    def test_chat_sends_browser_user_agent_and_secret(self):
+        # Los Workers de Puter estan detras de Cloudflare, que bloquea el
+        # User-Agent por defecto de urllib (error 1010). El cliente debe enviar
+        # un User-Agent de navegador y el secreto por header.
+        captured = {}
+
+        def _open(req, timeout=None):
+            captured["ua"] = req.get_header("User-agent")
+            captured["secret"] = req.get_header("X-puter-secret")
+            return self._FakeResp(json.dumps({"message": {"content": "ok"}}).encode("utf-8"))
+
+        c = agent.PuterClient("https://x.puter.work", 60, "PUTER_WORKER_SECRET", api_key="mi-secreto")
+        with patch.object(agent.request, "urlopen", _open):
+            c.chat(model="gpt-4o-mini", messages=[{"role": "user", "content": "hi"}])
+
+        self.assertTrue(captured["ua"])
+        self.assertIn("Mozilla", captured["ua"])
+        self.assertNotIn("urllib", captured["ua"].lower())
+        self.assertEqual(captured["secret"], "mi-secreto")
+
 
 if __name__ == "__main__":
     unittest.main()

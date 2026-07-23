@@ -847,6 +847,14 @@ def _build_openrouter_client(host: str, timeout_seconds: int, api_key_env_var: s
     return OpenRouterClient(host, timeout_seconds, api_key_env_var, api_key=api_key)
 
 
+# User-Agent de navegador para atravesar el Cloudflare que fronta los Workers de
+# Puter (bloquea "Python-urllib" con error 1010).
+PUTER_USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+)
+
+
 class PuterClient:
     """Cliente para el proveedor Puter via un Worker pasarela (puter.js).
 
@@ -883,7 +891,13 @@ class PuterClient:
             payload["tools"] = _openrouter_tools(tools)
         payload = _sanitize_model_payload(payload)
 
-        headers = {"Content-Type": "application/json"}
+        headers = {
+            "Content-Type": "application/json",
+            # Los Workers de Puter estan detras de Cloudflare, que bloquea el
+            # User-Agent por defecto de urllib ("Python-urllib") con error 1010.
+            # Un User-Agent de navegador evita ese bloqueo.
+            "User-Agent": PUTER_USER_AGENT,
+        }
         secret = self._secret()
         if secret:
             headers["X-Puter-Secret"] = secret

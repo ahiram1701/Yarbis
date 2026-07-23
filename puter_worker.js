@@ -6,40 +6,52 @@
 // tool_calls}}.
 //
 // Se llama por HTTP plano (no puter.workers.exec), asi que usamos `me.puter`
-// (recursos del DUEÑO del worker = tu cuenta Puter, user-pays). Un secreto
+// (recursos del DUENO del worker = tu cuenta Puter, user-pays). Un secreto
 // compartido (header X-Puter-Secret) evita que terceros con la URL gasten tus
-// creditos. Reemplaza __YARBIS_WORKER_SECRET__ al desplegar (lo hace Yarbis).
+// creditos. El placeholder de abajo se reemplaza al desplegar (Yarbis inyecta el
+// secreto SOLO en la linea `const SECRET = ...`).
+//
+// FAIL-CLOSED: si el secreto no se configuro (sigue siendo el placeholder), el
+// worker RECHAZA todo (503) en vez de quedar abierto. Asi, aunque el despliegue
+// sea incorrecto, nunca queda expuesto para que terceros gasten tus creditos.
 //
 // Powered by Puter — https://developer.puter.com
 
 const SECRET = "__YARBIS_WORKER_SECRET__";
+const PLACEHOLDER = "__YARBIS_WORKER_SECRET__";
+
+function json(data, status = 200) {
+  return new Response(JSON.stringify(data), {
+    status,
+    headers: { "Content-Type": "application/json" },
+  });
+}
+
+// Devuelve una Response de error si la peticion no esta autorizada, o null si OK.
+function authError(request) {
+  if (!SECRET || SECRET === PLACEHOLDER) {
+    return json({ error: "worker sin secreto configurado" }, 503);
+  }
+  if (request.headers.get("X-Puter-Secret") !== SECRET) {
+    return json({ error: "unauthorized" }, 401);
+  }
+  return null;
+}
 
 async function handleChat({ request }) {
-  if (SECRET && SECRET !== "__YARBIS_WORKER_SECRET__") {
-    if (request.headers.get("X-Puter-Secret") !== SECRET) {
-      return new Response(JSON.stringify({ error: "unauthorized" }), {
-        status: 401,
-        headers: { "Content-Type": "application/json" },
-      });
-    }
-  }
+  const denied = authError(request);
+  if (denied) return denied;
 
   let body;
   try {
     body = await request.json();
   } catch (e) {
-    return new Response(JSON.stringify({ error: "invalid JSON body" }), {
-      status: 400,
-      headers: { "Content-Type": "application/json" },
-    });
+    return json({ error: "invalid JSON body" }, 400);
   }
 
   const { model, messages, tools, temperature, max_tokens } = body || {};
   if (!Array.isArray(messages) || messages.length === 0) {
-    return new Response(JSON.stringify({ error: "messages[] required" }), {
-      status: 400,
-      headers: { "Content-Type": "application/json" },
-    });
+    return json({ error: "messages[] required" }, 400);
   }
 
   const options = {};
@@ -53,15 +65,13 @@ async function handleChat({ request }) {
     // resp es un ChatResponse: { message: { content, tool_calls } }
     return { message: resp && resp.message ? resp.message : { content: String(resp) } };
   } catch (error) {
-    return new Response(
-      JSON.stringify({ error: (error && error.message) || String(error) }),
-      { status: 500, headers: { "Content-Type": "application/json" } }
-    );
+    return json({ error: (error && error.message) || String(error) }, 500);
   }
 }
 
 router.post("/chat", handleChat);
 router.post("/*path", handleChat); // aceptar POST en cualquier ruta
 
-router.get("/health", async () => ({ status: "ok", service: "yarbis-llm-gateway" }));
-router.get("/*page", async () => ({ status: "ok", service: "yarbis-llm-gateway" }));
+// /health es publico (solo estado, no toca la IA ni filtra secretos).
+router.get("/health", async () => json({ status: "ok", service: "yarbis-llm-gateway" }));
+router.get("/*page", async () => json({ status: "ok", service: "yarbis-llm-gateway" }));
