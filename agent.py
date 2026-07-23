@@ -1443,15 +1443,76 @@ def _mcp_tool_specs() -> list:
         return []
 
 
+# Limite de herramientas por peticion. OpenAI (y por tanto Puter, openai_compat y
+# OpenRouter con modelos OpenAI) acepta como maximo 128 funciones; enviar mas da
+# un error 400 "tools array too long". Ollama no tiene ese limite.
+OPENAI_TOOL_LIMIT = 128
+_TOOL_LIMIT_PROVIDERS = {
+    MODEL_PROVIDER_PUTER,
+    MODEL_PROVIDER_OPENAI_COMPAT,
+    MODEL_PROVIDER_OPENROUTER,
+}
+
+# Herramientas de baja prioridad que se descartan PRIMERO cuando el proveedor
+# limita el numero de tools. Orden = se quitan de arriba a abajo, solo las que
+# hagan falta para caber en el limite. Son capacidades nicho cuya ausencia
+# degrada con gracia (el agente sigue funcionando para lo comun).
+_LOW_PRIORITY_TOOL_NAMES = (
+    "export_project_visual_board", "update_project_visual_board",
+    "list_project_visual_boards", "get_project_visual_board",
+    "create_project_visual_board",
+    "evolution_propose_directive", "evolution_apply_directive",
+    "evolution_discard_directive", "evolution_list_directives",
+    "evolution_set_interval", "evolution_set_enabled",
+    "mcp_call_tool", "mcp_refresh_tools", "mcp_remove_server",
+    "mesh_deploy_help", "mesh_send", "mesh_leave",
+    "open_assisted_social_post", "start_social_oauth", "set_social_confirmation",
+    "mark_self_code_changes_versioned", "list_recent_media",
+    "shortcuts_revoke_token", "update_memory_protection_settings",
+)
+
+
+def _tool_name(tool) -> str:
+    if callable(tool):
+        return getattr(tool, "__name__", "")
+    if isinstance(tool, dict):
+        return str(tool.get("function", {}).get("name", ""))
+    return ""
+
+
+def _limit_tools_for_provider(tools: list, provider: str) -> list:
+    """Acota la lista de tools al maximo del proveedor, si aplica.
+
+    Descarta primero las nicho de `_LOW_PRIORITY_TOOL_NAMES`; si aun sobra (poco
+    probable), recorta el final. Para Ollama u otros sin limite devuelve todo.
+    """
+    if provider not in _TOOL_LIMIT_PROVIDERS or len(tools) <= OPENAI_TOOL_LIMIT:
+        return tools
+
+    drop_needed = len(tools) - OPENAI_TOOL_LIMIT
+    to_drop = set()
+    for name in _LOW_PRIORITY_TOOL_NAMES:
+        if drop_needed <= 0:
+            break
+        to_drop.add(name)
+        drop_needed -= 1
+    kept = [tool for tool in tools if _tool_name(tool) not in to_drop]
+    if len(kept) > OPENAI_TOOL_LIMIT:
+        kept = kept[:OPENAI_TOOL_LIMIT]
+    return kept
+
+
 def _current_tool_definitions() -> list:
     if not _proactive_safe_mode():
         # Las tools MCP externas no participan del pulso proactivo (seguridad).
-        return tool_definitions + _mcp_tool_specs()
-    return [
-        tool
-        for tool in tool_definitions
-        if getattr(tool, "__name__", "") in PROACTIVE_SAFE_TOOL_NAMES
-    ]
+        tools = tool_definitions + _mcp_tool_specs()
+    else:
+        tools = [
+            tool
+            for tool in tool_definitions
+            if getattr(tool, "__name__", "") in PROACTIVE_SAFE_TOOL_NAMES
+        ]
+    return _limit_tools_for_provider(tools, MODEL_PROVIDER)
 
 
 def _normalize_timeout_seconds(value, default: int = DEFAULT_OLLAMA_TIMEOUT_SECONDS) -> int:

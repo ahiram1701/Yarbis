@@ -128,3 +128,38 @@ class PuterClientTestCase(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ToolLimitTestCase(unittest.TestCase):
+    def _fake_tools(self, n):
+        return [type("T", (), {"__name__": f"tool_{i}"}) for i in range(n)]
+
+    def test_no_cap_for_ollama(self):
+        tools = self._fake_tools(146)
+        out = agent._limit_tools_for_provider(tools, agent.MODEL_PROVIDER_OLLAMA)
+        self.assertEqual(len(out), 146)
+
+    def test_caps_to_128_for_puter(self):
+        tools = self._fake_tools(146)
+        out = agent._limit_tools_for_provider(tools, agent.MODEL_PROVIDER_PUTER)
+        self.assertEqual(len(out), agent.OPENAI_TOOL_LIMIT)
+
+    def test_caps_for_openrouter_and_openai_compat(self):
+        tools = self._fake_tools(146)
+        self.assertEqual(len(agent._limit_tools_for_provider(tools, agent.MODEL_PROVIDER_OPENROUTER)), 128)
+        self.assertEqual(len(agent._limit_tools_for_provider(tools, agent.MODEL_PROVIDER_OPENAI_COMPAT)), 128)
+
+    def test_under_limit_is_unchanged(self):
+        tools = self._fake_tools(50)
+        self.assertEqual(len(agent._limit_tools_for_provider(tools, agent.MODEL_PROVIDER_PUTER)), 50)
+
+    def test_drops_low_priority_first(self):
+        # Con las tools reales, las nicho se descartan y las esenciales quedan.
+        agent.MODEL_PROVIDER = agent.MODEL_PROVIDER_PUTER
+        try:
+            names = {agent._tool_name(t) for t in agent._current_tool_definitions()}
+        finally:
+            agent.MODEL_PROVIDER = agent.MODEL_PROVIDER_OLLAMA
+        self.assertLessEqual(len(names), agent.OPENAI_TOOL_LIMIT)
+        self.assertIn("save_note", names)
+        self.assertNotIn("export_project_visual_board", names)
