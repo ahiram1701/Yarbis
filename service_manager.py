@@ -21,7 +21,9 @@ from memory import (
     DEFAULT_OPENROUTER_MODEL,
     DEFAULT_OPENROUTER_TIMEOUT_SECONDS,
     MODEL_PROVIDER_OLLAMA,
+    MODEL_PROVIDER_OPENAI_COMPAT,
     MODEL_PROVIDER_OPENROUTER,
+    MODEL_PROVIDER_PUTER,
     VALID_MODEL_PROVIDERS,
     load_state,
 )
@@ -689,8 +691,16 @@ def _ollama_host_label(host: str) -> str:
     return str(host).strip() or "local"
 
 
+_PROVIDER_LABELS = {
+    MODEL_PROVIDER_OLLAMA: "Ollama",
+    MODEL_PROVIDER_OPENROUTER: "OpenRouter",
+    MODEL_PROVIDER_OPENAI_COMPAT: "OpenAI-compatible",
+    MODEL_PROVIDER_PUTER: "Puter",
+}
+
+
 def _provider_label(provider: str) -> str:
-    return "OpenRouter" if provider == MODEL_PROVIDER_OPENROUTER else "Ollama"
+    return _PROVIDER_LABELS.get(provider, "Ollama")
 
 
 def _model_provider_settings(state: dict) -> tuple[str, dict, dict, dict]:
@@ -707,7 +717,12 @@ def _model_provider_settings(state: dict) -> tuple[str, dict, dict, dict]:
     openrouter = model_provider.get("openrouter", {})
     if not isinstance(openrouter, dict):
         openrouter = {}
-    active = openrouter if provider == MODEL_PROVIDER_OPENROUTER else ollama
+    # El bloque ACTIVO es el del proveedor en uso. Antes solo distinguia
+    # openrouter/ollama, asi que con puter u openai_compat se leia la config de
+    # Ollama (modelo/host equivocados en readiness y health).
+    active = model_provider.get(provider, {})
+    if not isinstance(active, dict) or not active:
+        active = openrouter if provider == MODEL_PROVIDER_OPENROUTER else ollama
     return provider, active, ollama, openrouter
 
 
@@ -861,6 +876,42 @@ def readiness_status(force: bool = False) -> dict:
                 "ok" if api_key_present else "missing",
                 f"OpenRouter activo: {model} @ {host}",
                 f"Define `{key_source}` con tu API key de OpenRouter." if not api_key_present else "",
+            ))
+    elif provider in (MODEL_PROVIDER_PUTER, MODEL_PROVIDER_OPENAI_COMPAT):
+        # Proveedores HTTP remotos: no tiene sentido validarlos con `ollama list`
+        # (antes caian en la rama de Ollama y reportaban "modelo no encontrado").
+        label = _provider_label(provider)
+        model = str(active_model.get("model", "")).strip()
+        host = str(active_model.get("host", "")).strip()
+        api_key_env_var = str(active_model.get("api_key_env_var", "")).strip()
+        secret_present = bool(
+            str(active_model.get("api_key", "")).strip()
+            or (os.getenv(api_key_env_var, "").strip() if api_key_env_var else "")
+        )
+        if not host:
+            items.append(_readiness_item(
+                "model_provider", "Modelo", "missing",
+                f"{label} activo, pero falta la URL del endpoint/worker.",
+                "Configura el host desde Modelo y timeout.",
+            ))
+        elif not model:
+            items.append(_readiness_item(
+                "model_provider", "Modelo", "missing",
+                f"{label} activo @ {host}, pero falta elegir modelo.",
+                "Configura el modelo desde Modelo y timeout.",
+            ))
+        elif not secret_present:
+            items.append(_readiness_item(
+                "model_provider", "Modelo", "missing",
+                f"{label} activo: {model} @ {host}, pero falta el secreto/API key.",
+                f"Pega la API key en Yarbis o define `{api_key_env_var}`." if api_key_env_var
+                else "Pega la API key en Yarbis.",
+            ))
+        else:
+            items.append(_readiness_item(
+                "model_provider", "Modelo", "ok",
+                f"{label} activo: {model} @ {host}",
+                "",
             ))
     else:
         model = str(ollama.get("model", DEFAULT_OLLAMA_MODEL)).strip() or DEFAULT_OLLAMA_MODEL

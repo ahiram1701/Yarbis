@@ -2322,7 +2322,10 @@ def _openrouter_rate_limit_error(exc: Exception):
 
 
 def _format_chat_error(exc: Exception) -> str:
-    provider_label = "OpenRouter" if MODEL_PROVIDER == MODEL_PROVIDER_OPENROUTER else "Ollama"
+    # El label debe reflejar el proveedor REAL. Antes era binario
+    # (OpenRouter/Ollama), asi que con puter u openai_compat los errores decian
+    # "Ollama" y confundian al usuario y al propio modelo.
+    provider_label = _PROVIDER_LABELS.get(MODEL_PROVIDER, "el proveedor de modelo")
     host_value = OPENROUTER_HOST if MODEL_PROVIDER == MODEL_PROVIDER_OPENROUTER else OLLAMA_HOST
     timeout_value = (
         OPENROUTER_TIMEOUT_SECONDS
@@ -2362,7 +2365,7 @@ def _format_chat_error(exc: Exception) -> str:
                 "agrega fallbacks de OpenRouter o vuelve temporalmente a Ollama."
                 f"{fallback_hint}{cloud_hint}"
             )
-    elif _host_uses_ollama_cloud(OLLAMA_HOST):
+    elif MODEL_PROVIDER == MODEL_PROVIDER_OLLAMA and _host_uses_ollama_cloud(OLLAMA_HOST):
         _api_key, key_source = _ollama_api_key(OLLAMA_HOST, OLLAMA_API_KEY_ENV_VAR, OLLAMA_API_KEY)
         if not _api_key:
             cloud_hint = (
@@ -2381,6 +2384,20 @@ def _format_chat_error(exc: Exception) -> str:
             "Para resolverlo, verifica la conexion, la API key, el host de OpenRouter "
             "y aumenta el timeout desde la app, Telegram (`/timeout`) o con "
             "`YARBIS_OPENROUTER_TIMEOUT_SECONDS`."
+            f"{cloud_hint}"
+        )
+
+    if MODEL_PROVIDER != MODEL_PROVIDER_OLLAMA:
+        # puter / openai_compat: el diagnostico de Ollama (daemon local,
+        # `ollama run`) no aplica; el cuello de botella es el endpoint remoto.
+        return (
+            f"{error_text}\n\n"
+            f"Diagnostico: {provider_label} no respondio dentro del tiempo configurado "
+            f"({timeout_value}s) usando el modelo {MODEL} en {host_text}."
+            f"{fallback_text}\n"
+            "Para resolverlo, verifica la conexion y que el endpoint/worker responda, "
+            "revisa el modelo configurado y aumenta el timeout desde la app o Telegram "
+            "(`/timeout`)."
             f"{cloud_hint}"
         )
 
@@ -2539,7 +2556,7 @@ def _chat_with_model_candidates(
         raise RuntimeError("Todos los modelos configurados fallaron: " + " | ".join(errors))
     if last_exc is not None:
         raise last_exc
-    provider_label = "OpenRouter" if MODEL_PROVIDER == MODEL_PROVIDER_OPENROUTER else "Ollama"
+    provider_label = _PROVIDER_LABELS.get(MODEL_PROVIDER, "del proveedor de modelo")
     raise RuntimeError(f"No hay modelos {provider_label} configurados.")
 
 

@@ -3135,12 +3135,23 @@ def render_state_summary(
             f"host={active_model_settings['host'] or 'local'}, "
             f"timeout={active_model_settings['timeout_seconds']}s"
         ),
-        (
-            "Ollama: "
-            f"modelo={normalized['ollama']['model']}, "
-            f"fallbacks={', '.join(normalized['ollama']['fallback_models']) or '-'}, "
-            f"host={normalized['ollama']['host'] or 'local'}, "
-            f"timeout={normalized['ollama']['timeout_seconds']}s"
+        # Detalle del proveedor ACTIVO. Antes se emitia siempre una linea
+        # "Ollama: ..." aunque el proveedor fuera otro, y el modelo terminaba
+        # creyendo que hablaba por Ollama. La linea "Proveedor de modelo" de
+        # arriba ya trae modelo/host/timeout del activo, asi que este detalle
+        # solo aplica cuando Ollama es realmente el proveedor en uso.
+        *(
+            [
+                (
+                    "Ollama: "
+                    f"modelo={normalized['ollama']['model']}, "
+                    f"fallbacks={', '.join(normalized['ollama']['fallback_models']) or '-'}, "
+                    f"host={normalized['ollama']['host'] or 'local'}, "
+                    f"timeout={normalized['ollama']['timeout_seconds']}s"
+                )
+            ]
+            if active_provider_name == MODEL_PROVIDER_OLLAMA
+            else []
         ),
         (
             "Pulso proactivo: "
