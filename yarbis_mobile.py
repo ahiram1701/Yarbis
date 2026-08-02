@@ -2,6 +2,7 @@ import base64
 import hashlib
 import hmac
 import json
+import os
 import secrets
 import shutil
 import subprocess
@@ -47,11 +48,7 @@ from notifications import send_notification
 from service_manager import (
     format_health_status,
     get_service_status,
-    install_service,
-    remove_service,
-    set_autostart_enabled,
-    start_service,
-    stop_service,
+    install_service,  # solo para la ruta SCM con cuenta/password (Windows)
 )
 from session import (
     SessionOperationBusy,
@@ -109,13 +106,19 @@ from session import (
     verify_memory_backups_text,
 )
 from tools import (
+    background_service_status,
     delete_note,
     get_note,
+    install_background_service,
     open_assisted_social_post,
+    remove_background_service,
+    set_background_service_autostart,
     set_computer_control,
     set_social_confirmation,
     set_plan,
     set_timezone,
+    start_background_service,
+    stop_background_service,
     update_internet_settings,
     update_task_status,
 )
@@ -123,6 +126,21 @@ from tools import (
 WORKSPACE_ROOT = Path(__file__).resolve().parent
 RUNTIME_DIR = yarbis_instance.runtime_dir()
 MOBILE_SESSION_SECONDS = 7 * 24 * 60 * 60
+
+_PROVIDER_LABELS = {
+    MODEL_PROVIDER_OLLAMA: "Ollama",
+    MODEL_PROVIDER_OPENROUTER: "OpenRouter",
+    MODEL_PROVIDER_OPENAI_COMPAT: "OpenAI-compatible",
+    MODEL_PROVIDER_PUTER: "Puter",
+}
+
+
+def _safe_background_service_status() -> str:
+    """Estado del servicio por la fachada multiplataforma (SCM/systemd/launchd)."""
+    try:
+        return background_service_status()
+    except Exception as exc:
+        return f"No pude consultar el servicio: {exc}"
 MOBILE_COOKIE_NAME = "yarbis_mobile"
 PIN_HASH_ITERATIONS = 200_000
 MAX_REQUEST_BYTES = 512 * 1024
@@ -1221,11 +1239,14 @@ def _mobile_health_status_from_state(state: dict, service_status: dict) -> dict:
     model_provider = _model_provider_from_state(state)
     provider = model_provider.get("default", MODEL_PROVIDER_OLLAMA)
     active_model = dict(model_provider.get(provider, {}))
-    active_model["label"] = "OpenRouter" if provider == MODEL_PROVIDER_OPENROUTER else "Ollama"
+    # Etiqueta del proveedor REAL: con puter u openai_compat este ternario
+    # binario decia "Ollama" y confundia al usuario.
+    active_model["label"] = _PROVIDER_LABELS.get(provider, provider or "Ollama")
     operation_active = bool(thinking.get("active") and str(thinking.get("label", "")).strip())
 
     return {
         "service": service_status,
+        "service_status_text": _safe_background_service_status(),
         "telegram": {
             "enabled": bool(notifications.get("enabled", True) and "telegram" in channels),
             "configured": bool(str(telegram.get("bot_token", "")).strip()),
@@ -1235,6 +1256,8 @@ def _mobile_health_status_from_state(state: dict, service_status: dict) -> dict:
             "enabled": bool(proactive.get("enabled")),
             "interval_seconds": proactive.get("interval_seconds"),
             "cycles": proactive.get("cycles"),
+            # Faltaba en el payload: el formulario siempre mostraba el default.
+            "start_delay_seconds": proactive.get("start_delay_seconds"),
             "model": str(proactive.get("model", "")).strip(),
             "last_pulse_at": str(proactive.get("last_pulse_at", "")).strip(),
         },
@@ -1459,6 +1482,8 @@ def _public_base_state(state: dict) -> dict:
         "service": {
             "status": service_status,
             "mobile_ui": public_mobile_ui_status(mobile_settings),
+            # Para que Inicio muestre el pulso sin entrar a Config.
+            "proactive": service.get("proactive", {}),
         },
         "health_text": format_health_status(health),
         "readiness_text": _mobile_readiness_text_from_state(state, service_status),
@@ -2159,20 +2184,29 @@ def _execute_action(action: str, payload: dict | None = None) -> dict:
         )}
     if action == "memory_verify":
         return {"result": verify_memory_backups_text()}
+    # Las acciones de servicio van por la fachada multiplataforma de tools, que
+    # despacha por SO (SCM en Windows; systemd/launchd/runit/portable fuera).
+    # Antes llamaban directo a service_manager (SCM), asi que en Linux/macOS
+    # fallaban. La ruta con cuenta/password es exclusiva de SCM y se conserva.
     if action == "service_start":
-        return {"result": start_service()}
+        return {"result": start_background_service()}
     if action == "service_stop":
-        return {"result": stop_service()}
+        return {"result": stop_background_service()}
     if action == "service_install":
-        return {"result": install_service(
-            start_auto=bool(payload.get("start_auto", True)),
-            account_name=_payload_text(payload, "account_name"),
-            password=_payload_text(payload, "password"),
-        )}
+        account_name = _payload_text(payload, "account_name")
+        password = _payload_text(payload, "password")
+        start_auto = bool(payload.get("start_auto", True))
+        if os.name == "nt" and (account_name or password):
+            return {"result": install_service(
+                start_auto=start_auto,
+                account_name=account_name,
+                password=password,
+            )}
+        return {"result": install_background_service(autostart=start_auto)}
     if action == "service_remove":
-        return {"result": remove_service()}
+        return {"result": remove_background_service()}
     if action == "service_autostart":
-        return {"result": set_autostart_enabled(bool(payload.get("enabled")))}
+        return {"result": set_background_service_autostart(bool(payload.get("enabled")))}
     if action == "social_oauth":
         return {"result": start_social_oauth_text(**payload)}
     if action == "social_confirmation":
@@ -2633,6 +2667,28 @@ details.advanced .form-grid { margin-top: 4px; }
   margin: 14vh auto 0;
 }
 .hidden { display: none !important; }
+.settings-groups {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 10px 0 6px;
+}
+.settings-groups .chip {
+  flex: 1 1 auto;
+  min-width: 92px;
+  padding: 10px 12px;
+  border-radius: 999px;
+  border: 1px solid var(--panel-2);
+  background: var(--panel);
+  color: var(--text);
+  font-size: 14px;
+}
+.settings-groups .chip.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #06121f;
+  font-weight: 600;
+}
 @media (min-width: 760px) {
   .tabs {
     left: 50%;
@@ -3866,6 +3922,7 @@ function renderHome() {
   const pending = appState.awaiting_user_input || {};
   const service = appState.service || {};
   const status = service.status || {};
+  const pulse = service.proactive || {};
   const runningText = status.running ? "Servicio activo" : "Servicio detenido";
   const thinking = status.running ? appState.health_text : appState.readiness_text;
   const nextStep = pending.pending
@@ -3883,6 +3940,11 @@ function renderHome() {
       <div class="grid two">
         <div class="panel metric"><span class="muted">Ciclos</span><strong>${escapeHtml(appState.cycle_count)}</strong></div>
         <div class="panel metric"><span class="muted">Servicio</span><strong>${status.running ? "Activo" : "Detenido"}</strong></div>
+      </div>
+      <div class="panel metric">
+        <span class="muted">Pulso proactivo</span>
+        <strong>${pulse.enabled ? `cada ${Math.round((pulse.interval_seconds || 1800) / 60)} min` : "desactivado"}</strong>
+        <button data-action="goto-operacion">Configurar servicio y pulso</button>
       </div>
     </section>
     <section class="section">
@@ -4544,8 +4606,15 @@ function renderSettings() {
     <section class="hero">
       <h2>Configuración operativa</h2>
       <div class="muted">Ajustes por área, guardados sin cambiar la forma de trabajar de Yarbis.</div>
+      <nav class="settings-groups">
+        <button class="chip" data-group-btn="operacion">Operación</button>
+        <button class="chip" data-group-btn="modelo">Modelo y voz</button>
+        <button class="chip" data-group-btn="canales">Canales</button>
+        <button class="chip" data-group-btn="sistema">Sistema</button>
+      </nav>
+      <div class="muted">Servicio de fondo y pulso proactivo están en <b>Operación</b>.</div>
     </section>
-    <section class="section">
+    <section class="section" data-group="modelo">
       <h2>Modelo</h2>
       <div class="setting-group form-grid wide">
         <div><label>Proveedor</label><select id="modelProvider"><option value="ollama">ollama</option><option value="openrouter">openrouter</option><option value="openai_compat">OpenAI-compatible (Groq, DeepSeek, local…)</option><option value="puter">Puter (500+ modelos gratis)</option></select></div>
@@ -4557,7 +4626,7 @@ function renderSettings() {
         <button data-action="save-model">Guardar modelo</button>
       </div>
     </section>
-    <section class="section">
+    <section class="section" data-group="sistema">
       <h2>Control de la PC</h2>
       <div class="setting-group form-grid wide">
         <div class="muted">Permite que Yarbis maneje el navegador (y el sistema) para tareas como publicar en Facebook. Apagado por defecto. Las acciones sensibles (Publicar, Pagar, Enviar) piden confirmacion.</div>
@@ -4574,7 +4643,7 @@ function renderSettings() {
         <button data-action="save-computer-control">Guardar control de PC</button>
       </div>
     </section>
-    <section class="section">
+    <section class="section" data-group="canales">
       <h2>UI móvil</h2>
       <div class="setting-group form-grid wide">
         <label><input id="mobileEnabled" type="checkbox" ${mobile.enabled ? "checked" : ""}> Activa</label>
@@ -4588,7 +4657,7 @@ function renderSettings() {
         ${foreignServe ? `<button data-action="claim-mobile-https-override" class="danger">Re-apuntar HTTPS a esta instancia</button>` : ""}
       </div>
     </section>
-    <section class="section">
+    <section class="section" data-group="operacion">
       <h2>Instancias</h2>
       <div class="setting-group">
         <div class="muted">Cada instancia pide su propio PIN. Al usar la URL HTTPS de Tailscale solo responde la instancia dueña del HTTPS; las demás abren por http://host:puerto.</div>
@@ -4596,7 +4665,7 @@ function renderSettings() {
         <button data-action="refresh-instances">Refrescar instancias</button>
       </div>
     </section>
-    <section class="section">
+    <section class="section" data-group="operacion">
       <h2>Autoevolución</h2>
       <div class="setting-group">
         <div class="muted">Yarbis revisa su propio proyecto y propone mejoras (código, comportamiento, objetivos, memoria). Nunca aplica nada sin tu aprobación.</div>
@@ -4610,7 +4679,7 @@ function renderSettings() {
         <div class="muted">Las propuestas de código se aprueban en la sección de coding o por chat.</div>
       </div>
     </section>
-    <section class="section">
+    <section class="section" data-group="modelo">
       <h2>Comunicacion</h2>
       <div class="setting-group form-grid wide">
         <div><label>Tono</label><select id="communicationTone"><option value="warm_brief">calido y breve</option><option value="human">muy humano</option><option value="direct">operativo directo</option></select></div>
@@ -4619,7 +4688,7 @@ function renderSettings() {
         <button data-action="save-communication">Guardar comunicacion</button>
       </div>
     </section>
-    <section class="section">
+    <section class="section" data-group="modelo">
       <h2>Voz</h2>
       <div class="setting-group form-grid">
         <label><input id="voiceEnabled" type="checkbox" ${voice.enabled === false ? "" : "checked"}> Activa</label>
@@ -4674,8 +4743,25 @@ function renderSettings() {
         <button data-action="stop-speaking">Detener habla</button>
       </div>
     </section>
-    <section class="section">
+    <section class="section" data-group="operacion">
+      <h2>Servicio de fondo</h2>
+      <div class="panel"><pre>${escapeHtml(appState.service_status_text || "")}</pre></div>
+      <div class="setting-group form-grid wide">
+        <div class="actions">
+          <button data-action="service-install">Instalar servicio</button>
+          <button data-action="service-start">Iniciar servicio</button>
+          <button data-action="service-stop" class="danger">Detener servicio</button>
+        </div>
+        <div class="actions">
+          <button data-action="service-autostart">Alternar arranque automático</button>
+          <button data-action="service-remove" class="danger">Quitar servicio</button>
+        </div>
+        <div class="muted">El servicio mantiene vivo el inbox de Telegram, el pulso proactivo y la coordinación entre instancias. Detenerlo cierra esta UI móvil hasta que vuelvas a iniciarlo.</div>
+      </div>
+    </section>
+    <section class="section" data-group="operacion">
       <h2>Pulso proactivo</h2>
+      <div class="muted">Cada cuánto Yarbis trabaja solo para avanzar tu objetivo, sin que se lo pidas.</div>
       <div class="setting-group form-grid wide">
         <label><input id="pulseEnabled" type="checkbox" ${proactive.enabled ? "checked" : ""}> Activo</label>
         <div><label>Intervalo segundos</label><input id="pulseInterval" type="number" value="${escapeHtml(proactive.interval_seconds || 1800)}"></div>
@@ -4685,7 +4771,7 @@ function renderSettings() {
         <button data-action="save-pulse">Guardar pulso</button>
       </div>
     </section>
-    <section class="section">
+    <section class="section" data-group="sistema">
       <h2>Contexto local</h2>
       <div class="setting-group form-grid wide">
         <label><input id="localEnabled" type="checkbox" ${local.enabled ? "checked" : ""}> Activo</label>
@@ -4699,7 +4785,7 @@ function renderSettings() {
         <button data-action="save-local">Guardar contexto local</button>
       </div>
     </section>
-    <section class="section">
+    <section class="section" data-group="canales">
       <h2>Notificaciones</h2>
       <div class="panel"><pre>${escapeHtml(notificationSummary)}</pre></div>
       <div class="setting-group form-grid wide">
@@ -4718,7 +4804,7 @@ function renderSettings() {
         <button data-action="test-notification">Probar notificación</button>
       </div>
     </section>
-    <section class="section">
+    <section class="section" data-group="sistema">
       <h2>Memoria</h2>
       <div class="panel"><pre>${escapeHtml(appState.memory_protection_status || "")}</pre></div>
       <div class="form-grid">
@@ -4731,20 +4817,14 @@ function renderSettings() {
         </div>
       </div>
     </section>
-    <section class="section">
-      <h2>Internet y servicio</h2>
+    <section class="section" data-group="sistema">
+      <h2>Internet</h2>
       <div class="form-grid">
         <select id="internetMode"><option value="auto">auto</option><option value="off">off</option></select>
         <button data-action="save-internet">Guardar internet</button>
-        <div class="actions">
-          <button data-action="service-start">Iniciar servicio</button>
-          <button data-action="service-stop" class="danger">Detener servicio</button>
-          <button data-action="service-autostart">Alternar arranque</button>
-          <button data-action="service-remove" class="danger">Quitar SCM</button>
-        </div>
       </div>
     </section>
-    <section class="section">
+    <section class="section" data-group="canales">
       <h2>Redes sociales</h2>
       <div class="panel"><pre>${escapeHtml(appState.social_accounts_text || "")}</pre></div>
       <input id="socialId" placeholder="Id de publicacion o draft">
@@ -4787,6 +4867,22 @@ function renderSettings() {
   if (ccProfileDir) ccProfileDir.value = ccSettings.browser_profile_directory || "";
   const ccUserDataDir = $("ccUserDataDir");
   if (ccUserDataDir) ccUserDataDir.value = ccSettings.browser_user_data_dir || "";
+  applySettingsGroup(currentSettingsGroup);
+}
+
+// Config esta dividida en grupos: sin esto eran 14 secciones en un scroll
+// continuo y el servicio/pulso quedaban enterrados al fondo.
+let currentSettingsGroup = localStorage.getItem("yarbisSettingsGroup") || "operacion";
+
+function applySettingsGroup(group) {
+  currentSettingsGroup = group || "operacion";
+  localStorage.setItem("yarbisSettingsGroup", currentSettingsGroup);
+  document.querySelectorAll("#settings [data-group]").forEach((section) => {
+    section.classList.toggle("hidden", section.dataset.group !== currentSettingsGroup);
+  });
+  document.querySelectorAll("#settings [data-group-btn]").forEach((chip) => {
+    chip.classList.toggle("active", chip.dataset.groupBtn === currentSettingsGroup);
+  });
 }
 
 function renderActivity() {
@@ -4837,6 +4933,15 @@ document.addEventListener("click", async (event) => {
   }
   if (button.dataset.tab) {
     showTab(button.dataset.tab);
+    return;
+  }
+  if (button.dataset.groupBtn) {
+    applySettingsGroup(button.dataset.groupBtn);
+    return;
+  }
+  if (button.dataset.action === "goto-operacion") {
+    applySettingsGroup("operacion");
+    showTab("settings");
     return;
   }
   const name = button.dataset.action;
@@ -5168,6 +5273,8 @@ document.addEventListener("click", async (event) => {
       await action("memory_verify");
     } else if (name === "save-internet") {
       await action("internet", { mode: $("internetMode").value, provider: "duckduckgo_html" });
+    } else if (name === "service-install") {
+      await action("service_install", { start_auto: true });
     } else if (name === "service-start") {
       await action("service_start");
     } else if (name === "service-stop") {
