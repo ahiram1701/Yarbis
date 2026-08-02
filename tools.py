@@ -740,6 +740,99 @@ def _python_syntax_error(file_path: Path, content: str) -> str | None:
     return None
 
 
+# Guarda anti-elision/truncado para archivos de CODIGO. Nace de un incidente
+# real: la autoedicion aplico una propuesta que reescribio 14 modulos de Yarbis
+# con solo "..." (el modelo elidio el cuerpo). `ast.parse` no lo atrapa porque
+# "..." es Python valido. Solo cubre codigo: reducir mucho un .md o un .json
+# puede ser legitimo (p. ej. resumir un README).
+_GUARDED_CODE_SUFFIXES = {".py", ".js", ".ps1", ".sh", ".cmd", ".bat", ".vbs", ".cs"}
+MIN_GUARDED_CODE_BYTES = 1_000
+MAX_CODE_SHRINK_RATIO = 0.25
+_ELISION_MARKERS = (
+    "resto del archivo", "resto igual", "resto sin cambios", "sin cambios",
+    "codigo omitido", "código omitido", "omitido por brevedad",
+    "rest of the file", "rest of file", "unchanged", "code omitted",
+    "same as before", "truncated for brevity",
+)
+
+
+def _python_body_is_elided(content: str) -> bool:
+    """True si un .py no tiene cuerpo real (solo `...`, `pass` o un docstring)."""
+    try:
+        tree = ast.parse(content)
+    except SyntaxError:
+        return False  # el error de sintaxis lo reporta la otra guarda
+    if not tree.body:
+        return True
+    for node in tree.body:
+        if isinstance(node, ast.Pass):
+            continue
+        if isinstance(node, ast.Expr) and isinstance(node.value, ast.Constant):
+            value = node.value.value
+            if value is Ellipsis or isinstance(value, str):
+                continue  # `...` suelto o docstring: no es contenido real
+        return False
+    return True
+
+
+def _looks_like_elided_text(content: str) -> bool:
+    """True si el contenido util son marcadores de elision (`...`, 'resto igual')."""
+    meaningful = []
+    for raw_line in content.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        stripped = line.lstrip("#/*-; ").strip().lower()
+        if line in {"...", "…"} or stripped in {"...", "…"}:
+            continue
+        if any(marker in stripped for marker in _ELISION_MARKERS):
+            continue
+        meaningful.append(line)
+    return not meaningful
+
+
+def _code_truncation_block_reason(
+    file_path: Path,
+    content: str,
+    previous_content: str,
+    existed_before: bool,
+) -> str | None:
+    """Bloquea escrituras que vacian o eliden un archivo de codigo existente."""
+    if not existed_before:
+        return None
+    if Path(str(file_path)).suffix.lower() not in _GUARDED_CODE_SUFFIXES:
+        return None
+
+    previous_size = len(previous_content.encode("utf-8"))
+    if previous_size < MIN_GUARDED_CODE_BYTES:
+        return None  # archivos pequenos: rehacerlos entero es normal
+
+    relative = _workspace_relative(file_path)
+    new_size = len(content.encode("utf-8"))
+
+    is_elided = _looks_like_elided_text(content)
+    if str(file_path).lower().endswith(".py") and not is_elided:
+        is_elided = _python_body_is_elided(content)
+    if is_elided:
+        return (
+            f"BLOQUEADO: el contenido no tiene cuerpo real, parece una elision "
+            f"(`...` o 'resto sin cambios') y habria vaciado {relative} "
+            f"({previous_size} bytes). No se toco el archivo. "
+            "Escribe el archivo COMPLETO, o usa una propuesta de edicion por partes."
+        )
+
+    if new_size < previous_size * MAX_CODE_SHRINK_RATIO:
+        percent = int(round((new_size / previous_size) * 100)) if previous_size else 0
+        return (
+            f"BLOQUEADO: la escritura reduciria {relative} de {previous_size} a "
+            f"{new_size} bytes ({percent}% del original), lo que suele indicar "
+            "contenido truncado o elidido. No se toco el archivo. Si el recorte es "
+            "intencional, hazlo en pasos mas pequenos o borra y recrea el archivo "
+            "a proposito."
+        )
+    return None
+
+
 def _write_text_file_impl(path: str, content: str, enforce_coding_guard: bool = True) -> str:
     """
     Escribe texto en un archivo de forma segura.
@@ -792,6 +885,12 @@ def _write_text_file_impl(path: str, content: str, enforce_coding_guard: bool = 
             f"Sin cambios en: {_workspace_relative(file_path)}\n"
             "El contenido nuevo coincide con el archivo actual."
         )
+
+    truncation_error = _code_truncation_block_reason(
+        file_path, content, previous_content, existed_before
+    )
+    if truncation_error:
+        return truncation_error
 
     checkpoint_id, checkpoint_error = _create_checkpoint(
         file_path=file_path,
@@ -1998,6 +2097,19 @@ def coding_apply_proposal(proposal_id: str) -> str:
         if syntax_error:
             return (
                 f"Propuesta NO aplicada: {syntax_error}\n"
+                f"Archivo con el problema: {item['relative_path'].as_posix()}"
+            )
+        # Ademas de la sintaxis: rechazar contenido elidido o truncado. `...` es
+        # Python valido, asi que sin esto una propuesta puede vaciar un modulo.
+        truncation_error = _code_truncation_block_reason(
+            item["target_path"],
+            item["proposed_content"],
+            item["previous_content"],
+            item["existed_before"],
+        )
+        if truncation_error:
+            return (
+                f"Propuesta NO aplicada: {truncation_error}\n"
                 f"Archivo con el problema: {item['relative_path'].as_posix()}"
             )
 
