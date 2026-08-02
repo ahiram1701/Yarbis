@@ -10,7 +10,7 @@ class TuiSmokeTestCase(unittest.IsolatedAsyncioTestCase):
         app = yarbis_tui.YarbisTUI()
         async with app.run_test() as pilot:
             # las pestañas clave existen
-            for wid in ("#chat_log", "#estado", "#instancias", "#contexto", "#ajustes", "#actividad"):
+            for wid in ("#chat_log", "#estado", "#inst_table", "#contexto", "#ajustes", "#actividad"):
                 self.assertTrue(app.query(wid), f"falta el panel {wid}")
             # el input de chat existe
             self.assertTrue(app.query("#chat_input"))

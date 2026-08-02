@@ -61,6 +61,7 @@ py-modules = [
   "credential_store",
   "conversation_ux",
   "device_profile",
+  "instance_binding",
   "integrations",
   "intent_text",
   "internet",

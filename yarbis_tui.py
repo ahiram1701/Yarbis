@@ -38,6 +38,7 @@ from textual.app import App, ComposeResult
 from textual.containers import Horizontal, VerticalScroll
 from textual.widgets import (
     Button,
+    DataTable,
     Footer,
     Header,
     Input,
@@ -49,7 +50,10 @@ from textual.widgets import (
 )
 
 import activity
+import instance_binding
+import yarbis_bus
 import yarbis_instance
+from atomic_io import read_json_bom_safe
 from memory import (
     MODEL_PROVIDER_OLLAMA,
     MODEL_PROVIDER_OPENROUTER,
@@ -59,6 +63,7 @@ from memory import (
     render_state_summary,
 )
 from session import (
+    get_service_proactive_settings,
     run_auto_with_output,
     run_cycle_with_output,
     request_stop_current_operation,
@@ -68,23 +73,97 @@ from session import (
     update_openrouter_settings,
     update_openai_compat_settings,
     update_puter_settings,
+    update_service_proactive_settings,
 )
 from tools import (
     add_task,
     agent_overview,
     answer_instance_for_user,
-    list_pending_user_questions,
-    list_yarbis_instances,
+    background_service_status,
+    install_background_service,
+    remove_background_service,
     save_note,
     send_yarbis_message,
+    set_background_service_autostart,
     set_computer_control,
     set_mcp_enabled,
+    start_background_service,
+    stop_background_service,
 )
 
 try:
     from service_manager import health_status
 except Exception:  # pragma: no cover - service_manager puede requerir extras
     health_status = None
+
+
+def _instance_is_running(instance_id: str) -> bool:
+    """Si la instancia esta viva, combinando dos senales.
+
+    `yarbis_bus.instance_is_active` mira los PID files, pero en Windows el
+    servicio corre como LocalSystem y un proceso de usuario NO puede abrir ese
+    proceso: siempre daria "detenida". Por eso se consulta tambien al gestor de
+    servicios (leer el estado no requiere elevacion), que es lo que ya hace la UI
+    movil. La senal del bus sigue valiendo para procesos propios (app/TUI) y para
+    Linux/macOS, donde los PID si son visibles.
+    """
+    try:
+        if yarbis_bus.instance_is_active(instance_id):
+            return True
+    except Exception:
+        pass
+    try:
+        import service_manager
+
+        return bool(service_manager.get_service_status(instance_id=instance_id)["running"])
+    except Exception:
+        return False
+
+
+def _instance_rows() -> list[dict]:
+    """Resumen de TODAS las instancias, leido sin cambiarse a ninguna.
+
+    Lee cada `state.json` de forma tolerante a BOM (mismo patron que
+    `list_pending_user_questions`), asi el panel puede mostrar objetivo y
+    pregunta pendiente de instancias que ni siquiera estan corriendo.
+    """
+    rows = []
+    for item in yarbis_instance.list_instances():
+        instance_id = str(item.get("id", "")).strip()
+        if not instance_id:
+            continue
+        goal, waiting, last = "", False, ""
+        try:
+            state = read_json_bom_safe(yarbis_instance.state_file(instance_id))
+            if isinstance(state, dict):
+                goal = str(state.get("goal", "")).strip()
+                last = str(state.get("last_result", "")).strip()
+                pending = state.get("awaiting_user_input", {})
+                waiting = bool(isinstance(pending, dict) and pending.get("pending"))
+        except Exception:
+            pass
+        active = _instance_is_running(instance_id)
+        rows.append({
+            "id": instance_id,
+            "active": active,
+            "waiting": waiting,
+            "goal": goal,
+            "last_result": last,
+        })
+    rows.sort(key=lambda row: row["id"])
+    return rows
+
+
+def _pending_question(state: dict) -> str:
+    pending = state.get("awaiting_user_input", {}) if isinstance(state, dict) else {}
+    if not isinstance(pending, dict) or not pending.get("pending"):
+        return ""
+    return str(pending.get("question", "")).strip() or "Yarbis espera tu respuesta."
+
+
+def _short(text: str, limit: int = 48) -> str:
+    cleaned = " ".join(str(text or "").split())
+    return cleaned[: limit - 1] + "…" if len(cleaned) > limit else cleaned
 
 
 _PROVIDER_UPDATERS = {
@@ -142,6 +221,10 @@ class YarbisTUI(App):
     #chat_log, #actividad { height: 1fr; border: round $primary; }
     #estado, #contexto, #ajustes, #instancias { height: 1fr; border: round $primary; padding: 1; }
     #chat_input { dock: bottom; }
+    #pending_banner { dock: top; height: auto; padding: 0 1; background: $warning 20%; }
+    #pending_banner.hidden { display: none; }
+    #inst_table { height: 1fr; border: round $primary; }
+    .subhead { padding: 1 1 0 1; text-style: bold; }
     .row { height: auto; }
     .field { width: 1fr; }
     Input { margin: 0 1 0 0; }
@@ -151,6 +234,7 @@ class YarbisTUI(App):
         ("ctrl+r", "run_cycle", "Ciclo"),
         ("ctrl+g", "run_auto", "Auto"),
         ("ctrl+s", "stop", "Detener"),
+        ("ctrl+i", "switch_instance", "Instancia"),
         ("f5", "refresh", "Refrescar"),
         ("ctrl+q", "quit", "Salir"),
     ]
@@ -164,20 +248,23 @@ class YarbisTUI(App):
         yield Header(show_clock=True)
         with TabbedContent(initial="tab-chat"):
             with TabPane("Chat", id="tab-chat"):
+                yield Static("", id="pending_banner", classes="hidden")
                 yield RichLog(id="chat_log", wrap=True, markup=True, highlight=False)
-                yield Input(placeholder="Escribe tu mensaje y Enter…  (Ctrl+R ciclo, Ctrl+G auto, Ctrl+S detener)", id="chat_input")
+                yield Input(placeholder="Escribe tu mensaje y Enter…  (Ctrl+R ciclo, Ctrl+G auto, Ctrl+I instancia)", id="chat_input")
             with TabPane("Estado", id="tab-estado"):
                 with VerticalScroll():
                     yield Static("Cargando…", id="estado")
             with TabPane("Instancias", id="tab-instancias"):
-                with VerticalScroll():
-                    yield Static("Cargando…", id="instancias")
                 with Horizontal(classes="row"):
-                    yield Input(placeholder="instancia destino", id="inst_target", classes="field")
-                    yield Input(placeholder="respuesta / mensaje", id="inst_msg", classes="field")
+                    yield Select([], prompt="cambiar a instancia…", id="inst_select", classes="field")
+                    yield Button("Cambiar a esta", id="btn_switch", variant="primary")
+                yield DataTable(id="inst_table", cursor_type="row")
                 with Horizontal(classes="row"):
-                    yield Button("Desbloquear (responder por mí)", id="btn_unblock", variant="primary")
+                    yield Input(placeholder="respuesta / mensaje para la fila seleccionada", id="inst_msg", classes="field")
+                with Horizontal(classes="row"):
+                    yield Button("Responder por mí", id="btn_unblock", variant="primary")
                     yield Button("Enviar mensaje", id="btn_send_msg")
+                    yield Button("Difundir a las que esperan", id="btn_broadcast")
                     yield Button("Refrescar", id="btn_refresh_inst")
             with TabPane("Contexto", id="tab-contexto"):
                 with VerticalScroll():
@@ -212,15 +299,41 @@ class YarbisTUI(App):
                     yield Button("Control PC off", id="btn_cc_off")
                     yield Button("MCP on", id="btn_mcp_on")
                     yield Button("MCP off", id="btn_mcp_off")
+                yield Static("— Servicio de fondo —", classes="subhead")
+                yield Static("Cargando…", id="servicio")
+                with Horizontal(classes="row"):
+                    yield Button("Instalar", id="btn_svc_install")
+                    yield Button("Iniciar", id="btn_svc_start", variant="primary")
+                    yield Button("Detener", id="btn_svc_stop")
+                    yield Button("Quitar", id="btn_svc_remove", variant="error")
+                with Horizontal(classes="row"):
+                    yield Button("Arranque automático: sí", id="btn_svc_auto_on")
+                    yield Button("Arranque automático: no", id="btn_svc_auto_off")
+                yield Static("— Pulso proactivo —", classes="subhead")
+                with Horizontal(classes="row"):
+                    yield Select(
+                        [("activo", "1"), ("desactivado", "0")],
+                        prompt="pulso",
+                        id="pulse_enabled",
+                        classes="field",
+                    )
+                    yield Input(placeholder="intervalo (seg)", id="pulse_interval", classes="field")
+                    yield Input(placeholder="ciclos (vacío = hasta terminar)", id="pulse_cycles", classes="field")
+                with Horizontal(classes="row"):
+                    yield Input(placeholder="espera inicial (seg)", id="pulse_delay", classes="field")
+                    yield Input(placeholder="modelo del pulso (opcional)", id="pulse_model", classes="field")
+                    yield Button("Guardar pulso", id="btn_pulse", variant="primary")
             with TabPane("Actividad", id="tab-actividad"):
                 yield RichLog(id="actividad", wrap=True, markup=False, highlight=False)
         yield Footer()
 
     def on_mount(self) -> None:
-        self.sub_title = f"instancia: {self.instance_id}"
         self._chat = self.query_one("#chat_log", RichLog)
-        self._chat.write("[b]Yarbis TUI[/b] — conectado a la instancia "
-                          f"[b]{self.instance_id}[/b]. Escribe abajo para hablar con Yarbis.")
+        table = self.query_one("#inst_table", DataTable)
+        table.add_columns("Instancia", "Estado", "Espera", "Objetivo")
+        self._chat.write("[b]Yarbis TUI[/b] — instancia activa: "
+                          f"[b]{self.instance_id}[/b]. Ctrl+I para cambiar de instancia.")
+        self._update_subtitle()
         self.action_refresh()
         self.set_interval(6.0, self._refresh_light)
 
@@ -229,13 +342,35 @@ class YarbisTUI(App):
         # Refresco periodico barato: estado + actividad (no toca el LLM).
         self._refresh_estado()
         self._refresh_actividad()
+        self._refresh_pending_banner()
 
     def action_refresh(self) -> None:
         self._refresh_estado()
         self._refresh_instancias()
         self._refresh_contexto()
         self._refresh_ajustes()
+        self._refresh_servicio()
+        self._refresh_pulso()
         self._refresh_actividad()
+        self._refresh_pending_banner()
+
+    def _update_subtitle(self, label: str = "") -> None:
+        estado = f" — {label}…" if label else ""
+        self.sub_title = f"instancia: {self.instance_id}{estado}"
+
+    def _refresh_pending_banner(self) -> None:
+        """Si la instancia activa espera respuesta, hacerlo evidente."""
+        try:
+            question = _pending_question(load_state())
+        except Exception:
+            question = ""
+        banner = self.query_one("#pending_banner", Static)
+        if question:
+            banner.update(f"[b yellow]Yarbis espera tu respuesta:[/b yellow] {question}")
+            banner.remove_class("hidden")
+        else:
+            banner.update("")
+            banner.add_class("hidden")
 
     def _safe(self, fn, *args) -> str:
         try:
@@ -252,8 +387,54 @@ class YarbisTUI(App):
         self.query_one("#estado", Static).update(text)
 
     def _refresh_instancias(self) -> None:
-        text = self._safe(list_yarbis_instances) + "\n\n--- Esperando tu respuesta ---\n" + self._safe(list_pending_user_questions)
-        self.query_one("#instancias", Static).update(text)
+        try:
+            rows = _instance_rows()
+        except Exception as exc:
+            self._chat.write(f"[red](no pude listar instancias: {exc})[/red]")
+            return
+
+        self._rows = rows
+        table = self.query_one("#inst_table", DataTable)
+        previous = table.cursor_row
+        table.clear()
+        for row in rows:
+            marca = " (actual)" if row["id"] == self.instance_id else ""
+            table.add_row(
+                f"{row['id']}{marca}",
+                "activa" if row["active"] else "detenida",
+                "sí" if row["waiting"] else "",
+                _short(row["goal"]),
+                key=row["id"],
+            )
+        if rows and previous is not None and previous < len(rows):
+            table.move_cursor(row=previous)
+
+        selector = self.query_one("#inst_select", Select)
+        selector.set_options([(row["id"], row["id"]) for row in rows])
+
+    def _selected_instance(self) -> str:
+        """Id de la instancia de la fila seleccionada en la tabla."""
+        rows = getattr(self, "_rows", [])
+        table = self.query_one("#inst_table", DataTable)
+        index = table.cursor_row
+        if rows and index is not None and 0 <= index < len(rows):
+            return rows[index]["id"]
+        return ""
+
+    def _refresh_servicio(self) -> None:
+        self.query_one("#servicio", Static).update(self._safe(background_service_status))
+
+    def _refresh_pulso(self) -> None:
+        try:
+            pulse = get_service_proactive_settings()
+        except Exception:
+            return
+        self.query_one("#pulse_interval", Input).value = str(pulse.get("interval_seconds", "") or "")
+        cycles = pulse.get("cycles")
+        self.query_one("#pulse_cycles", Input).value = "" if cycles in (None, "") else str(cycles)
+        self.query_one("#pulse_delay", Input).value = str(pulse.get("start_delay_seconds", "") or "")
+        self.query_one("#pulse_model", Input).value = str(pulse.get("model", "") or "")
+        self.query_one("#pulse_enabled", Select).value = "1" if pulse.get("enabled") else "0"
 
     def _refresh_contexto(self) -> None:
         self.query_one("#contexto", Static).update(self._safe(agent_overview))
@@ -325,7 +506,42 @@ class YarbisTUI(App):
 
     def _set_busy(self, busy: bool, label: str = "") -> None:
         self.busy = busy
-        self.sub_title = f"instancia: {self.instance_id}" + (f" — {label}…" if busy else "")
+        self._update_subtitle(label if busy else "")
+        # Feedback real: la entrada y las acciones se deshabilitan mientras corre.
+        for widget_id, widget_type in (("chat_input", Input), ("btn_switch", Button)):
+            try:
+                self.query_one(f"#{widget_id}", widget_type).disabled = busy
+            except Exception:
+                pass
+
+    # ---------- instancias ----------
+    def action_switch_instance(self) -> None:
+        """Ctrl+I: ir al selector de instancia."""
+        self.query_one(TabbedContent).active = "tab-instancias"
+        self._refresh_instancias()
+        self.query_one("#inst_select", Select).focus()
+
+    def switch_to_instance(self, instance_id: str) -> bool:
+        """Cambia la instancia activa EN CALIENTE (sin reiniciar la TUI)."""
+        target = str(instance_id or "").strip()
+        if not target or target == self.instance_id:
+            return False
+        if self.busy:
+            self._chat.write(
+                "[yellow]No puedo cambiar de instancia con una operación en curso. "
+                "Espera o usa Ctrl+S para detenerla.[/yellow]"
+            )
+            return False
+        try:
+            self.instance_id = instance_binding.rebind(target)
+        except Exception as exc:
+            self._chat.write(f"[red]No pude cambiar de instancia: {exc}[/red]")
+            return False
+
+        self._chat.write(f"[b]── ahora en: {self.instance_id} ──[/b]")
+        self._update_subtitle()
+        self.action_refresh()
+        return True
 
     def action_run_cycle(self) -> None:
         if self.busy:
@@ -349,15 +565,56 @@ class YarbisTUI(App):
 
         if bid == "btn_refresh_inst":
             self._refresh_instancias()
+        elif bid == "btn_switch":
+            selected = self.query_one("#inst_select", Select).value
+            target = str(selected) if selected not in (None, Select.BLANK) else self._selected_instance()
+            self.switch_to_instance(target)
         elif bid == "btn_unblock":
-            target, answer = val("inst_target"), val("inst_msg")
-            if target and answer:
+            target, answer = self._selected_instance(), val("inst_msg")
+            if not target:
+                self._chat.write("[yellow]Elige una instancia en la tabla.[/yellow]")
+            elif not answer:
+                self._chat.write("[yellow]Escribe la respuesta que darás por el usuario.[/yellow]")
+            else:
                 self._chat.write(self._safe(answer_instance_for_user, target, answer))
                 self._refresh_instancias()
         elif bid == "btn_send_msg":
-            target, msg = val("inst_target"), val("inst_msg")
+            target, msg = self._selected_instance(), val("inst_msg")
             if target and msg:
                 self._chat.write(self._safe(send_yarbis_message, target, msg))
+            else:
+                self._chat.write("[yellow]Elige una instancia y escribe el mensaje.[/yellow]")
+        elif bid == "btn_broadcast":
+            answer = val("inst_msg")
+            waiting = [row["id"] for row in getattr(self, "_rows", []) if row["waiting"]]
+            if not answer:
+                self._chat.write("[yellow]Escribe la respuesta a difundir.[/yellow]")
+            elif not waiting:
+                self._chat.write("[yellow]Ninguna instancia está esperando respuesta.[/yellow]")
+            else:
+                for target in waiting:
+                    self._chat.write(f"[b]{target}:[/b] " + self._safe(answer_instance_for_user, target, answer))
+                self._refresh_instancias()
+        elif bid == "btn_svc_install":
+            self._chat.write(self._safe(install_background_service))
+            self._refresh_servicio()
+        elif bid == "btn_svc_start":
+            self._chat.write(self._safe(start_background_service))
+            self._refresh_servicio()
+        elif bid == "btn_svc_stop":
+            self._chat.write(self._safe(stop_background_service))
+            self._refresh_servicio()
+        elif bid == "btn_svc_remove":
+            self._chat.write(self._safe(remove_background_service))
+            self._refresh_servicio()
+        elif bid == "btn_svc_auto_on":
+            self._chat.write(self._safe(set_background_service_autostart, True))
+            self._refresh_servicio()
+        elif bid == "btn_svc_auto_off":
+            self._chat.write(self._safe(set_background_service_autostart, False))
+            self._refresh_servicio()
+        elif bid == "btn_pulse":
+            self._save_pulse()
         elif bid == "btn_goal":
             goal = val("ctx_goal")
             if goal:
@@ -382,6 +639,44 @@ class YarbisTUI(App):
             self._chat.write(self._safe(set_mcp_enabled, True))
         elif bid == "btn_mcp_off":
             self._chat.write(self._safe(set_mcp_enabled, False))
+
+    def on_select_changed(self, event: Select.Changed) -> None:
+        """Elegir en el selector cambia de instancia al instante."""
+        if event.select.id != "inst_select":
+            return
+        value = event.value
+        if value in (None, Select.BLANK):
+            return
+        self.switch_to_instance(str(value))
+
+    def _save_pulse(self) -> None:
+        def val(widget_id: str) -> str:
+            return self.query_one(f"#{widget_id}", Input).value.strip()
+
+        enabled_raw = self.query_one("#pulse_enabled", Select).value
+        try:
+            current = get_service_proactive_settings()
+        except Exception:
+            current = {}
+        enabled = (
+            bool(current.get("enabled"))
+            if enabled_raw in (None, Select.BLANK)
+            else str(enabled_raw) == "1"
+        )
+        interval = val("pulse_interval") or current.get("interval_seconds", 1800)
+        delay = val("pulse_delay") or current.get("start_delay_seconds", 60)
+        cycles = val("pulse_cycles")  # vacio = hasta terminar
+
+        self._chat.write(self._safe(
+            update_service_proactive_settings,
+            enabled,
+            interval,
+            cycles or None,
+            delay,
+            val("pulse_model"),
+        ))
+        self._refresh_pulso()
+        self._refresh_estado()
 
     def _save_provider(self) -> None:
         provider = self.query_one("#set_provider", Select).value
