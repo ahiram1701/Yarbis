@@ -41,6 +41,51 @@ class TuiInstancePanelTestCase(unittest.IsolatedAsyncioTestCase):
                 self.assertIn("asistente", options)
 
 
+class TuiShortcutTestCase(unittest.IsolatedAsyncioTestCase):
+    """El atajo debe existir y NO colisionar con un codigo ASCII de control.
+
+    Ctrl+I no servia: en una terminal ES Tab (Textual: KEY_ALIASES
+    {'tab': ['ctrl+i']}), asi que lo consumia la navegacion de foco.
+    """
+
+    def test_binding_avoids_ascii_control_aliases(self):
+        import yarbis_tui
+        from textual.keys import KEY_ALIASES
+
+        aliased = {alias for aliases in KEY_ALIASES.values() for alias in aliases}
+        keys = []
+        for binding in yarbis_tui.YarbisTUI.BINDINGS:
+            keys.append(binding[0] if isinstance(binding, tuple) else binding.key)
+        self.assertIn("f2", keys)
+        for key in keys:
+            self.assertNotIn(key, aliased, f"{key} colisiona con una tecla ASCII de control")
+
+    async def test_f2_opens_the_instance_selector(self):
+        import yarbis_tui
+
+        app = yarbis_tui.YarbisTUI()
+        with patch.object(yarbis_tui, "_instance_rows", return_value=ROWS):
+            async with app.run_test() as pilot:
+                await pilot.pause()
+                app.query_one("#chat_input").focus()
+                await pilot.press("f2")
+                await pilot.pause()
+                active_tab = app.query_one("TabbedContent").active
+        self.assertEqual(active_tab, "tab-instancias")
+
+
+class TuiRefreshRobustnessTestCase(unittest.IsolatedAsyncioTestCase):
+    def test_periodic_refresh_survives_missing_widgets(self):
+        """El refresco de 6s puede correr con la app cerrandose (widgets ya
+        desmontados). Antes eso lanzaba NoMatches y tumbaba la TUI."""
+        import yarbis_tui
+
+        app = yarbis_tui.YarbisTUI()  # sin montar: no hay ningun widget
+        with patch.object(yarbis_tui, "_instance_rows", return_value=ROWS):
+            app._refresh_light()          # no debe lanzar
+            app.action_refresh()          # tampoco el refresco completo
+
+
 class TuiSwitchInstanceTestCase(unittest.IsolatedAsyncioTestCase):
     async def test_switching_rebinds_and_updates_subtitle(self):
         import yarbis_tui

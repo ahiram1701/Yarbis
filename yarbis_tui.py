@@ -35,6 +35,7 @@ _preselect_instance()
 
 from textual import work
 from textual.app import App, ComposeResult
+from textual.binding import Binding
 from textual.containers import Horizontal, VerticalScroll
 from textual.widgets import (
     Button,
@@ -234,7 +235,11 @@ class YarbisTUI(App):
         ("ctrl+r", "run_cycle", "Ciclo"),
         ("ctrl+g", "run_auto", "Auto"),
         ("ctrl+s", "stop", "Detener"),
-        ("ctrl+i", "switch_instance", "Instancia"),
+        # OJO: en una terminal Ctrl+I ES Tab (Textual: KEY_ALIASES {'tab':
+        # ['ctrl+i']}), asi que ese atajo lo consumia la navegacion de foco y
+        # nunca disparaba. F2 no colisiona con ningun codigo ASCII de control.
+        ("f2", "switch_instance", "Instancia"),
+        Binding("ctrl+t", "switch_instance", "Instancia", show=False),
         ("f5", "refresh", "Refrescar"),
         ("ctrl+q", "quit", "Salir"),
     ]
@@ -250,7 +255,7 @@ class YarbisTUI(App):
             with TabPane("Chat", id="tab-chat"):
                 yield Static("", id="pending_banner", classes="hidden")
                 yield RichLog(id="chat_log", wrap=True, markup=True, highlight=False)
-                yield Input(placeholder="Escribe tu mensaje y Enter…  (Ctrl+R ciclo, Ctrl+G auto, Ctrl+I instancia)", id="chat_input")
+                yield Input(placeholder="Escribe tu mensaje y Enter…  (Ctrl+R ciclo, Ctrl+G auto, F2 instancia)", id="chat_input")
             with TabPane("Estado", id="tab-estado"):
                 with VerticalScroll():
                     yield Static("Cargando…", id="estado")
@@ -332,12 +337,23 @@ class YarbisTUI(App):
         table = self.query_one("#inst_table", DataTable)
         table.add_columns("Instancia", "Estado", "Espera", "Objetivo")
         self._chat.write("[b]Yarbis TUI[/b] — instancia activa: "
-                          f"[b]{self.instance_id}[/b]. Ctrl+I para cambiar de instancia.")
+                          f"[b]{self.instance_id}[/b]. F2 para cambiar de instancia.")
         self._update_subtitle()
         self.action_refresh()
         self.set_interval(6.0, self._refresh_light)
 
     # ---------- refresco ----------
+    def _widget(self, widget_id: str, widget_type=Static):
+        """El widget, o None si aun no esta montado o la app se esta cerrando.
+
+        El refresco periodico (cada 6s) puede dispararse mientras los widgets ya
+        se desmontaron: sin esto, `query_one` lanza NoMatches y tumba la TUI.
+        """
+        try:
+            return self.query_one(f"#{widget_id}", widget_type)
+        except Exception:
+            return None
+
     def _refresh_light(self) -> None:
         # Refresco periodico barato: estado + actividad (no toca el LLM).
         self._refresh_estado()
@@ -364,7 +380,9 @@ class YarbisTUI(App):
             question = _pending_question(load_state())
         except Exception:
             question = ""
-        banner = self.query_one("#pending_banner", Static)
+        banner = self._widget("pending_banner")
+        if banner is None:
+            return
         if question:
             banner.update(f"[b yellow]Yarbis espera tu respuesta:[/b yellow] {question}")
             banner.remove_class("hidden")
@@ -384,7 +402,9 @@ class YarbisTUI(App):
         except Exception as exc:
             summary = f"(no pude leer el estado: {exc})"
         text = f"{summary}\n\n--- Health ---\n{_render_health()}"
-        self.query_one("#estado", Static).update(text)
+        panel = self._widget("estado")
+        if panel is not None:
+            panel.update(text)
 
     def _refresh_instancias(self) -> None:
         try:
@@ -394,7 +414,9 @@ class YarbisTUI(App):
             return
 
         self._rows = rows
-        table = self.query_one("#inst_table", DataTable)
+        table = self._widget("inst_table", DataTable)
+        if table is None:
+            return
         previous = table.cursor_row
         table.clear()
         for row in rows:
@@ -409,7 +431,9 @@ class YarbisTUI(App):
         if rows and previous is not None and previous < len(rows):
             table.move_cursor(row=previous)
 
-        selector = self.query_one("#inst_select", Select)
+        selector = self._widget("inst_select", Select)
+        if selector is None:
+            return
         selector.set_options([(row["id"], row["id"]) for row in rows])
 
     def _selected_instance(self) -> str:
@@ -422,22 +446,34 @@ class YarbisTUI(App):
         return ""
 
     def _refresh_servicio(self) -> None:
-        self.query_one("#servicio", Static).update(self._safe(background_service_status))
+        panel = self._widget("servicio")
+        if panel is not None:
+            panel.update(self._safe(background_service_status))
 
     def _refresh_pulso(self) -> None:
         try:
             pulse = get_service_proactive_settings()
         except Exception:
             return
-        self.query_one("#pulse_interval", Input).value = str(pulse.get("interval_seconds", "") or "")
         cycles = pulse.get("cycles")
-        self.query_one("#pulse_cycles", Input).value = "" if cycles in (None, "") else str(cycles)
-        self.query_one("#pulse_delay", Input).value = str(pulse.get("start_delay_seconds", "") or "")
-        self.query_one("#pulse_model", Input).value = str(pulse.get("model", "") or "")
-        self.query_one("#pulse_enabled", Select).value = "1" if pulse.get("enabled") else "0"
+        campos = {
+            "pulse_interval": str(pulse.get("interval_seconds", "") or ""),
+            "pulse_cycles": "" if cycles in (None, "") else str(cycles),
+            "pulse_delay": str(pulse.get("start_delay_seconds", "") or ""),
+            "pulse_model": str(pulse.get("model", "") or ""),
+        }
+        for widget_id, value in campos.items():
+            campo = self._widget(widget_id, Input)
+            if campo is not None:
+                campo.value = value
+        selector = self._widget("pulse_enabled", Select)
+        if selector is not None:
+            selector.value = "1" if pulse.get("enabled") else "0"
 
     def _refresh_contexto(self) -> None:
-        self.query_one("#contexto", Static).update(self._safe(agent_overview))
+        panel = self._widget("contexto")
+        if panel is not None:
+            panel.update(self._safe(agent_overview))
 
     def _refresh_ajustes(self) -> None:
         try:
@@ -454,10 +490,14 @@ class YarbisTUI(App):
             )
         except Exception as exc:
             text = f"(error: {exc})"
-        self.query_one("#ajustes", Static).update(text)
+        panel = self._widget("ajustes")
+        if panel is not None:
+            panel.update(text)
 
     def _refresh_actividad(self) -> None:
-        log = self.query_one("#actividad", RichLog)
+        log = self._widget("actividad", RichLog)
+        if log is None:
+            return
         log.clear()
         try:
             for event in activity.read_recent_events(limit=60):
@@ -516,7 +556,7 @@ class YarbisTUI(App):
 
     # ---------- instancias ----------
     def action_switch_instance(self) -> None:
-        """Ctrl+I: ir al selector de instancia."""
+        """F2 (o Ctrl+T): ir al selector de instancia."""
         self.query_one(TabbedContent).active = "tab-instancias"
         self._refresh_instancias()
         self.query_one("#inst_select", Select).focus()
