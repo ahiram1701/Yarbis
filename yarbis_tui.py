@@ -297,7 +297,7 @@ class YarbisTUI(App):
                     yield Input(placeholder="modelo", id="set_model", classes="field")
                 with Horizontal(classes="row"):
                     yield Input(placeholder="host / base_url / worker_url", id="set_host", classes="field")
-                    yield Input(placeholder="api key / secreto", id="set_key", classes="field", password=True)
+                    yield Input(placeholder="api key / secreto (vacío = conservar)", id="set_key", classes="field", password=True)
                     yield Button("Guardar proveedor", id="btn_provider", variant="primary")
                 with Horizontal(classes="row"):
                     yield Button("Control PC on", id="btn_cc_on")
@@ -476,6 +476,7 @@ class YarbisTUI(App):
             panel.update(self._safe(agent_overview))
 
     def _refresh_ajustes(self) -> None:
+        active = ""
         try:
             mp = load_state().get("model_provider", {})
             active = mp.get("default", "?")
@@ -484,15 +485,38 @@ class YarbisTUI(App):
                 f"Proveedor activo: {active}\n"
                 f"Modelo: {block.get('model', '') or '-'}\n"
                 f"Host: {block.get('host', '') or '-'}\n"
-                f"Fallbacks: {', '.join(block.get('fallback_models', []) or []) or '-'}\n\n"
-                "Proveedores disponibles: ollama, openrouter, openai_compat, puter.\n"
-                "Elige uno abajo, pon modelo (y host/key si aplica) y Guardar."
+                f"Fallbacks: {', '.join(block.get('fallback_models', []) or []) or '-'}\n"
+                f"API key guardada: {'si' if str(block.get('api_key', '')).strip() else 'no'}\n\n"
+                "Cambia lo que necesites abajo y pulsa Guardar proveedor."
             )
         except Exception as exc:
             text = f"(error: {exc})"
         panel = self._widget("ajustes")
         if panel is not None:
             panel.update(text)
+        # Precargar el formulario con la config ACTUAL: si se deja vacio el
+        # modelo, guardar falla ("el modelo no puede quedar vacio"), asi que un
+        # formulario en blanco obligaba a reescribirlo todo para tocar una cosa.
+        if active and active in _PROVIDER_UPDATERS:
+            selector = self._widget("set_provider", Select)
+            if selector is not None and selector.value in (None, Select.BLANK):
+                selector.value = active
+            self._load_provider_fields(active)
+
+    def _load_provider_fields(self, provider: str) -> None:
+        """Vuelca modelo y host del proveedor indicado en el formulario."""
+        try:
+            block = load_state().get("model_provider", {}).get(provider, {})
+        except Exception:
+            return
+        if not isinstance(block, dict):
+            return
+        campo_model = self._widget("set_model", Input)
+        if campo_model is not None:
+            campo_model.value = str(block.get("model", "") or "")
+        campo_host = self._widget("set_host", Input)
+        if campo_host is not None:
+            campo_host.value = str(block.get("host", "") or "")
 
     def _refresh_actividad(self) -> None:
         log = self._widget("actividad", RichLog)
@@ -681,13 +705,16 @@ class YarbisTUI(App):
             self._chat.write(self._safe(set_mcp_enabled, False))
 
     def on_select_changed(self, event: Select.Changed) -> None:
-        """Elegir en el selector cambia de instancia al instante."""
-        if event.select.id != "inst_select":
-            return
         value = event.value
-        if value in (None, Select.BLANK):
+        if event.select.id == "inst_select":
+            # Elegir instancia la cambia al instante.
+            if value not in (None, Select.BLANK):
+                self.switch_to_instance(str(value))
             return
-        self.switch_to_instance(str(value))
+        if event.select.id == "set_provider":
+            # Al elegir proveedor, mostrar SU configuracion actual.
+            if value not in (None, Select.BLANK):
+                self._load_provider_fields(str(value))
 
     def _save_pulse(self) -> None:
         def val(widget_id: str) -> str:
