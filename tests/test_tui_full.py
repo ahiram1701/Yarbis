@@ -313,6 +313,57 @@ class TuiInstancesTabTestCase(unittest.IsolatedAsyncioTestCase):
             h.stop()
 
 
+class TuiTelegramMirrorTestCase(unittest.IsolatedAsyncioTestCase):
+    """Lo que hablas por la TUI debe llegar a Telegram, como en las otras UIs.
+
+    La TUI pasaba emit_notifications=False / mirror_telegram=False, asi que las
+    respuestas nunca se espejaban al telefono.
+    """
+
+    async def test_chat_reply_does_not_disable_notifications(self):
+        import yarbis_tui
+
+        h = _TuiHarness()
+        try:
+            with patch.object(yarbis_tui, "submit_user_reply", return_value="ok") as reply:
+                app = yarbis_tui.YarbisTUI()
+                async with app.run_test() as pilot:
+                    await pilot.pause()
+                    chat = app.query_one("#chat_input", Input)
+                    chat.value = "hola"
+                    chat.focus()
+                    await pilot.press("enter")
+                    await app.workers.wait_for_complete()
+                    await pilot.pause()
+            reply.assert_called_once()
+            self.assertNotEqual(reply.call_args.kwargs.get("emit_notifications"), False)
+        finally:
+            h.stop()
+
+    async def test_cycle_and_auto_mirror_to_telegram(self):
+        import yarbis_tui
+
+        h = _TuiHarness()
+        try:
+            with patch.object(yarbis_tui, "run_cycle_with_output", return_value="ciclo") as cycle, \
+                 patch.object(yarbis_tui, "run_auto_with_output", return_value="auto") as auto:
+                app = yarbis_tui.YarbisTUI()
+                async with app.run_test() as pilot:
+                    await pilot.pause()
+                    app.action_run_cycle()
+                    await app.workers.wait_for_complete()
+                    await pilot.pause()
+                    app.action_run_auto()
+                    await app.workers.wait_for_complete()
+                    await pilot.pause()
+            for mock in (cycle, auto):
+                mock.assert_called_once()
+                self.assertNotEqual(mock.call_args.kwargs.get("mirror_telegram"), False)
+                self.assertNotEqual(mock.call_args.kwargs.get("emit_notifications"), False)
+        finally:
+            h.stop()
+
+
 class TuiChatTestCase(unittest.IsolatedAsyncioTestCase):
     async def test_stop_action_and_busy_guard(self):
         import yarbis_tui

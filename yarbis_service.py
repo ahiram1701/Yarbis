@@ -453,8 +453,33 @@ def _send_telegram_operation_update(label: str, output: str) -> bool:
         return False
 
 
+# Ultimo fallo tecnico avisado por Telegram, para no repetirlo en cada pulso.
+_LAST_PROACTIVE_FAILURE = {"text": ""}
+
+
+def _is_model_failure(output: str) -> bool:
+    """El pulso no produjo trabajo: solo un fallo del proveedor de modelo."""
+    return str(output).strip().startswith("No pude consultar ")
+
+
 def _send_proactive_telegram_update(output: str) -> bool:
-    return _send_telegram_operation_update("Pulso proactivo", output)
+    """Resumen del pulso a Telegram, sin convertirlo en spam.
+
+    Un pulso que falla cada 30 min mandaba el error tecnico completo al telefono
+    una y otra vez (paso de verdad con un 400 del proveedor). Ahora un fallo se
+    avisa UNA vez y no se repite mientras siga siendo el mismo; el detalle queda
+    siempre en el log y en el estado.
+    """
+    rendered = str(output).strip()
+    if _is_model_failure(rendered):
+        if rendered == _LAST_PROACTIVE_FAILURE["text"]:
+            _log("Pulso proactivo fallo igual que la vez anterior; no repito el aviso por Telegram.")
+            return False
+        _LAST_PROACTIVE_FAILURE["text"] = rendered
+        return _send_telegram_operation_update("Pulso proactivo", rendered)
+
+    _LAST_PROACTIVE_FAILURE["text"] = ""  # se recupero: el proximo fallo vuelve a avisar
+    return _send_telegram_operation_update("Pulso proactivo", rendered)
 
 
 def _proactive_waiting_for_user_message(state: dict) -> str:

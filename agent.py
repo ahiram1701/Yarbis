@@ -2048,6 +2048,73 @@ def _render_learned_directives(state) -> str:
     )
 
 
+HISTORY_WINDOW_MESSAGES = 20
+
+
+def _coherent_message_window(messages: list, limit: int = HISTORY_WINDOW_MESSAGES) -> list:
+    """Ventana del historial VALIDA para APIs tipo OpenAI.
+
+    Las APIs OpenAI-compatibles (Puter, OpenRouter, openai_compat) exigen que un
+    mensaje `role="tool"` vaya precedido por el `assistant` que anuncio ese
+    `tool_call`, y que cada `tool_call` tenga su respuesta. Cortar el historial
+    con un slice ciego rompe esos pares cuando el corte cae en medio de una
+    secuencia de herramientas, y el proveedor responde:
+        400 messages with role 'tool' must be a response to a preceeding
+        message with 'tool_calls'
+    Ollama lo tolera, por eso no se noto antes. Aqui se descartan los huerfanos
+    por ambos lados. Los `tool` SIN id no se tocan: el conversor ya los degrada
+    a mensaje de usuario.
+    """
+    window = [item for item in (messages or [])[-max(1, int(limit)):] if isinstance(item, dict)]
+
+    # 1) Fuera los `tool` cuyo assistant con tool_calls quedo fuera de la ventana.
+    announced: set[str] = set()
+    without_orphan_tools = []
+    for message in window:
+        role = str(message.get("role", ""))
+        if role == "assistant":
+            for call in message.get("tool_calls") or []:
+                call_id = str(_tool_call_field(call, "id", "") or "").strip()
+                if call_id:
+                    announced.add(call_id)
+        elif role == "tool":
+            call_id = str(message.get("tool_call_id", "") or "").strip()
+            if call_id and call_id not in announced:
+                continue  # huerfano: su anuncio quedo fuera de la ventana
+        without_orphan_tools.append(message)
+
+    # 2) Fuera los tool_calls que se quedaron sin respuesta dentro de la ventana.
+    answered = {
+        str(message.get("tool_call_id", "") or "").strip()
+        for message in without_orphan_tools
+        if str(message.get("role", "")) == "tool"
+    }
+    coherent = []
+    for message in without_orphan_tools:
+        calls = message.get("tool_calls") if str(message.get("role", "")) == "assistant" else None
+        if not calls:
+            coherent.append(message)
+            continue
+        kept = [
+            call for call in calls
+            if str(_tool_call_field(call, "id", "") or "").strip() in answered
+        ]
+        if len(kept) == len(calls):
+            coherent.append(message)
+            continue
+        trimmed = dict(message)
+        if kept:
+            trimmed["tool_calls"] = kept
+        else:
+            trimmed.pop("tool_calls", None)
+        # Un assistant sin texto y sin tool_calls no aporta nada y algunos
+        # proveedores lo rechazan.
+        if not str(trimmed.get("content", "")).strip() and not trimmed.get("tool_calls"):
+            continue
+        coherent.append(trimmed)
+    return coherent
+
+
 def _render_messages_transcript(messages: list) -> str:
     """Convierte turnos crudos en un transcripto compacto para resumir."""
     lines = []
@@ -2226,7 +2293,7 @@ def build_messages(state):
         {"role": "system", "content": second_system},
     ]
 
-    messages.extend(state["messages"][-20:])
+    messages.extend(_coherent_message_window(state["messages"]))
     return messages
 
 

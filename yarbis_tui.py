@@ -550,7 +550,9 @@ class YarbisTUI(App):
     def _run_reply(self, text: str) -> None:
         self.call_from_thread(self._set_busy, True, "respondiendo")
         try:
-            out = submit_user_reply(text, emit_notifications=False)
+            # Notificar/espejar a Telegram como hacen la app de escritorio y la
+            # UI movil: si no, lo que hablas por la TUI no llega al telefono.
+            out = submit_user_reply(text)
         except Exception as exc:
             out = f"(error: {exc})"
         self.call_from_thread(self._chat.write, f"[b green]Yarbis:[/b green] {out}")
@@ -610,12 +612,12 @@ class YarbisTUI(App):
     def action_run_cycle(self) -> None:
         if self.busy:
             return
-        self._run_op("ciclo", lambda: run_cycle_with_output(emit_notifications=False, mirror_telegram=False))
+        self._run_op("ciclo", lambda: run_cycle_with_output())
 
     def action_run_auto(self) -> None:
         if self.busy:
             return
-        self._run_op("auto", lambda: run_auto_with_output(emit_notifications=False, mirror_telegram=False))
+        self._run_op("auto", lambda: run_auto_with_output())
 
     def action_stop(self) -> None:
         self._chat.write("[yellow]" + self._safe(lambda: request_stop_current_operation("tui")) + "[/yellow]")
