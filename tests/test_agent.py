@@ -637,7 +637,7 @@ class AgentTestCase(unittest.TestCase):
     def test_build_messages_includes_personal_context(self):
         state = memory.normalize_state({
             "goal": "Organizar la semana",
-            "profile": {"name": "Ahiram", "preferences": ["local first"]},
+            "profile": {"name": "Usuario", "preferences": ["local first"]},
             "tasks": [{"id": "task-1", "title": "Definir prioridades", "status": "pending"}],
             "notes": [{"id": "note-1", "title": "Rutina", "content": "Planificar cada lunes"}],
             "internet": {"mode": "auto"},
@@ -661,7 +661,7 @@ class AgentTestCase(unittest.TestCase):
         self.assertIn("state.json", messages[1]["content"])
         self.assertIn("respuestas completas", messages[1]["content"])
         self.assertIn("Todo aprendizaje estable", messages[1]["content"])
-        self.assertIn("Ahiram", messages[1]["content"])
+        self.assertIn("Usuario", messages[1]["content"])
         self.assertIn("Definir prioridades", messages[1]["content"])
         self.assertIn("Internet: modo=auto", messages[1]["content"])
         self.assertIn("Autoconocimiento de Yarbis", messages[1]["content"])
@@ -670,9 +670,12 @@ class AgentTestCase(unittest.TestCase):
         self.assertIn("no procesador AMD", messages[0]["content"])
 
     def test_format_local_temporal_context_uses_fixed_local_time(self):
-        fixed_now = datetime(2026, 5, 16, 3, 33, 19, tzinfo=timezone(timedelta(hours=-6)))
+        utc_minus_6 = timezone(timedelta(hours=-6))
+        fixed_now = datetime(2026, 5, 16, 3, 33, 19, tzinfo=utc_minus_6)
 
-        temporal_context = agent._format_local_temporal_context(fixed_now)
+        # Fija la zona para no depender de la del equipo (los runners de CI estan en UTC).
+        with patch.object(agent, "_resolve_user_timezone", return_value=utc_minus_6):
+            temporal_context = agent._format_local_temporal_context(fixed_now)
 
         self.assertIn("Contexto temporal local:", temporal_context)
         self.assertIn("Fecha local: 2026-05-16", temporal_context)

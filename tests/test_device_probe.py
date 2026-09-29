@@ -101,7 +101,7 @@ class PortableSupervisorTestCase(unittest.TestCase):
         self.runtime = Path(tempfile.mkdtemp())
         self._patches = [
             patch.object(native_service.platform, "system", return_value="Plan9"),
-            patch.object(native_service.os, "name", "posix"),
+            patch.object(native_service, "_is_windows", return_value=False),
             patch.object(native_service.yarbis_instance, "runtime_dir", return_value=self.runtime),
         ]
         for p in self._patches:

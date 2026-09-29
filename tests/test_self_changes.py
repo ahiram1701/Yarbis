@@ -39,7 +39,7 @@ class SelfChangesModuleTestCase(unittest.TestCase):
             root / "tests_runtime" / "caso" / "a.py",
             root / "service_host" / "bin" / "x.dll",
             root / "service_host" / "obj" / "x.dll",
-            Path("C:/otra/carpeta/tools.py"),
+            self_changes.WORKSPACE_ROOT.parent / "otra" / "carpeta" / "tools.py",
         ]
         for path in rejected:
             self.assertFalse(self_changes.is_own_source_path(path), f"no debio aceptar: {path}")
@@ -71,7 +71,7 @@ class SelfChangesModuleTestCase(unittest.TestCase):
                 file_path=self_changes.WORKSPACE_ROOT / ".yarbis_runtime" / "x.json",
                 action="write",
             )
-            self_changes.record_change(file_path=Path("C:/fuera/del/workspace.py"), action="write")
+            self_changes.record_change(file_path=self_changes.WORKSPACE_ROOT.parent / "fuera" / "del" / "workspace.py", action="write")
             self.assertEqual(self_changes.load_changes(), [])
         self.assertFalse(self.log_path.exists())
 

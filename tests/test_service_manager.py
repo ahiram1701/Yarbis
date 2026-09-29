@@ -73,7 +73,7 @@ class ServiceManagerTestCase(unittest.TestCase):
             stdout=(
                 "[SC] QueryServiceConfig SUCCESS\n"
                 "        START_TYPE         : 2   AUTO_START\n"
-                "        SERVICE_START_NAME : .\\Ahiram\n"
+                "        SERVICE_START_NAME : .\\usuario\n"
             ),
         )
 
@@ -85,7 +85,7 @@ class ServiceManagerTestCase(unittest.TestCase):
         self.assertEqual(result["pid"], 4321)
         self.assertTrue(result["autostart_enabled"])
         self.assertEqual(result["start_type"], "auto_start")
-        self.assertEqual(result["account_name"], ".\\Ahiram")
+        self.assertEqual(result["account_name"], ".\\usuario")
 
     def test_get_service_status_parses_localized_spanish_sc_output(self):
         query = completed(
@@ -253,21 +253,21 @@ class ServiceManagerTestCase(unittest.TestCase):
             ) as sc_mock:
                 result = service_manager.install_service(
                     start_auto=False,
-                    account_name=".\\Ahiram",
+                    account_name=".\\usuario",
                     password="secret",
                 )
 
         create_args = sc_mock.call_args_list[1].args[0]
-        self.assertIn("Cuenta: .\\Ahiram", result)
+        self.assertIn("Cuenta: .\\usuario", result)
         self.assertIn("obj=", create_args)
-        self.assertIn(".\\Ahiram", create_args)
+        self.assertIn(".\\usuario", create_args)
         self.assertIn("password=", create_args)
         self.assertIn("secret", create_args)
 
     def test_install_service_requires_password_for_regular_account(self):
         with patch.object(service_manager, "_ensure_service_host_built"):
             with self.assertRaises(ValueError):
-                service_manager.install_service(start_auto=False, account_name=".\\Ahiram")
+                service_manager.install_service(start_auto=False, account_name=".\\usuario")
 
     def test_install_service_updates_existing_service(self):
         with patch.object(service_manager, "_ensure_service_host_built"):
@@ -311,7 +311,7 @@ class ServiceManagerTestCase(unittest.TestCase):
             service_manager,
             "get_service_status",
             side_effect=[
-                status(installed=True, running=False, autostart=True, account_name=".\\Ahiram"),
+                status(installed=True, running=False, autostart=True, account_name=".\\usuario"),
                 status(installed=True, running=True, pid=777, autostart=True),
             ],
         ):
@@ -344,12 +344,12 @@ class ServiceManagerTestCase(unittest.TestCase):
         with patch.object(
             service_manager,
             "get_service_status",
-            return_value=status(installed=True, running=False, account_name=".\\Ahiram"),
+            return_value=status(installed=True, running=False, account_name=".\\usuario"),
         ):
             with patch.object(service_manager, "_run_sc", return_value=logon_failure):
                 with patch.object(service_manager, "install_service") as install_mock:
                     with self.assertRaises(service_manager.ServiceLogonFailure):
-                        service_manager.start_service(account_name=".\\Ahiram", password="bad")
+                        service_manager.start_service(account_name=".\\usuario", password="bad")
 
         install_mock.assert_not_called()
 
@@ -500,7 +500,8 @@ class ServiceManagerTestCase(unittest.TestCase):
         service_manager._READINESS_CACHE["created_at"] = 0.0
         with patch.object(memory, "STATE_FILE", state_path):
             memory.save_state(seeded_state)
-            with patch.object(service_manager, "_dependency_available", return_value=True):
+            with patch.object(service_manager, "_dependency_available", return_value=True), \
+                 patch.object(service_manager, "_venv_python_path", return_value=Path(sys.executable)):
                 with patch.object(service_manager, "_ollama_model_names", return_value=(["qwen3.5:2b"], "")):
                     with patch.object(
                         service_manager,
@@ -533,7 +534,8 @@ class ServiceManagerTestCase(unittest.TestCase):
         service_manager._READINESS_CACHE["created_at"] = 0.0
         with patch.object(memory, "STATE_FILE", state_path):
             memory.save_state(seeded_state)
-            with patch.object(service_manager, "_dependency_available", return_value=True):
+            with patch.object(service_manager, "_dependency_available", return_value=True), \
+                 patch.object(service_manager, "_venv_python_path", return_value=Path(sys.executable)):
                 with patch.object(
                     service_manager,
                     "_safe_service_status",
@@ -567,7 +569,8 @@ class ServiceManagerTestCase(unittest.TestCase):
         service_manager._READINESS_CACHE["created_at"] = 0.0
         with patch.object(memory, "STATE_FILE", state_path):
             memory.save_state(seeded_state)
-            with patch.object(service_manager, "_dependency_available", return_value=True):
+            with patch.object(service_manager, "_dependency_available", return_value=True), \
+                 patch.object(service_manager, "_venv_python_path", return_value=Path(sys.executable)):
                 with patch.object(
                     service_manager,
                     "_safe_service_status",

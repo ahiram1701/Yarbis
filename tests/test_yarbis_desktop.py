@@ -287,7 +287,7 @@ class YarbisDesktopTestCase(unittest.TestCase):
 
         settings = {
             "goal": "Usar Yarbis con OpenRouter",
-            "name": "Ahiram",
+            "name": "Usuario",
             "role": "Usuario local",
             "provider": memory.MODEL_PROVIDER_OPENROUTER,
             "model": "openai/gpt-demo",

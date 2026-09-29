@@ -1,0 +1,7 @@
+version: 2
+updates:
+  # Solo las actions de los workflows; las dependencias Python van fijadas a mano.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly

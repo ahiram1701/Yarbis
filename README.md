@@ -139,6 +139,18 @@ permisos de administrador cuando el servicio SCM `Yarbis` esta instalado.
 
 ## Licencia y desarrollo
 
-Proyecto personal. Los tests se corren con `python -m unittest discover -s tests`
-y el lint con `ruff check .`. Ver [docs/arquitectura.md](docs/arquitectura.md)
+Copyright (c) 2026 Alberto Hiram Saucedo Guajardo. **Todos los derechos
+reservados.** El codigo es visible publicamente, pero no se concede ninguna
+licencia para usarlo, copiarlo, modificarlo ni distribuirlo sin permiso escrito. Ver [LICENSE](LICENSE).
+
+Los tests se corren con `python -m unittest discover -s tests`
+y el lint con `ruff check .`.
+
+**CI/CD.** Cada PR y cada push a `main` corren Ruff y la suite en Windows y
+Linux, y compilan el host .NET (`.github/workflows/ci.yml`). Para publicar una
+version: sube `version` en `pyproject.toml`, haz merge a `main` y empuja un tag
+con el mismo numero (`git tag v0.2.0` y `git push origin v0.2.0`). El workflow
+`release.yml` vuelve a correr CI y, si pasa, crea un GitHub Release con el
+codigo, el host del servicio compilado y sus SHA256. Un tag con sufijo
+(`v0.2.0-rc1`) sale como pre-release. Ver [docs/arquitectura.md](docs/arquitectura.md)
 para entender el diseno antes de contribuir.
