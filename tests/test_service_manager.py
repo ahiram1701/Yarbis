@@ -500,7 +500,8 @@ class ServiceManagerTestCase(unittest.TestCase):
         service_manager._READINESS_CACHE["created_at"] = 0.0
         with patch.object(memory, "STATE_FILE", state_path):
             memory.save_state(seeded_state)
-            with patch.object(service_manager, "_dependency_available", return_value=True):
+            with patch.object(service_manager, "_dependency_available", return_value=True), \
+                 patch.object(service_manager, "_venv_python_path", return_value=Path(sys.executable)):
                 with patch.object(service_manager, "_ollama_model_names", return_value=(["qwen3.5:2b"], "")):
                     with patch.object(
                         service_manager,
@@ -533,7 +534,8 @@ class ServiceManagerTestCase(unittest.TestCase):
         service_manager._READINESS_CACHE["created_at"] = 0.0
         with patch.object(memory, "STATE_FILE", state_path):
             memory.save_state(seeded_state)
-            with patch.object(service_manager, "_dependency_available", return_value=True):
+            with patch.object(service_manager, "_dependency_available", return_value=True), \
+                 patch.object(service_manager, "_venv_python_path", return_value=Path(sys.executable)):
                 with patch.object(
                     service_manager,
                     "_safe_service_status",
@@ -567,7 +569,8 @@ class ServiceManagerTestCase(unittest.TestCase):
         service_manager._READINESS_CACHE["created_at"] = 0.0
         with patch.object(memory, "STATE_FILE", state_path):
             memory.save_state(seeded_state)
-            with patch.object(service_manager, "_dependency_available", return_value=True):
+            with patch.object(service_manager, "_dependency_available", return_value=True), \
+                 patch.object(service_manager, "_venv_python_path", return_value=Path(sys.executable)):
                 with patch.object(
                     service_manager,
                     "_safe_service_status",

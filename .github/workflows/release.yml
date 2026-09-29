@@ -1,0 +1,77 @@
+name: Release
+
+# CD: al hacer push de un tag vX.Y.Z se corre CI completo y, si pasa, se publica
+# un GitHub Release con el codigo y el host del servicio compilado.
+#   git tag v0.2.0 && git push origin v0.2.0
+# Un tag con sufijo (v0.2.0-rc1) sale como pre-release.
+
+on:
+  push:
+    tags: ["v*.*.*"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  ci:
+    uses: ./.github/workflows/ci.yml
+
+  release:
+    name: Build and publish release
+    needs: ci
+    runs-on: windows-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write
+    env:
+      TAG: ${{ github.ref_name }}
+      GH_TOKEN: ${{ github.token }}
+
+    defaults:
+      run:
+        shell: pwsh
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+
+      - name: Check tag matches pyproject version
+        run: python scripts/check_version.py "$env:TAG"
+
+      - name: Publish service host
+        run: |
+          dotnet publish service_host\YarbisServiceHost.csproj -c Release -r win-x64 --self-contained false -o dist\service_host
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Compress-Archive -Path dist\service_host\* -DestinationPath "dist\YarbisServiceHost-$env:TAG-win-x64.zip"
+
+      - name: Package source
+        # .gitattributes marca .github/ y tests/ como export-ignore.
+        run: git archive --format=zip --prefix="yarbis-$env:TAG/" -o "dist\yarbis-$env:TAG.zip" HEAD
+
+      - name: Checksums
+        run: |
+          Get-ChildItem dist\*.zip | ForEach-Object {
+            "{0}  {1}" -f (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower(), $_.Name
+          } | Set-Content -Encoding ascii dist\SHA256SUMS.txt
+          Get-Content dist\SHA256SUMS.txt
+
+      - name: Create GitHub Release
+        run: |
+          $flags = @("--generate-notes", "--title", "Yarbis $env:TAG")
+          if ($env:TAG -like "*-*") { $flags += "--prerelease" }
+          gh release create $env:TAG @flags dist\*.zip dist\SHA256SUMS.txt
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

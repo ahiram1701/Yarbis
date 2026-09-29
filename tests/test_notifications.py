@@ -43,7 +43,13 @@ class NotificationsTestCase(unittest.TestCase):
             },
             clear=False,
         ):
-            with patch.object(notifications, "_get_notify_provider", return_value=mock_notify):
+            # Fuerza la ruta de Windows aunque la suite corra en Linux/macOS.
+            with patch.object(notifications, "_get_notify_provider", return_value=mock_notify), \
+                 patch.object(
+                     notifications,
+                     "_send_local_desktop_notification",
+                     side_effect=notifications._send_windows_notification,
+                 ):
                 result = notifications.notify_user_input_required(
                     "Que nicho quieres trabajar?",
                     "Falta ese dato para continuar.",

@@ -7,3 +7,7 @@
 *.bat text eol=crlf
 *.vbs text eol=crlf
 *.ps1 text eol=crlf
+
+# Fuera del zip de codigo que publica el Release (git archive).
+.github/ export-ignore
+tests/ export-ignore

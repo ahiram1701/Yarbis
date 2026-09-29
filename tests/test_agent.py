@@ -670,9 +670,12 @@ class AgentTestCase(unittest.TestCase):
         self.assertIn("no procesador AMD", messages[0]["content"])
 
     def test_format_local_temporal_context_uses_fixed_local_time(self):
-        fixed_now = datetime(2026, 5, 16, 3, 33, 19, tzinfo=timezone(timedelta(hours=-6)))
+        utc_minus_6 = timezone(timedelta(hours=-6))
+        fixed_now = datetime(2026, 5, 16, 3, 33, 19, tzinfo=utc_minus_6)
 
-        temporal_context = agent._format_local_temporal_context(fixed_now)
+        # Fija la zona para no depender de la del equipo (los runners de CI estan en UTC).
+        with patch.object(agent, "_resolve_user_timezone", return_value=utc_minus_6):
+            temporal_context = agent._format_local_temporal_context(fixed_now)
 
         self.assertIn("Contexto temporal local:", temporal_context)
         self.assertIn("Fecha local: 2026-05-16", temporal_context)

@@ -23,11 +23,13 @@ class ManagerKindTestCase(unittest.TestCase):
             self.assertEqual(native_service.service_manager_kind(), "systemd")
         with patch.object(native_service.platform, "system", return_value="Darwin"):
             self.assertEqual(native_service.service_manager_kind(), "launchd")
-        with patch.object(native_service.platform, "system", return_value="Windows"):
+        with patch.object(native_service.platform, "system", return_value="Windows"), \
+             patch.object(native_service, "_is_windows", return_value=True):
             self.assertEqual(native_service.service_manager_kind(), "none")
 
     def test_install_requires_a_native_manager(self):
-        with patch.object(native_service.platform, "system", return_value="Windows"):
+        with patch.object(native_service.platform, "system", return_value="Windows"), \
+             patch.object(native_service, "_is_windows", return_value=True):
             with self.assertRaises(native_service.NativeServiceError):
                 native_service.install_service()
 

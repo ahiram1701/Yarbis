@@ -65,6 +65,12 @@ def _is_termux() -> bool:
         return "com.termux" in os.environ.get("PREFIX", "")
 
 
+def _is_windows() -> bool:
+    # Punto unico para detectar Windows: los tests lo parchean en vez de tocar
+    # os.name, que es global y rompe pathlib (PosixPath en Windows).
+    return os.name == "nt"
+
+
 def service_manager_kind() -> str:
     """Gestor de servicios del dispositivo: systemd, launchd, termux, portable o none."""
     system = platform.system().lower()
@@ -75,7 +81,7 @@ def service_manager_kind() -> str:
         return MANAGER_LAUNCHD
     # Windows usa SCM (service_manager.py), no este modulo. Cualquier otro SO
     # -incluido uno desconocido donde Python corre- cae al supervisor portable.
-    if os.name == "nt":
+    if _is_windows():
         return MANAGER_NONE
     return MANAGER_PORTABLE
 

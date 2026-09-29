@@ -22,6 +22,8 @@ class ToolsTestCase(unittest.TestCase):
         self.state_path = self.runtime_dir / "state.json"
         self.external_dir = Path(tempfile.gettempdir()) / f"yarbis-tools-{self._testMethodName}-{uuid4().hex[:8]}"
         self.external_dir.mkdir(parents=True, exist_ok=True)
+        # En Windows el temp puede venir en formato corto 8.3 (RUNNER~1); las tools devuelven la ruta larga.
+        self.external_dir = self.external_dir.resolve()
 
     def tearDown(self):
         if self.external_dir.exists() and self.external_dir.name.startswith("yarbis-tools-"):

@@ -787,6 +787,12 @@ def _ollama_model_names(timeout_seconds: int = 5) -> tuple[list[str], str]:
     return model_names, ""
 
 
+def _venv_python_path() -> Path:
+    if os.name == "nt":
+        return WORKSPACE_ROOT / ".venv" / "Scripts" / "python.exe"
+    return WORKSPACE_ROOT / ".venv" / "bin" / "python"
+
+
 def readiness_status(force: bool = False) -> dict:
     now = time.monotonic()
     if (
@@ -815,13 +821,12 @@ def readiness_status(force: bool = False) -> dict:
     ))
 
     # La ruta del venv y el instalador dependen del SO.
+    python_path = _venv_python_path()
     if os.name == "nt":
-        python_path = WORKSPACE_ROOT / ".venv" / "Scripts" / "python.exe"
         venv_missing_text = "No existe .venv\\Scripts\\python.exe."
         venv_hint = ".\\scripts\\setup.ps1 puede crearlo."
         pip_hint = ".\\.venv\\Scripts\\python.exe -m pip install -r requirements.txt"
     else:
-        python_path = WORKSPACE_ROOT / ".venv" / "bin" / "python"
         venv_missing_text = "No existe .venv/bin/python."
         venv_hint = "python3 -m venv .venv puede crearlo."
         pip_hint = ".venv/bin/python -m pip install -r requirements.txt"
