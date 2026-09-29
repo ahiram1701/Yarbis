@@ -102,7 +102,7 @@ class MemoryTestCase(unittest.TestCase):
 
         state = memory.default_state()
         state["goal"] = "mi objetivo personal"
-        state["profile"]["name"] = "Ahiram"
+        state["profile"]["name"] = "Usuario"
         state["messages"] = [{"role": "user", "content": "hola"}]
         # Escribir CON BOM (bytes).
         raw = ("﻿" + json.dumps(state, ensure_ascii=False)).encode("utf-8")
@@ -115,7 +115,7 @@ class MemoryTestCase(unittest.TestCase):
 
         # No se perdio la memoria.
         self.assertEqual(loaded["goal"], "mi objetivo personal")
-        self.assertEqual(loaded["profile"]["name"], "Ahiram")
+        self.assertEqual(loaded["profile"]["name"], "Usuario")
         self.assertEqual(loaded["messages"], [{"role": "user", "content": "hola"}])
         # El archivo quedo auto-sanado (sin BOM).
         self.assertFalse(atomic_io.file_has_bom(state_path))
@@ -1163,8 +1163,8 @@ class MemoryTestCase(unittest.TestCase):
     def test_render_state_summary_separates_assistant_and_user_identity(self):
         summary = memory.render_state_summary({
             "profile": {
-                "name": "Ahiram",
+                "name": "Usuario",
             },
         })
 
-        self.assertIn("Identidad: asistente=Yarbis; usuario=Ahiram", summary)
+        self.assertIn("Identidad: asistente=Yarbis; usuario=Usuario", summary)

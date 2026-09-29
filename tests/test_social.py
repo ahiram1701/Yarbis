@@ -29,7 +29,7 @@ class SocialFeatureTestCase(unittest.TestCase):
                     "id": "acct-1",
                     "platform": "linkedin",
                     "account_type": "linkedin_member",
-                    "display_name": "Ahiram",
+                    "display_name": "Usuario",
                     "external_id": "urn:li:person:123",
                     "token_ref": "cred-1",
                 }],

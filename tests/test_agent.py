@@ -637,7 +637,7 @@ class AgentTestCase(unittest.TestCase):
     def test_build_messages_includes_personal_context(self):
         state = memory.normalize_state({
             "goal": "Organizar la semana",
-            "profile": {"name": "Ahiram", "preferences": ["local first"]},
+            "profile": {"name": "Usuario", "preferences": ["local first"]},
             "tasks": [{"id": "task-1", "title": "Definir prioridades", "status": "pending"}],
             "notes": [{"id": "note-1", "title": "Rutina", "content": "Planificar cada lunes"}],
             "internet": {"mode": "auto"},
@@ -661,7 +661,7 @@ class AgentTestCase(unittest.TestCase):
         self.assertIn("state.json", messages[1]["content"])
         self.assertIn("respuestas completas", messages[1]["content"])
         self.assertIn("Todo aprendizaje estable", messages[1]["content"])
-        self.assertIn("Ahiram", messages[1]["content"])
+        self.assertIn("Usuario", messages[1]["content"])
         self.assertIn("Definir prioridades", messages[1]["content"])
         self.assertIn("Internet: modo=auto", messages[1]["content"])
         self.assertIn("Autoconocimiento de Yarbis", messages[1]["content"])

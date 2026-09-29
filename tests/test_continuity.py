@@ -49,7 +49,7 @@ class SharedMemoryContinuityTestCase(unittest.TestCase):
                 with patch.object(session, "OPERATION_LOCK_FILE", operation_lock_path):
                     memory.save_state(seeded_state)
                     session.update_profile_text(
-                        name="Ahiram",
+                        name="Usuario",
                         preferences="local first",
                         constraints="mantener contexto compartido",
                     )
@@ -73,7 +73,7 @@ class SharedMemoryContinuityTestCase(unittest.TestCase):
 
         self.assertIn("Modo autonomo ejecutado", result)
         auto_mock.assert_called_once_with(cycles=1, emit_notifications=False)
-        self.assertEqual(state["profile"]["name"], "Ahiram")
+        self.assertEqual(state["profile"]["name"], "Usuario")
         self.assertEqual(state["profile"]["preferences"], ["local first"])
         self.assertEqual(state["profile"]["constraints"], ["mantener contexto compartido"])
         self.assertTrue(any(note["title"] == "Telegram" for note in state["notes"]))

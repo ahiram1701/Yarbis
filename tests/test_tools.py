@@ -906,7 +906,7 @@ class ToolsTestCase(unittest.TestCase):
 
         with patch.object(memory, "STATE_FILE", state_path):
             profile_result = tools.update_profile(
-                name="Ahiram",
+                name="Usuario",
                 role="builder",
                 preferences="local, rapido",
                 constraints="sin nube",

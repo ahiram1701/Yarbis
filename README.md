@@ -139,6 +139,10 @@ permisos de administrador cuando el servicio SCM `Yarbis` esta instalado.
 
 ## Licencia y desarrollo
 
-Proyecto personal. Los tests se corren con `python -m unittest discover -s tests`
+Copyright (c) 2026 Alberto Hiram Saucedo Guajardo. **Todos los derechos
+reservados.** El codigo es visible publicamente, pero no se concede ninguna
+licencia para usarlo, copiarlo, modificarlo ni distribuirlo sin permiso escrito. Ver [LICENSE](LICENSE).
+
+Los tests se corren con `python -m unittest discover -s tests`
 y el lint con `ruff check .`. Ver [docs/arquitectura.md](docs/arquitectura.md)
 para entender el diseno antes de contribuir.
